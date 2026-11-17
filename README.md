@@ -171,8 +171,10 @@ Telegram 启动时用 `setMyCommands` 注册命令菜单（私聊可直接点选
 curl -X POST http://127.0.0.1:8799/event \
   -H "x-pisa-token: $PISA_WEBHOOK_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"prompt":"跑测试并修掉失败","eventId":"ci:12345"}'
+  -d '{"prompt":"跑测试并修掉失败","eventId":"webhook:ci:12345"}'
 ```
+
+事件去重键跨通道共享，`eventId` 必须以 `webhook:` 开头，其它前缀直接 400；省略时自动生成 `webhook:<时间戳>:<随机串>`。请求体上限 64 KiB。
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
 

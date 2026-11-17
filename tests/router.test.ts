@@ -288,6 +288,22 @@ describe("Router", () => {
     expect(store.recentTasks().length).toBe(1);
   });
 
+  test("被拒的投递不占用 eventId，后续合法投递照常接单", async () => {
+    const router = build(okWorker);
+    const eventId = "webhook:1";
+
+    await router.handle(msg("/pisa 做点事", { userId: "stranger", eventId }));
+    expect(store.recentTasks().length).toBe(0);
+    expect(channel.sent[0]?.text).toContain("无权限");
+
+    await router.handle(msg("/pisa 做点事", { eventId }));
+    expect(store.recentTasks().length).toBe(1);
+    expect(channel.sent.at(-1)?.text).toContain("已接单");
+
+    await router.handle(msg("/pisa 做点事", { eventId }));
+    expect(store.recentTasks().length).toBe(1);
+  });
+
   test("完整链路：接单 → 执行 → 提交到分支，主分支不变", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 新建 out.txt"));

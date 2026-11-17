@@ -377,8 +377,6 @@ export class Router {
 
     const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
     const taskId = newId(this.now());
-    // 去重：同一事件只登记一次；重复投递直接丢弃
-    if (!store.claimEvent(msg.eventId, taskId)) return;
 
     const denied = this.checkAccess(msg, repo);
     if (denied) {
@@ -397,6 +395,9 @@ export class Router {
       await this.reply(msg.chatId, `用法：${cfg.trigger} <需求描述>`);
       return;
     }
+
+    // 去重：只有会变成任务的投递才占位；被拒或校验失败的投递不能消耗共享的事件键
+    if (!store.claimEvent(msg.eventId, taskId)) return;
 
     const task: Task = {
       id: taskId,

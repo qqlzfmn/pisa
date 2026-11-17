@@ -55,8 +55,10 @@ Worker 通过 `omp -e extensions/pisa-worker.ts` 挂载，订阅：
 `POST http://127.0.0.1:<port>/event`，请求头 `x-pisa-token`：
 
 ```json
-{ "prompt": "跑一遍测试并修掉失败", "repo": "pisa", "eventId": "ci:12345" }
+{ "prompt": "跑一遍测试并修掉失败", "repo": "pisa", "eventId": "webhook:ci:12345" }
 ```
+
+`eventId` 属于跨通道共享的去重键，webhook 只能占用 `webhook:` 命名空间；省略时自动生成（014）。
 
 任务照常排队，回执发到配置的 Telegram 会话。CI 只要 POST 一次。
 
