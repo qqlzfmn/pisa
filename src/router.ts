@@ -20,6 +20,7 @@ import {
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
 import { TaskLogger } from "./log";
+import { payloadHash, threadKeyOf } from "./trigger";
 
 export interface RouterDeps {
   cfg: Config;
@@ -195,13 +196,21 @@ export class Router {
 
     msg = this.routeByAlias(msg);
 
-    // 回复某条任务消息 = 对该任务续跑
+    // 回复某条消息 = 接续同一线程的任务：绑定优先，其次同线程同发起人最近的任务
     if (msg.replyToMessageId) {
-      const parentId = store.taskByMessage(msg.chatId, String(msg.replyToMessageId));
+      const threadKey = threadKeyOf(msg);
+      const parentId =
+        store.taskByMessage(msg.chatId, String(msg.replyToMessageId)) ?? store.taskByThread(threadKey, msg.userId)?.id ?? null;
       const text = msg.text.trim();
-      if (parentId && !text.startsWith(cfg.trigger) && !text.startsWith("/")) {
-        const parent = store.get(parentId);
-        msg = { ...msg, repo: parent?.repo ?? msg.repo, text: `${cfg.trigger} continue ${parentId} ${text}` };
+      const parent = parentId ? store.get(parentId) : null;
+      if (parent && !text.startsWith(cfg.trigger) && !text.startsWith("/")) {
+        // 排队中或执行中：正文记为上下文，不另建任务
+        if (parent.status === "queued" || parent.status === "running") {
+          store.appendContext(parent.id, `用户补充：${text}`);
+          await this.reply(msg.chatId, `已记为 ${parent.id} 的上下文。`, parent.id);
+          return;
+        }
+        msg = { ...msg, repo: parent.repo, text: `${cfg.trigger} continue ${parent.id} ${text}` };
       }
     }
 
@@ -376,9 +385,6 @@ export class Router {
     }
 
     const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
-    const taskId = newId(this.now());
-    // 去重：同一事件只登记一次；重复投递直接丢弃
-    if (!store.claimEvent(msg.eventId, taskId)) return;
 
     const denied = this.checkAccess(msg, repo);
     if (denied) {
@@ -395,6 +401,36 @@ export class Router {
     }
     if (!prompt) {
       await this.reply(msg.chatId, `用法：${cfg.trigger} <需求描述>`);
+      return;
+    }
+
+    // 触发归属：同一事件只建一个任务；编辑后的正文按版本区分；同线程同正文归并到未结束的任务
+    const taskId = newId(this.now());
+    const claim = store.claimTrigger({
+      id: msg.eventId,
+      source: msg.channel,
+      threadKey: threadKeyOf(msg),
+      actor: msg.userId,
+      payloadHash: payloadHash(prompt),
+      at: this.now(),
+      newTaskId: taskId,
+    });
+    if (claim.kind === "duplicate") {
+      const existing = store.get(claim.taskId);
+      await this.reply(
+        msg.chatId,
+        `已接单 · ${claim.taskId}\n仓库：${existing?.repo ?? repo.alias}\n重复触发，不新建任务。`,
+        claim.taskId,
+      );
+      return;
+    }
+    if (claim.kind === "version") {
+      if (store.updatePrompt(claim.taskId, prompt)) {
+        await this.reply(msg.chatId, `已更新 · ${claim.taskId} · v${claim.version}\n排队中，按编辑后的需求执行。`, claim.taskId);
+      } else {
+        store.appendContext(claim.taskId, `编辑后的需求（v${claim.version}）：${prompt}`);
+        await this.reply(msg.chatId, `已记为 ${claim.taskId} 的上下文（v${claim.version}）。`, claim.taskId);
+      }
       return;
     }
 

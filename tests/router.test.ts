@@ -9,6 +9,7 @@ import { parseCommand, taskGuard, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh, changedFiles, createWorktree } from "../src/git";
+import { payloadHash } from "../src/trigger";
 
 class FakeChannel implements ChannelAdapter {
   name = "fake";
@@ -280,12 +281,99 @@ describe("Router", () => {
     expect(channel.sent[0]?.text).toContain("无权限");
   });
 
-  test("同一事件重复投递只建一个任务", async () => {
-    const router = build(okWorker);
-    const m = msg("/pisa 做点事");
-    await router.handle(m);
-    await router.handle(m);
-    expect(store.recentTasks().length).toBe(1);
+  describe("触发器幂等与线程归属", () => {
+    test("同一事件重复投递只建一个任务，两次都回执同一任务号", async () => {
+      const router = build(okWorker);
+      const m = msg("/pisa 做点事", { eventId: "telegram:1:9", threadKey: "telegram:1" });
+      await router.handle(m);
+      await router.handle(m);
+
+      const tasks = store.recentTasks();
+      expect(tasks.length).toBe(1);
+      const id = tasks[0]!.id;
+      expect(store.triggersOf(id)).toHaveLength(1);
+      expect(channel.sent.filter((s) => s.text.includes(id))).toHaveLength(2);
+      expect(channel.sent.at(-1)!.text).toContain("重复触发");
+    });
+
+    test("同线程同正文换事件标识只建一个任务", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 做点事", { eventId: "telegram:1:9", threadKey: "telegram:1" }));
+      await router.handle(msg("/pisa 做点事", { eventId: "webhook:7", threadKey: "telegram:1" }));
+
+      expect(store.recentTasks().length).toBe(1);
+    });
+
+    test("不同线程同正文各建一个任务", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 做点事", { eventId: "telegram:1:9", threadKey: "telegram:1" }));
+      await router.handle(msg("/pisa 做点事", { eventId: "telegram:2:3", threadKey: "telegram:2" }));
+
+      expect(store.recentTasks().length).toBe(2);
+    });
+
+    test("编辑消息按版本区分：排队任务改用新正文", async () => {
+      const router = build(okWorker);
+      const m = msg("/pisa 做点事", { eventId: "telegram:1:9", threadKey: "telegram:1" });
+      await router.handle(m);
+      const task = store.recentTasks()[0]!;
+      await router.handle({ ...m, text: "/pisa 做点事并补测试" });
+
+      expect(store.recentTasks().length).toBe(1);
+      expect(store.get(task.id)!.prompt).toBe("做点事并补测试");
+      expect(store.triggersOf(task.id).map((t) => t.version)).toEqual([1, 2]);
+      expect(channel.sent.at(-1)!.text).toContain("已更新");
+    });
+
+    test("执行中任务的编辑记为上下文，正文不变", async () => {
+      seedTask({ id: "t_1", status: "running", prompt: "做点事" });
+      store.claimTrigger({
+        id: "telegram:1:9",
+        source: "telegram",
+        threadKey: "telegram:1",
+        actor: "u1",
+        payloadHash: payloadHash("做点事"),
+        at: 1,
+        newTaskId: "t_1",
+      });
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 做点事并补测试", { eventId: "telegram:1:9", threadKey: "telegram:1" }));
+
+      expect(store.recentTasks().length).toBe(1);
+      expect(store.get("t_1")!.prompt).toBe("做点事");
+      expect(store.get("t_1")!.context).toContain("做点事并补测试");
+    });
+
+    test("回复排队任务的补充记为上下文，不新建任务", async () => {
+      seedTask({ id: "t_1", status: "queued" });
+      store.linkMessage("c1", "9001", "t_1");
+      const router = build(okWorker);
+      await router.handle(msg("再加一行", { replyToMessageId: 9001 }));
+
+      expect(store.recentTasks().length).toBe(1);
+      expect(store.get("t_1")!.context).toContain("再加一行");
+      expect(channel.sent.at(-1)!.text).toContain("上下文");
+    });
+
+    test("回复未绑定的消息时按线程找到任务续跑", async () => {
+      const parent = seedTask({ id: "t_1", status: "succeeded", branch: "pisa/t_1" });
+      store.claimTrigger({
+        id: "telegram:1:9",
+        source: "telegram",
+        threadKey: "telegram:1",
+        actor: "u1",
+        payloadHash: payloadHash("第一轮"),
+        at: 1,
+        newTaskId: "t_1",
+      });
+      const router = build(okWorker);
+      await router.handle(msg("再加一行", { replyToMessageId: 42, threadKey: "telegram:1" }));
+
+      const child = store.recentTasks()[0]!;
+      expect(child.id).not.toBe(parent.id);
+      expect(child.baseRef).toBe("pisa/t_1");
+      expect(child.context).toContain("任务号：t_1");
+    });
   });
 
   test("完整链路：接单 → 执行 → 提交到分支，主分支不变", async () => {

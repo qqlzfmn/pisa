@@ -155,12 +155,13 @@ export class Scheduler {
     const stamp = minuteKey(at);
     for (const { job, match } of this.jobs) {
       if (job.enabled === false || !match(at)) continue;
-      // 占位 key 与消息 eventId 分开：eventId 会被 Router 再占位一次
+      // 占位 key 与消息 eventId 分开：这里是入队幂等，触发器表负责建任务幂等
       if (!this.deps.store.claimEvent(`cron-claim:${job.id}:${stamp}`, `cron:${job.id}`)) continue;
       try {
         await this.deps.enqueue({
           eventId: `cron:${job.id}:${stamp}`,
           channel: "cron",
+          threadKey: `cron:${job.id}:${stamp}`,
           chatId: sched.chatId,
           userId: sched.userId,
           text: job.prompt,

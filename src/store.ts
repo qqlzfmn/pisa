@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
+import { legacyThreadKey, payloadHash } from "./trigger";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
@@ -45,6 +46,21 @@ CREATE TABLE IF NOT EXISTS events (
   task_id  TEXT NOT NULL,
   seen_at  INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS triggers (
+  id           TEXT NOT NULL,
+  version      INTEGER NOT NULL,
+  source       TEXT NOT NULL,
+  thread_key   TEXT NOT NULL,
+  actor        TEXT NOT NULL,
+  at           INTEGER NOT NULL,
+  payload_hash TEXT NOT NULL,
+  task_id      TEXT NOT NULL,
+  PRIMARY KEY (id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_triggers_thread ON triggers(thread_key, at);
+CREATE INDEX IF NOT EXISTS idx_triggers_task ON triggers(task_id);
+CREATE INDEX IF NOT EXISTS idx_triggers_fingerprint ON triggers(thread_key, actor, payload_hash);
 
 CREATE TABLE IF NOT EXISTS task_effects (
   task_id    TEXT NOT NULL,
@@ -108,6 +124,72 @@ function toTask(r: Row): Task {
   };
 }
 
+export interface TriggerInput {
+  /** 事件标识，等于任务的 source */
+  id: string;
+  /** 入口：telegram / github / cron / webhook / cli */
+  source: string;
+  threadKey: string;
+  actor: string;
+  payloadHash: string;
+  at: number;
+  /** 判定为新建时使用的任务号 */
+  newTaskId: string;
+}
+
+export type TriggerClaim =
+  | { kind: "new"; taskId: string }
+  | { kind: "duplicate"; taskId: string }
+  | { kind: "version"; taskId: string; version: number };
+
+export interface TriggerRow {
+  id: string;
+  version: number;
+  source: string;
+  threadKey: string;
+  actor: string;
+  at: number;
+  payloadHash: string;
+  taskId: string;
+}
+
+interface TriggerDbRow {
+  id: string;
+  version: number;
+  source: string;
+  thread_key: string;
+  actor: string;
+  at: number;
+  payload_hash: string;
+  task_id: string;
+}
+
+function toTrigger(r: TriggerDbRow): TriggerRow {
+  return {
+    id: r.id,
+    version: r.version,
+    source: r.source,
+    threadKey: r.thread_key,
+    actor: r.actor,
+    at: r.at,
+    payloadHash: r.payload_hash,
+    taskId: r.task_id,
+  };
+}
+
+interface LegacyTriggerRow {
+  id: string;
+  source: string;
+  channel: string;
+  chat_id: string;
+  requester: string;
+  prompt: string;
+  created_at: number;
+  reply_repo: string | null;
+  reply_pr: number | null;
+  reply_issue: number | null;
+}
+
 export class Store {
   readonly db: Database;
 
@@ -136,6 +218,46 @@ export class Store {
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
     }
+    this.backfillTriggers();
+  }
+
+  /** 旧库回填：每个没有触发器记录的任务补一条，重复启动不翻倍，任务数据不动 */
+  private backfillTriggers(): void {
+    const rows = this.db
+      .query(
+        `SELECT k.id, k.source, k.channel, k.chat_id, k.requester, k.prompt, k.created_at,
+                k.reply_repo, k.reply_pr, k.reply_issue
+           FROM tasks k
+          WHERE NOT EXISTS (SELECT 1 FROM triggers t WHERE t.task_id = k.id)`,
+      )
+      .all() as LegacyTriggerRow[];
+    if (rows.length === 0) return;
+    const nextVersion = this.db.query("SELECT COALESCE(MAX(version), 0) + 1 AS v FROM triggers WHERE id = ?");
+    const insert = this.db.prepare(
+      "INSERT INTO triggers(id, version, source, thread_key, actor, at, payload_hash, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    this.db.transaction(() => {
+      for (const r of rows) {
+        const { v } = nextVersion.get(r.source) as { v: number };
+        insert.run(
+          r.source,
+          v,
+          r.channel,
+          legacyThreadKey({
+            channel: r.channel,
+            chatId: r.chat_id,
+            source: r.source,
+            replyRepo: r.reply_repo,
+            replyPr: r.reply_pr,
+            replyIssue: r.reply_issue,
+          }),
+          r.requester,
+          r.created_at,
+          payloadHash(r.prompt),
+          r.id,
+        );
+      }
+    })();
   }
 
   /** 记录「哪条发出的消息属于哪个任务」，用于回复接续 */
@@ -179,13 +301,91 @@ export class Store {
     return rows.map((r) => ({ taskId: r.task_id, kind: r.kind, target: r.target, detail: r.detail, createdAt: r.created_at }));
   }
 
-  /** 幂等：同一事件只能登记一次 */
+  /** 入队幂等（scheduler 占位用）：同一事件只登记一次；建任务的幂等由 claimTrigger 负责 */
   claimEvent(eventId: string, taskId: string): boolean {
     const res = this.db.run("INSERT OR IGNORE INTO events(event_id, task_id, seen_at) VALUES (?, ?, ?)", [
       eventId,
       taskId,
       Date.now(),
     ]);
+    return res.changes > 0;
+  }
+
+  /**
+   * 触发器归属：同一事件只归一个任务。
+   * 同 id：正文相同=重复；正文变化且任务未结束=新版本；任务已结束=重复（回填摘要与原始正文可能不同）。
+   * 无同 id：同线程、同发起人、同正文且任务未结束=重复；否则新建。
+   */
+  claimTrigger(input: TriggerInput): TriggerClaim {
+    return this.db.transaction((): TriggerClaim => {
+      const latest = this.db
+        .query("SELECT version, payload_hash, task_id FROM triggers WHERE id = ? ORDER BY version DESC LIMIT 1")
+        .get(input.id) as { version: number; payload_hash: string; task_id: string } | null;
+      if (latest) {
+        if (latest.payload_hash === input.payloadHash) return { kind: "duplicate", taskId: latest.task_id };
+        const open = this.db
+          .query("SELECT status FROM tasks WHERE id = ?")
+          .get(latest.task_id) as { status: TaskStatus } | null;
+        if (!open || (open.status !== "queued" && open.status !== "running" && open.status !== "paused")) {
+          return { kind: "duplicate", taskId: latest.task_id };
+        }
+        const version = latest.version + 1;
+        this.insertTrigger(input, version, latest.task_id);
+        return { kind: "version", taskId: latest.task_id, version };
+      }
+
+      const sibling = this.db
+        .query(
+          `SELECT t.task_id FROM triggers t JOIN tasks k ON k.id = t.task_id
+            WHERE t.thread_key = ? AND t.actor = ? AND t.payload_hash = ?
+              AND k.status IN ('queued','running','paused')
+            ORDER BY t.at DESC LIMIT 1`,
+        )
+        .get(input.threadKey, input.actor, input.payloadHash) as { task_id: string } | null;
+      if (sibling) return { kind: "duplicate", taskId: sibling.task_id };
+
+      this.insertTrigger(input, 1, input.newTaskId);
+      return { kind: "new", taskId: input.newTaskId };
+    })();
+  }
+
+  private insertTrigger(input: TriggerInput, version: number, taskId: string): void {
+    this.db.run(
+      "INSERT INTO triggers(id, version, source, thread_key, actor, at, payload_hash, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [input.id, version, input.source, input.threadKey, input.actor, input.at, input.payloadHash, taskId],
+    );
+  }
+
+  /** 线程内同发起人最近一次触发归属的任务；回复没绑定消息时用它兜底 */
+  taskByThread(threadKey: string, actor: string): Task | null {
+    const row = this.db
+      .query(
+        `SELECT k.* FROM triggers t JOIN tasks k ON k.id = t.task_id
+          WHERE t.thread_key = ? AND t.actor = ?
+          ORDER BY t.at DESC, t.version DESC LIMIT 1`,
+      )
+      .get(threadKey, actor) as Row | null;
+    return row ? toTask(row) : null;
+  }
+
+  /** 任务的全部触发器记录，按版本升序；排查与测试用 */
+  triggersOf(taskId: string): TriggerRow[] {
+    const rows = this.db
+      .query("SELECT * FROM triggers WHERE task_id = ? ORDER BY id, version")
+      .all(taskId) as TriggerDbRow[];
+    return rows.map(toTrigger);
+  }
+
+  /** 追加任务上下文；执行中的任务在下一轮开始时读到 */
+  appendContext(id: string, text: string): void {
+    const row = this.db.query("SELECT context FROM tasks WHERE id = ?").get(id) as { context: string | null } | null;
+    if (!row) return;
+    this.db.run("UPDATE tasks SET context = ? WHERE id = ?", [row.context ? `${row.context}\n${text}` : text, id]);
+  }
+
+  /** 排队任务的正文换成编辑后的版本；已开始执行的任务不改正文 */
+  updatePrompt(id: string, prompt: string): boolean {
+    const res = this.db.run("UPDATE tasks SET prompt = ? WHERE id = ? AND status = 'queued'", [prompt, id]);
     return res.changes > 0;
   }
 

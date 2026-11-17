@@ -16,7 +16,7 @@ export interface GithubWatcherDeps {
 
 /**
  * Issue / PR 评论 → 任务：按仓库定时拉增量评论，把带触发词的投给 Router。
- * 去重靠投递时的稳定 eventId（`github:comment:<repo>:<id>`），由 Router 的 claimEvent 落库。
+ * 去重靠投递时的稳定 eventId（`github:comment:<repo>:<id>`）与线程键（`github:<repo>:<编号>`），由 Router 的触发器表落库。
  * 每个仓库各自维护增量下界，一个仓库失败不影响其它仓库。
  * 编号是 PR 时接续该 PR 的任务并回帖到 PR；是普通 Issue 时从主干开新分支、回帖到 Issue。
  */
@@ -92,6 +92,7 @@ export class GithubWatcher {
       const base = {
         eventId: `github:comment:${repo}:${comment.id}`,
         channel: "github",
+        threadKey: `github:${repo}:${n}`,
         chatId,
         userId,
         text,

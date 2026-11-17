@@ -20,6 +20,8 @@ export interface IncomingMessage {
   userId: string;
   text: string;
   repo?: string;
+  /** 线程键：同一会话共享，用于重复触发归并与回复兜底；缺省时事件自成线程 */
+  threadKey?: string;
   /** 私聊（一对一）消息 */
   isDirect?: boolean;
   /** 回复的是哪条消息（用于接续对应任务） */

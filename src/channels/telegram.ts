@@ -6,14 +6,17 @@ const API = "https://api.telegram.org";
 
 interface TgUpdate {
   update_id: number;
-  message?: {
-    message_id: number;
-    date: number;
-    text?: string;
-    chat: { id: number; type: string };
-    from?: { id: number; username?: string };
-    reply_to_message?: { message_id: number };
-  };
+  message?: TgMessage;
+  edited_message?: TgMessage;
+}
+
+interface TgMessage {
+  message_id: number;
+  date: number;
+  text?: string;
+  chat: { id: number; type: string };
+  from?: { id: number; username?: string };
+  reply_to_message?: { message_id: number };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -41,16 +44,18 @@ export class TelegramChannel implements ChannelAdapter {
         const data = await this.api<TgUpdate[]>("getUpdates", {
           offset: this.offset,
           timeout: 30,
-          allowed_updates: ["message"],
+          allowed_updates: ["message", "edited_message"],
         });
         backoff = 1000;
         for (const u of data.result ?? []) {
           this.offset = Math.max(this.offset, u.update_id + 1);
-          const m = u.message;
+          // 编辑后的消息沿用同一 eventId，由触发器按版本区分
+          const m = u.message ?? u.edited_message;
           if (!m?.text) continue;
           await onMessage({
             eventId: `telegram:${m.chat.id}:${m.message_id}`,
             channel: "telegram",
+            threadKey: `telegram:${m.chat.id}`,
             chatId: String(m.chat.id),
             userId: String(m.from?.id ?? m.chat.id),
             text: m.text,

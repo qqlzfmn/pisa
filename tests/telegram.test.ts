@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { BOT_COMMANDS } from "../src/config";
 import { TelegramChannel } from "../src/channels/telegram";
+import type { IncomingMessage } from "../src/types";
 
 const realFetch = globalThis.fetch;
 
@@ -23,5 +24,49 @@ describe("TelegramChannel.setCommands", () => {
     const names = calls[0]!.body.commands.map((c) => c.command).sort();
     expect(names).toEqual(["cancel", "continue", "help", "merge", "resume", "rewind", "schedules", "status"]);
     expect(calls[0]!.body.commands.every((c) => c.description.length > 0)).toBe(true);
+  });
+});
+
+describe("TelegramChannel.poll", () => {
+  test("编辑消息沿用同一 eventId，并带线程键", async () => {
+    const bodies: Array<{ allowed_updates?: string[] }> = [];
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as { allowed_updates?: string[] });
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          result: [
+            {
+              update_id: 1,
+              edited_message: {
+                message_id: 12,
+                date: 100,
+                text: "/pisa 修登录",
+                chat: { id: 7, type: "private" },
+                from: { id: 8 },
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    const channel = new TelegramChannel("tok");
+    let resolve!: (m: IncomingMessage) => void;
+    const got = new Promise<IncomingMessage>((r) => {
+      resolve = r;
+    });
+    await channel.start(async (m) => {
+      resolve(m);
+      await channel.stop();
+    });
+
+    const msg = await got;
+    expect(msg.eventId).toBe("telegram:7:12");
+    expect(msg.threadKey).toBe("telegram:7");
+    expect(msg.text).toBe("/pisa 修登录");
+    expect(msg.chatId).toBe("7");
+    expect(bodies[0]?.allowed_updates).toEqual(["message", "edited_message"]);
   });
 });
