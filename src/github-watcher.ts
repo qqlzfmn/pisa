@@ -25,12 +25,17 @@ export class GithubWatcher {
   private polling = false;
   /** 每个仓库的增量下界：只在整轮成功后推进，失败不推进以免漏评论 */
   private readonly since = new Map<string, string>();
+  /** 允许派活的评论作者，login 小写归一；空集合 = 未配置，评论派活禁用 */
+  private readonly allowedAuthors: Set<string>;
   private readonly now: () => number;
   private readonly runner: Runner;
 
   constructor(private deps: GithubWatcherDeps) {
     this.now = deps.now ?? Date.now;
     this.runner = deps.runner ?? defaultRunner;
+    this.allowedAuthors = new Set(
+      (deps.cfg.github?.allowedUsers ?? []).map((s) => s.trim().toLowerCase()).filter(Boolean),
+    );
     // 启动时刻即下界：不回放历史评论
     const startedAt = new Date(this.now()).toISOString();
     for (const target of githubRepos(deps.cfg.github)) this.since.set(target.repo, startedAt);
@@ -39,6 +44,11 @@ export class GithubWatcher {
   start(): void {
     const gh = this.deps.cfg.github;
     if (!gh?.enabled || this.timer) return;
+    // 空名单不猜默认值：评论作者不可信，未配置就整体不派活
+    if (this.allowedAuthors.size === 0) {
+      console.warn("[pisa] 评论来源未配置 allowedUsers，评论派活已禁用");
+      return;
+    }
     const every = Math.max(10, gh.intervalSec ?? 120) * 1000;
     this.timer = setInterval(() => void this.poll(), every);
   }
@@ -50,7 +60,7 @@ export class GithubWatcher {
 
   async poll(): Promise<void> {
     const gh = this.deps.cfg.github;
-    if (!gh?.enabled || this.polling) return;
+    if (!gh?.enabled || this.polling || this.allowedAuthors.size === 0) return;
     this.polling = true;
     const startedAt = new Date(this.now()).toISOString();
     try {
@@ -81,6 +91,13 @@ export class GithubWatcher {
     for (const comment of res.value) {
       const text = comment.body.trim();
       if (!text.startsWith(prefix)) continue;
+      // 评论者身份与配置归属身份分开：只有白名单作者的评论能派活
+      if (!this.allowedAuthors.has(comment.userLogin.trim().toLowerCase())) {
+        console.warn(
+          `[pisa] 忽略非白名单作者的评论 · ${repo} #${comment.id} @${comment.userLogin || "(未知)"}`,
+        );
+        continue;
+      }
       const n = prNumberFromIssueUrl(comment.issueUrl);
       if (!n) continue;
       const isPr = isPullRequest(this.runner, repo, n);
@@ -93,7 +110,9 @@ export class GithubWatcher {
         eventId: `github:comment:${repo}:${comment.id}`,
         channel: "github",
         chatId,
+        // 归属与回帖路由仍用配置身份；评论作者单独带出，只做审计
         userId,
+        author: comment.userLogin,
         text,
         replyRepo: repo,
       };

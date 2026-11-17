@@ -156,6 +156,7 @@ describe("Router", () => {
       channel: "fake",
       chatId: "c1",
       requester: "u1",
+      author: null,
       repo: "demo",
       prompt: "续跑",
       status: "queued",
@@ -472,6 +473,39 @@ describe("Router", () => {
     }
   });
 
+  test("非 IM 通道不能合并任务", async () => {
+    const supervised = process.env.PISA_SUPERVISED;
+    delete process.env.PISA_SUPERVISED;
+    try {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 新建 out.txt"));
+      await router.drainOnce();
+      const id = store.recentTasks()[0]!.id;
+      const before = sh(["git", "-C", repo, "rev-parse", "main"]).out.trim();
+
+      await router.handle(msg(`/pisa merge ${id}`, { channel: "github" }));
+
+      expect(channel.sent.at(-1)?.text).toContain("只有 IM 通道可以");
+      expect(sh(["git", "-C", repo, "rev-parse", "main"]).out.trim()).toBe(before);
+      expect(sh(["git", "-C", repo, "cat-file", "-e", "main:out.txt"]).code).not.toBe(0);
+      expect(store.get(id)!.status).toBe("succeeded");
+    } finally {
+      if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+    }
+  });
+
+  test("webhook 与定时任务不能取消或恢复任务", async () => {
+    const router = build(okWorker);
+    seedTask({ id: "t_run", status: "running" });
+
+    for (const ch of ["webhook", "cron", "proactive"]) {
+      await router.handle(msg("/pisa cancel t_run", { channel: ch }));
+      await router.handle(msg("/pisa resume t_run", { channel: ch }));
+      expect(channel.sent.at(-1)?.text).toContain("只有 IM 通道可以");
+    }
+    expect(store.get("t_run")!.status).toBe("running");
+  });
+
   test("回复任务消息自动续跑该任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 第一轮"));
@@ -756,6 +790,7 @@ describe("状态机", () => {
     channel: "c",
     chatId: "c",
     requester: "u",
+    author: null,
     repo: "demo",
     prompt: "p",
     status: "queued",

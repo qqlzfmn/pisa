@@ -44,6 +44,7 @@
     "enabled": false,
     "intervalSec": 120,
     "tokenEnv": "GH_TOKEN",
+    "allowedUsers": ["<github login>"],
     "repos": [
       {
         "repo": "owner/pisa",

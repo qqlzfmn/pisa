@@ -20,3 +20,5 @@
       验证: `bun test tests/router.test.ts tests/github-comments.test.ts`；`tsc --noEmit`
 - [x] T10 回帖幂等：`replyMarker` / `postReplyOnce` 先查讨论串再发，已有同标记跳过，检查失败不发 (FR-014/FR-015)
       验证: `bun test tests/github-comments.test.ts`（`postReplyOnce` 组、「讨论串已有同标记时跳过回帖」）；`tsc --noEmit`
+- [x] T11 投递消息带 `author` 并落到 `Task.author`（作者白名单见 014）
+      验证: `bun test tests/github-comments.test.ts`（白名单作者的任务 `author` 为原 login）；`tsc --noEmit`

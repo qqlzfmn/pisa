@@ -19,6 +19,8 @@ export interface IncomingMessage {
   chatId: string;
   userId: string;
   text: string;
+  /** 外部渠道的原始作者（如 GitHub 评论作者 login）；IM 消息不填，只供审计 */
+  author?: string;
   repo?: string;
   /** 私聊（一对一）消息 */
   isDirect?: boolean;
@@ -41,6 +43,8 @@ export interface Task {
   channel: string;
   chatId: string;
   requester: string;
+  /** 外部渠道的原始作者（如 GitHub 评论作者 login）；IM 来源为 null */
+  author: string | null;
   repo: string;
   prompt: string;
   status: TaskStatus;

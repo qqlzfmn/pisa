@@ -8,6 +8,7 @@ const task: Task = {
   channel: "cli",
   chatId: "c1",
   requester: "u1",
+  author: null,
   repo: "demo",
   prompt: "修一下登录",
   status: "queued",

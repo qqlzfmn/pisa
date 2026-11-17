@@ -151,6 +151,7 @@ describe("Router.rewind", () => {
       channel: "fake",
       chatId: "c1",
       requester: "u1",
+      author: null,
       repo: "demo",
       prompt: "做点事",
       status: "queued",

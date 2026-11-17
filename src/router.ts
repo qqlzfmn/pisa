@@ -58,6 +58,12 @@ const FINISHED_LABEL: Record<string, string> = { succeeded: "成功", failed: "�
 /** 单英文词任务的待确认正文，10 分钟过期 */
 const PENDING_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * 非 IM 入口：评论、webhook、关键词触发、定时任务。
+ * 这些来源没有可信的人机交互，只能派活与续跑；合并、取消、恢复等特权命令只对 IM 用户开放。
+ */
+const TASK_ONLY_CHANNELS: Record<string, true> = { github: true, webhook: true, proactive: true, cron: true };
+
 interface PendingTask {
   prompt: string;
   repo?: string;
@@ -228,6 +234,16 @@ export class Router {
       }
     }
     if (!cmd) return;
+
+    // 非 IM 通道只能派活与续跑：评论作者、webhook 调用方都无法对应到 IM 白名单，
+    // 合并、取消、恢复这类特权命令只认 IM 消息
+    if (Object.hasOwn(TASK_ONLY_CHANNELS, msg.channel) && cmd.kind !== "task" && cmd.kind !== "continue") {
+      await this.reply(
+        msg.chatId,
+        `只有 IM 通道可以执行 ${cfg.trigger} ${cmd.kind}，评论与自动触发只能派任务或续跑。`,
+      );
+      return;
+    }
 
     // 除确认以外的下一条命令视为放弃待确认；避免旧单词被迟到的 confirm 建单
     if (cmd.kind !== "confirm") this.pending.delete(this.pendingKey(msg));
@@ -404,6 +420,7 @@ export class Router {
       channel: msg.channel,
       chatId: msg.chatId,
       requester: msg.userId,
+      author: msg.author ?? null,
       repo: repo.alias,
       prompt,
       status: "queued",

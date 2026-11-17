@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   channel          TEXT NOT NULL,
   chat_id          TEXT NOT NULL,
   requester        TEXT NOT NULL,
+  author           TEXT,
   repo             TEXT NOT NULL,
   prompt           TEXT NOT NULL,
   status           TEXT NOT NULL,
@@ -62,6 +63,7 @@ interface Row {
   channel: string;
   chat_id: string;
   requester: string;
+  author: string | null;
   repo: string;
   prompt: string;
   status: TaskStatus;
@@ -88,6 +90,7 @@ function toTask(r: Row): Task {
     channel: r.channel,
     chatId: r.chat_id,
     requester: r.requester,
+    author: r.author,
     repo: r.repo,
     prompt: r.prompt,
     status: r.status,
@@ -135,6 +138,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "author")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN author TEXT");
     }
   }
 
@@ -191,14 +197,15 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, author, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
         t.channel,
         t.chatId,
         t.requester,
+        t.author,
         t.repo,
         t.prompt,
         t.status,

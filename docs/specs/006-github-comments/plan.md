@@ -16,7 +16,7 @@
 | 触发词 | `cfg.trigger + " "` 前缀，正文先 `trim` | 触发词只有一个来源（config），行为与 spec FR-004 一致 |
 | 去重 | 传给 `Router.handle` 的 `eventId` 固定为 `github:comment:<id>`，由 Router 既有的 `store.claimEvent(eventId, taskId)` 落库 | Router 是唯一的建任务入口，也在建任务前占键；watcher 再占同一键会把键消耗掉、导致 Router 丢弃该评论。故去重只保留一处（FR-005） |
 | 续跑绑定 | `IncomingMessage` 增加可选 `continueFrom`（父任务号）与 `replyPr`（回帖目标）；Router 复用 `continue` 的分支/上下文构造 | 不另开任务创建路径；`continue` 命令路径与 PR 评论路径共用同一段父任务校验与上下文格式（FR-006） |
-| 权限 | PR 评论以配置的 `userId` 投递，因此不走「只有原请求者可以续跑」；IM 的 `continue` 仍保留该校验 | 评论作者是 GitHub 身份，与 IM 白名单无对应关系（spec 非目标） |
+| 权限 | 投递消息的 `userId` 用配置值（回帖路由），评论作者放 `IncomingMessage.author` 供审计；作者白名单与通道收窄见 014 | 评论作者是 GitHub 身份，与 IM 白名单无对应关系；「谁评论的」和「任务归谁」是两个字段，鉴权与路由各用各的 |
 | 回帖 | `Task.replyPr` 落库（tasks 表新增 `reply_pr INTEGER`，含轻量迁移）；`runTask` 在写 `succeeded` 后调用 `postComment`，正文由 `formatReply(summary)` 生成（截 3000 字） | 回帖是任务收尾动作，放在状态写入之后；失败只 `TaskLogger.write`，不改状态（FR-008/FR-009） |
 | 回帖幂等 | `replyMarker(taskId, purpose)` 生成隐藏注释，`postReplyOnce` 先查讨论串（`repos/<repo>/issues/<n>/comments`，`--jq '.[]'` 逐行取正文）再发；已有标记返回 `skipped`，检查失败返回错误且不发 | 幂等键用任务号：任务收尾只会发生一次，重跑复用同一号；检查失败时漏发可重跑补救，重复发不可撤销（FR-014/FR-015） |
 | 装配 | `index.ts` 创建 watcher，`enqueue = (m) => router.handle(m)`；shutdown 里 `watcher.stop()` | 与 `Proactive` 的装配方式一致（FR-011） |
@@ -26,8 +26,8 @@
 - `src/config.ts`：`Config.github` 可选段
 - `src/github.ts`（新）：`Runner`、`listComments`、`postComment`、`postReplyOnce`、`replyMarker`、`prNumberFromIssueUrl`、`formatReply`
 - `src/github-watcher.ts`（新）：`GithubWatcher`
-- `src/types.ts`：`IncomingMessage.continueFrom` / `replyPr`，`Task.replyPr`
-- `src/store.ts`：`reply_pr` 列与迁移、`taskByPr`
+- `src/types.ts`：`IncomingMessage.continueFrom` / `replyPr` / `author`，`Task.replyPr` / `author`
+- `src/store.ts`：`reply_pr` / `author` 列与迁移、`taskByPr`
 - `src/router.ts`：续跑解析接受 `continueFrom`、建任务写入 `replyPr`、成功后回帖
 - `src/index.ts`：装配与关停
 - `pisa.config.example.json`、`README.md`
@@ -46,4 +46,4 @@
 
 - `gh api --paginate --jq` 的行为依赖 gh 版本；解析失败会记为错误并保留原输出，不会误建任务
 - `postComment` 是同步子进程调用，阻塞事件循环数十到数百毫秒；单任务收尾时发生，可接受
-- 评论作者不做鉴权：能评论仓库的人都能触发任务，前提是仓库权限本身已受限（spec 非目标）
+- 未配置 `allowedUsers` 时评论派活静默停用（启动日志有提示）：刻意的 fail-closed，见 014

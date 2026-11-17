@@ -259,6 +259,7 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
     "enabled": true,
     "intervalSec": 120,
     "tokenEnv": "GH_TOKEN",
+    "allowedUsers": ["<github login>"],
     "repos": [
       { "repo": "owner/pisa", "chatId": "<telegram chat id>", "userId": "<telegram user id>" },
       { "repo": "owner/site", "chatId": "<telegram chat id>", "userId": "<telegram user id>" }
@@ -267,6 +268,7 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 }
 ```
 
+- `allowedUsers` 是能通过评论派活的 GitHub login（大小写不敏感），对所有仓库生效。为空或不写时不轮询、不投递任何评论任务，启动日志打印「评论来源未配置 allowedUsers，评论派活已禁用」
 - `repos` 里的每个仓库独立轮询、独立增量下界；`intervalSec` 与 `tokenEnv` 仍是全局配置
 - 旧的单仓库写法 `repo` + `chatId` + `userId` 继续可用；`repos` 非空时优先，旧字段被忽略
 - 某个仓库拉取或类型判定失败只影响它自己：本轮不推进它的下界，其它仓库照常
@@ -281,8 +283,10 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 - 复用分支的任务失败或取消时保留共享分支；任务自己新建的 `pisa/<任务号>` 才会被清理
 - 任务成功后把摘要（限 3000 字）回帖到评论所在的仓库；旧任务或没有仓库记录时回退到配置里的单仓库；回帖失败只写日志，任务状态不变
 - GitHub 评论产生的任务仍落在本地默认仓库：配置里没有 GitHub 仓库到本地别名的映射
+- 评论按作者鉴权：只有 `allowedUsers` 里的 GitHub login 能派活，其余评论一律忽略并写一条日志；投递身份仍用配置里的 `chatId` / `userId`（回帖路由用），原评论作者另存到任务的 `author` 字段供审计
+- 评论、webhook、关键词触发、定时任务这些非 IM 入口只能派活与续跑；`merge` / `cancel` / `resume` / `rewind` 只认 IM 消息，被拒时回执「只有 IM 通道可以…」
 
-`gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
+`gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。
 
 ## 自举
 
@@ -362,12 +366,13 @@ specify → plan → tasks → implement → converge
 - pi 集成：Worker 挂 pisa 扩展，工具级进度上报 + 命令拦截 + 分支续跑
 - 自举：`/pisa merge` 验证后合入主干，看护进程拉起新代码
 - 订阅绑定：回复任务消息即续跑（消息 → 任务映射落库）
-- GitHub 评论：`/pisa` 触发多仓库轮询（`github.repos`，旧的单仓库写法兼容），按仓库隔离增量下界、去重与回帖；PR 上已有任务则接续分支，普通 Issue 从主干开新分支；完成后回帖到评论所在仓库，Issue 来源的 PR 带 `Closes #<n>`
+- GitHub 评论：`/pisa` 触发多仓库轮询（`github.repos`，旧的单仓库写法兼容），按仓库隔离增量下界、去重与回帖；PR 上已有任务则接续分支，普通 Issue 从主干开新分支；完成后回帖到评论所在仓库，Issue 来源的 PR 带 `Closes #<n>`；评论按 `allowedUsers` 鉴权，作者不在名单内的评论不派活
+- 通道隔离：评论、webhook、关键词触发、定时任务只能派活与续跑，`merge` / `cancel` / `resume` / `rewind` 只认 IM 消息
 - 主动发现：群聊关键词 + 定时探针
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 89 个全绿；`tsc --noEmit` 无报错
+- 测试 133 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：

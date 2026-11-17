@@ -26,6 +26,11 @@ export interface GithubRepoConfig {
 
 export interface GithubConfig {
   enabled: boolean;
+  /**
+   * 允许派活的评论作者（GitHub login，大小写不敏感）。
+   * 为空表示未配置：评论派活整体禁用，fail-closed。
+   */
+  allowedUsers?: string[];
   /** 单仓库旧写法；repos 非空时被忽略 */
   repo?: string;
   intervalSec?: number;
