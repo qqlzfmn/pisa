@@ -156,23 +156,44 @@ function checkGit(args: string[], workdir: string): string | null {
   }
 }
 
-const WRAPPERS: Record<string, true> = {
-  command: true,
-  exec: true,
-  env: true,
-  nohup: true,
-  nice: true,
-  time: true,
+interface Wrapper { valueFlags?: string[]; positionals?: number }
+
+const WRAPPERS: Record<string, Wrapper> = {
+  command: {},
+  exec: { valueFlags: ["-a"] },
+  env: { valueFlags: ["-u", "-C", "--unset", "--chdir"] },
+  nohup: {},
+  nice: { valueFlags: ["-n", "--adjustment"] },
+  stdbuf: { valueFlags: ["-i", "-o", "-e"] },
+  time: {},
+  timeout: { valueFlags: ["-s", "-k", "--signal", "--kill-after"], positionals: 1 },
 };
 
-function checkSegment(tokens: string[], workdir: string, depth: number): string | null {
+/** 跳过环境变量赋值与包装命令自身（含其选项、选项值、定位参数），返回真正命令的下标 */
+function commandStart(tokens: string[]): number {
   let at = 0;
-  while (
-    at < tokens.length &&
-    (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[at]!) || WRAPPERS[tokens[at]!])
-  ) {
+  while (at < tokens.length) {
+    const tok = tokens[at]!;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) {
+      at++;
+      continue;
+    }
+    const wrapper = WRAPPERS[tok];
+    if (!wrapper) return at;
     at++;
+    const valueFlags = wrapper.valueFlags ?? [];
+    while (at < tokens.length && tokens[at]!.startsWith("-")) {
+      const flag = tokens[at]!;
+      at++;
+      if (valueFlags.includes(flag) && at < tokens.length) at++;
+    }
+    at += wrapper.positionals ?? 0;
   }
+  return at;
+}
+
+function checkSegment(tokens: string[], workdir: string, depth: number): string | null {
+  const at = commandStart(tokens);
   const rest = tokens.slice(at);
   const head = rest[0] ?? "";
   const args = rest.slice(1);

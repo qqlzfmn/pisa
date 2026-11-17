@@ -32,6 +32,17 @@ describe("blockBash · git push", () => {
     expect(blocked('bash -c "git push origin main"')).toContain("push");
     expect(blocked("echo $(git push)")).toContain("push");
   });
+
+  test("包装命令自带选项也不能绕过", () => {
+    expect(blocked("env -i git push")).toContain("push");
+    expect(blocked("env -u HOME git push origin main")).toContain("push");
+    expect(blocked("nice -n 5 git push")).toContain("push");
+    expect(blocked("timeout -s KILL 5 git push")).toContain("push");
+    expect(blocked("timeout 5 git -c user.name=x push")).toContain("push");
+    expect(blocked("command -p git push")).toContain("push");
+    expect(blocked("env -i sudo ls")).not.toBeNull();
+    expect(blocked("nice -n 5 git status")).toBeNull();
+  });
 });
 
 describe("blockBash · 仓库路径越界", () => {
