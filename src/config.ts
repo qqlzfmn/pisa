@@ -37,6 +37,15 @@ export interface GithubConfig {
   repos?: GithubRepoConfig[];
 }
 
+/** 本地管理接口：只监听回环地址，用请求头 token 鉴权 */
+export interface MgmtConfig {
+  enabled: boolean;
+  port: number;
+  tokenEnv: string;
+}
+
+export const DEFAULT_MGMT: MgmtConfig = { enabled: true, port: 8800, tokenEnv: "PISA_MGMT_TOKEN" };
+
 export interface Config {
   trigger: string;
   /** 私聊里不带触发词也当成任务 */
@@ -47,6 +56,7 @@ export interface Config {
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string; proxy?: string } };
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
+  mgmt?: Partial<MgmtConfig>;
   /** 评论 → 任务 → 回帖；repo 形如 owner/repo */
   github?: GithubConfig;
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
@@ -106,6 +116,11 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
 export function repoByAlias(cfg: Config, alias?: string): RepoConfig | undefined {
   if (!alias) return cfg.repos[0];
   return cfg.repos.find((r) => r.alias === alias);
+}
+
+/** 管理接口配置：文件里的局部值覆盖默认值 */
+export function mgmtSettings(cfg: Config): MgmtConfig {
+  return { ...DEFAULT_MGMT, ...cfg.mgmt };
 }
 
 /**

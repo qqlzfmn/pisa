@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
@@ -38,4 +38,30 @@ export class TaskLogger {
 
 export function ensureDir(p: string): void {
   mkdirSync(dirname(p), { recursive: true });
+}
+
+export interface LogEntry {
+  ts: string;
+  stage: string;
+  msg: string;
+}
+
+/** 读取任务日志；文件不存在返回空数组，损坏行（进程被杀时的半行）跳过 */
+export function readTaskLog(stateDir: string, taskId: string): LogEntry[] {
+  const file = join(stateDir, "logs", `${taskId}.log`);
+  if (!existsSync(file)) return [];
+  const entries: LogEntry[] = [];
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const o = parsed as Partial<LogEntry>;
+    if (typeof o.ts !== "string" || typeof o.stage !== "string" || typeof o.msg !== "string") continue;
+    entries.push({ ts: o.ts, stage: o.stage, msg: o.msg });
+  }
+  return entries;
 }

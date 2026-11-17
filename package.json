@@ -6,8 +6,12 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun run src/index.ts --channel cli",
+    "pisa": "bun run src/pisa.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
+  },
+  "bin": {
+    "pisa": "src/pisa.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",

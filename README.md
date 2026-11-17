@@ -176,6 +176,41 @@ curl -X POST http://127.0.0.1:8799/event \
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
 
+## 本地管理接口与 `pisa` CLI
+
+管理接口只监听 `127.0.0.1`，所有请求带 `x-pisa-token`；`pisa` CLI 通过它读写，脚本和 agent 不用再查 SQLite。
+
+```bash
+export PISA_MGMT_TOKEN="<long random>"
+bun run src/index.ts            # 日志出现 [pisa] mgmt listening on http://127.0.0.1:8800
+```
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/state` | 执行器暂停状态、各状态计数、运行中/排队/最近完成 |
+| POST | `/tickets` | 建任务：`{"prompt":"...","repo":"别名"}` |
+| GET | `/tickets/:id` | 任务详情 + 已记录副作用 |
+| GET | `/tickets/:id/logs` | 执行日志（JSONL 条目） |
+| POST | `/tickets/:id/retry` | `failed`/`cancelled` 重新排队 |
+| POST | `/tickets/:id/stop` | 排队/暂停直接取消；运行中标记取消 |
+| POST | `/tickets/:id/merge` | 校验工作副本与测试后 `--ff-only` 合并 |
+| POST | `/tickets/:id/rewind` | `{"yes":true}` 执行撤销 |
+| POST | `/executor/pause` `/executor/resume` | 暂停后不再派发新任务 |
+
+CLI 与接口一一对应，`--json` 输出单行原始数据：
+
+```bash
+pisa status [--json]
+pisa run "跑测试并修掉失败" [--repo 别名]
+pisa logs <任务号> [--json]
+pisa merge <任务号> [--json]
+pisa rewind <任务号> [--yes] [--json]
+```
+
+退出码：`0` 正常；`1` 已合并但需重启 pisa 生效；`2` 部件错误（服务未起、5xx、任务状态不允许、参数错误）；`3` 待配置（缺 token、token 被拒）。
+
+未全局安装时用 `bun run src/pisa.ts <子命令>`，行为与 `pisa <子命令>` 一致。
+
 ## 多仓库
 
 `repos` 可以写多个仓库，入口用 `@别名` 指定这次任务落在哪个仓库；不带别名时走第一个（默认仓库）。
@@ -367,7 +402,7 @@ specify → plan → tasks → implement → converge
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 89 个全绿；`tsc --noEmit` 无报错
+- 测试 156 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：

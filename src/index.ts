@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { BOT_COMMANDS, githubRepos, loadConfig } from "./config";
+import { BOT_COMMANDS, githubRepos, loadConfig, mgmtSettings } from "./config";
+import { startMgmtServer } from "./mgmt";
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker } from "./worker";
@@ -116,6 +117,12 @@ async function main(): Promise<void> {
       console.log(`[pisa] webhook listening on 127.0.0.1:${cfg.webhook.port}`);
     }
   }
+  // 本地管理接口：状态、建单、重试、停止都走这里，CLI 与脚本不再读库
+  const mgmt = startMgmtServer(cfg, store, router);
+  const mgmtCfg = mgmtSettings(cfg);
+  if (mgmt) console.log(`[pisa] mgmt listening on ${mgmt.url} · 鉴权头 x-pisa-token`);
+  else if (mgmtCfg.enabled) console.error(`[pisa] 管理接口未启动：缺少 ${mgmtCfg.tokenEnv}，或端口 ${mgmtCfg.port} 被占用`);
+
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
   // 关停：先停调度（最多等 3 秒让执行中的任务收尾），再停通道与数据库，
@@ -125,6 +132,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     await router.stop(3000);
+    mgmt?.stop();
     proactive.stop();
     githubWatcher.stop();
     scheduler.stop();

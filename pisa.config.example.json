@@ -40,6 +40,11 @@
     "chatId": "<telegram chat id>",
     "userId": "<telegram user id>"
   },
+  "mgmt": {
+    "enabled": true,
+    "port": 8800,
+    "tokenEnv": "PISA_MGMT_TOKEN"
+  },
   "github": {
     "enabled": false,
     "intervalSec": 120,

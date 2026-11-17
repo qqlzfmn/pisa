@@ -291,6 +291,20 @@ export class Store {
     return res.changes > 0;
   }
 
+  /**
+   * 重试：失败/取消的任务回到排队，清空上一轮执行痕迹。
+   * 保留 branch：任务自建分支可能已删，工作副本按同名分支重建；共享分支继续复用。
+   */
+  requeue(id: string): boolean {
+    const res = this.db.run(
+      `UPDATE tasks SET status = 'queued', started_at = NULL, ended_at = NULL, error = NULL,
+         cancel_requested = 0, session_id = NULL, summary = NULL
+       WHERE id = ? AND status IN ('failed','cancelled')`,
+      [id],
+    );
+    return res.changes > 0;
+  }
+
   isCancelRequested(id: string): boolean {
     const row = this.db.query("SELECT cancel_requested FROM tasks WHERE id = ?").get(id) as { cancel_requested: number } | null;
     return row?.cancel_requested === 1;
