@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   session_id       TEXT,
   base_ref         TEXT,
   context          TEXT,
+  follow_up        INTEGER NOT NULL DEFAULT 0,
   reply_pr         INTEGER,
   reply_issue      INTEGER,
   reply_repo       TEXT,
@@ -70,6 +71,7 @@ interface Row {
   session_id: string | null;
   base_ref: string | null;
   context: string | null;
+  follow_up: number;
   reply_pr: number | null;
   reply_issue: number | null;
   reply_repo: string | null;
@@ -96,6 +98,7 @@ function toTask(r: Row): Task {
     sessionId: r.session_id,
     baseRef: r.base_ref,
     context: r.context,
+    followUp: r.follow_up === 1,
     replyPr: r.reply_pr,
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
@@ -135,6 +138,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "follow_up")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN follow_up INTEGER NOT NULL DEFAULT 0");
     }
   }
 
@@ -191,8 +197,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, follow_up, reply_pr, reply_issue, reply_repo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -207,6 +213,7 @@ export class Store {
         t.createdAt,
         t.baseRef,
         t.context,
+        t.followUp ? 1 : 0,
         t.replyPr,
         t.replyIssue,
         t.replyRepo,
@@ -248,8 +255,16 @@ export class Store {
     );
   }
 
-  nextQueued(): Task | null {
-    const row = this.db.query("SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at LIMIT 1").get() as Row | null;
+  /**
+   * 出队：task 只取新任务，human 只取追问，any 混排（共用车道时用）。
+   * 各车道内部仍按创建时间先进先出。
+   */
+  nextQueued(lane: "task" | "human" | "any" = "any"): Task | null {
+    const sql =
+      lane === "any"
+        ? "SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at LIMIT 1"
+        : "SELECT * FROM tasks WHERE status = 'queued' AND follow_up = ? ORDER BY created_at LIMIT 1";
+    const row = (lane === "any" ? this.db.query(sql).get() : this.db.query(sql).get(lane === "human" ? 1 : 0)) as Row | null;
     return row ? toTask(row) : null;
   }
 

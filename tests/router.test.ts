@@ -38,7 +38,7 @@ function makeCfg(repoPath: string, stateDir: string): Config {
     dmWithoutTrigger: true,
     whitelist: { users: ["u1"], repos: ["demo"] },
     repos: [{ alias: "demo", path: repoPath, baseBranch: "main" }],
-    worker: { adapter: "omp", command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1 },
+    worker: { adapter: "omp", command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1, humanSlots: 0 },
     delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
     channels: { cli: true },
     stateDir,
@@ -147,6 +147,16 @@ describe("Router", () => {
     return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel, now });
   }
 
+  /** 等到条件成立；槽位补位由真实定时器驱动，属集成场景 */
+  async function until(pred: () => boolean, ms = 2000): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (pred()) return;
+      await Bun.sleep(10);
+    }
+    throw new Error("等待超时");
+  }
+
   /** 直接落一条任务，用于构造续跑/占用场景 */
   function seedTask(over: Partial<Task> & { id: string }): Task {
     const { id, ...rest } = over;
@@ -164,6 +174,7 @@ describe("Router", () => {
       sessionId: null,
       baseRef: null,
       context: null,
+      followUp: false,
       replyPr: null,
       replyIssue: null,
       replyRepo: null,
@@ -433,6 +444,83 @@ describe("Router", () => {
     expect(spans[1]![0]).toBeGreaterThanOrEqual(spans[0]![1] - 5);
   });
 
+  test("满槽时追问占保留槽位执行，新任务仍排队", async () => {
+    cfg.worker.concurrency = 2;
+    cfg.worker.humanSlots = 1;
+    const gates: Array<() => void> = [];
+    const blocking: WorkerRunner = {
+      async run(_t, workdir): Promise<WorkerResult> {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        gates.push(resolve);
+        await promise;
+        writeFileSync(join(workdir, "out.txt"), "hi\n");
+        return { ok: true, summary: "ok", exitCode: 0 };
+      },
+    };
+    const router = build(blocking);
+    seedTask({ id: "t_parent", status: "succeeded", branch: "pisa/t_parent", endedAt: 1 });
+    sh(["git", "-C", repo, "branch", "pisa/t_parent"]);
+
+    await router.handle(msg("/pisa 长任务 A"));
+    await router.handle(msg("/pisa 长任务 B"));
+    router.start(10);
+    await until(() => store.runningTasks().length === 2);
+    expect(router.slots()).toEqual({ limit: 2, used: 2, humanLimit: 1, humanUsed: 0 });
+
+    // 新任务不能用空闲的追问槽位
+    await router.handle(msg("/pisa 新任务 C"));
+    const queued = store.recentTasks().find((t) => t.prompt === "新任务 C")!;
+    await Bun.sleep(60);
+    expect(store.get(queued.id)?.status).toBe("queued");
+
+    // 人的追问占用额外槽位，立即执行
+    await router.handle(msg("/pisa continue t_parent 追问：补一条测试"));
+    const followUp = store.recentTasks().find((t) => t.prompt.startsWith("追问"))!;
+    await until(() => store.get(followUp.id)?.status === "running");
+    expect(store.get(followUp.id)?.followUp).toBe(true);
+    expect(router.slots()).toEqual({ limit: 2, used: 2, humanLimit: 1, humanUsed: 1 });
+    expect(store.get(queued.id)?.status).toBe("queued");
+
+    // 追问槽位只有一个：第二条追问排队
+    await router.handle(msg("/pisa continue t_parent 第二条追问"));
+    const second = store.recentTasks().find((t) => t.prompt === "第二条追问")!;
+    await Bun.sleep(60);
+    expect(store.get(second.id)?.status).toBe("queued");
+
+    await router.handle(msg("/pisa status"));
+    const board = channel.sent.at(-1)!.text;
+    expect(board).toContain("槽位：主 2/2 · 追问 1/1");
+    expect(board).toContain("主槽位已满（2/2），等运行中的任务结束");
+    expect(board).toContain("追问槽位已满（1/1），等运行中的任务结束");
+
+    await router.stop(50);
+    gates.splice(0).forEach((g) => g());
+  });
+
+  test("humanSlots=0 时追问与普通任务共用主槽位队列", async () => {
+    cfg.worker.concurrency = 1;
+    cfg.worker.humanSlots = 0;
+    const order: string[] = [];
+    const slow: WorkerRunner = {
+      async run(task, workdir): Promise<WorkerResult> {
+        order.push(task.prompt);
+        await Bun.sleep(20);
+        writeFileSync(join(workdir, "out.txt"), "hi\n");
+        return { ok: true, summary: "ok", exitCode: 0 };
+      },
+    };
+    const router = build(slow);
+    seedTask({ id: "t_parent", status: "succeeded", branch: "pisa/t_parent", endedAt: 1 });
+    sh(["git", "-C", repo, "branch", "pisa/t_parent"]);
+    await router.handle(msg("/pisa 新任务 A"));
+    await router.handle(msg("/pisa continue t_parent 追问 B"));
+
+    await router.drainOnce();
+
+    expect(order).toEqual(["新任务 A", "追问 B"]);
+    expect(router.slots().humanUsed).toBe(0);
+  });
+
   test("continue 继承上一个任务的会话", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 第一个任务"));
@@ -533,7 +621,8 @@ describe("Router", () => {
     expect(text).toContain(longPrompt.slice(0, 40));
     expect(text).not.toContain(longPrompt);
     expect(text).toContain("排队（1）");
-    expect(text).toContain("t_queued · demo · 排队中的事");
+    expect(text).toContain("槽位：主 1/1（无追问保留，共用队列）");
+    expect(text).toContain("t_queued · demo · 主槽位已满（1/1），等运行中的任务结束 · 排队中的事");
     expect(text).toContain("成功 · 4m0s · demo · 加一条校验 · https://github.com/o/r/pull/12");
     expect(text).toContain("汇总：3 个任务 · 成功 1 · 失败 0 · 暂停 0");
   });
@@ -764,6 +853,7 @@ describe("状态机", () => {
     sessionId: null,
     baseRef: null,
     context: null,
+    followUp: false,
     replyPr: null,
     replyIssue: null,
     replyRepo: null,

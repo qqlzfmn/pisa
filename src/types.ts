@@ -51,6 +51,8 @@ export interface Task {
   baseRef: string | null;
   /** 上一轮任务的上下文，注入 Worker 提示词 */
   context: string | null;
+  /** 人的追问（continue / 回复消息）：走追问槽位，不与新任务抢主槽位 */
+  followUp: boolean;
   /** 任务完成后回帖到该 PR；null 表示不回帖 */
   replyPr: number | null;
   /** 任务完成后回帖到该 Issue；null 表示不回帖 */

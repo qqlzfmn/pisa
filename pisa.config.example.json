@@ -17,7 +17,8 @@
     "command": "omp",
     "timeoutSec": 3600,
     "extraArgs": [],
-    "concurrency": 2
+    "concurrency": 2,
+    "humanSlots": 1
   },
   "delivery": {
     "push": false,

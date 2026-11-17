@@ -16,6 +16,7 @@ const task: Task = {
   sessionId: null,
   baseRef: null,
   context: null,
+  followUp: false,
   replyPr: null,
   replyIssue: null,
   replyRepo: null,
@@ -32,7 +33,7 @@ const input = {
   workdir: "/tmp/wt",
   extensionPath: "/tmp/ext.ts",
   progressFile: "/tmp/p.jsonl",
-  cfg: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1 },
+  cfg: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1, humanSlots: 0 },
 };
 
 describe("WorkerAdapter", () => {

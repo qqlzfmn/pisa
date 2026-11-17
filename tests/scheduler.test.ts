@@ -10,7 +10,7 @@ function cfg(over: Partial<Config> = {}): Config {
     dmWithoutTrigger: true,
     whitelist: { users: ["u1"], repos: ["demo"] },
     repos: [],
-    worker: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1 },
+    worker: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1, humanSlots: 0 },
     delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
     channels: { cli: true },
     scheduler: { chatId: "c1", userId: "u1" },
