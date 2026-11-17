@@ -54,6 +54,8 @@ PISA 要把这层限制从人身上移到系统里：会话管理、上下文同
 
 ## 架构
 
+下图是参考架构（来源见「致谢」）。pisa 当前实现是确定性 Router、单级程序过滤、单机存储，实现与这张图的差异及理由见 [docs/architecture.md](./docs/architecture.md)。
+
 ```
               IM / GitHub / 邮件 / CI / 定时器
                             │
@@ -97,6 +99,7 @@ pisa/
 ├── README.md
 ├── docs/
 │   ├── constitution.md    # 项目宪法：不可协商的架构与质量约束
+│   ├── architecture.md    # 分层、状态机、数据流、扩展点、失败模式
 │   └── specs/             # 每个 feature 一个目录：spec / plan / tasks
 ├── src/                   # Router、任务调度、事件总线
 ├── extensions/            # pi 扩展：进度上报 + 策略拦截
@@ -367,7 +370,7 @@ specify → plan → tasks → implement → converge
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 89 个全绿；`tsc --noEmit` 无报错
+- 测试 130 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：
