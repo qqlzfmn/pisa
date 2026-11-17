@@ -270,7 +270,7 @@ describe("GitHub 评论 → 任务", () => {
     const { w } = watcher(runner);
     await w.poll();
 
-    const tasks = store.recent();
+    const tasks = store.recentTasks();
     expect(tasks.length).toBe(1);
     expect(tasks[0]!.prompt).toBe("修一下登录");
     expect(tasks[0]!.replyIssue).toBe(20);
@@ -294,7 +294,7 @@ describe("GitHub 评论 → 任务", () => {
     const { w } = watcher(runner);
     await w.poll();
     await w.poll();
-    expect(store.recent().length).toBe(1);
+    expect(store.recentTasks().length).toBe(1);
   });
 
   test("类型判定失败不投递，也不推进下界", async () => {
@@ -310,13 +310,13 @@ describe("GitHub 评论 → 任务", () => {
     const { w } = watcher(runner, () => clock);
 
     await w.poll();
-    expect(store.recent().length).toBe(0);
+    expect(store.recentTasks().length).toBe(0);
 
     typeBroken = false;
     clock += 60_000;
     await w.poll();
-    expect(store.recent().length).toBe(1);
-    expect(store.recent()[0]!.replyIssue).toBe(20);
+    expect(store.recentTasks().length).toBe(1);
+    expect(store.recentTasks()[0]!.replyIssue).toBe(20);
     // 失败那一轮不推进：两轮的下界相同
     expect(listCall(calls)[2]).toBe(calls[0]![2]);
   });
@@ -339,7 +339,7 @@ describe("GitHub 评论 → 任务", () => {
     const { w } = watcher(runner);
     await w.poll();
 
-    const child = store.recent().find((t) => t.prompt === "再改一处")!;
+    const child = store.recentTasks().find((t) => t.prompt === "再改一处")!;
     expect(child).toBeDefined();
     expect(child.baseRef).toBe("pisa/t_parent");
     // 评论续跑落在父任务分支与原 PR 上，不新开分支/PR
@@ -380,7 +380,7 @@ describe("GitHub 评论 → 任务", () => {
       replyPr: 12,
     });
 
-    const child = store.recent()[0]!;
+    const child = store.recentTasks()[0]!;
     expect(child.branch).toBe("pisa/t_parent");
     expect(child.prUrl).toBe("https://github.com/o/r/pull/12");
 
@@ -403,7 +403,7 @@ describe("GitHub 评论 → 任务", () => {
     const { w } = watcher(runner);
     await w.poll();
 
-    const task = store.recent()[0]!;
+    const task = store.recentTasks()[0]!;
     expect(task.prompt).toBe("补一条测试");
     expect(task.baseRef).toBeNull();
     expect(task.context).toBeNull();
@@ -424,12 +424,12 @@ describe("GitHub 评论 → 任务", () => {
     const { w } = watcher(runner, () => clock);
 
     await w.poll();
-    expect(store.recent().length).toBe(0);
+    expect(store.recentTasks().length).toBe(0);
 
     listBroken = false;
     clock += 60_000;
     await w.poll();
-    expect(store.recent().length).toBe(1);
+    expect(store.recentTasks().length).toBe(1);
     // 失败那一轮不推进：两轮的下界相同
     expect(listCall(calls)[2]).toBe(calls[0]![2]);
     expect(calls[0]![2]).toContain("since=2023-11-14T22%3A13%3A20.000Z");
@@ -455,7 +455,7 @@ describe("GitHub 评论 → 任务", () => {
     });
     await router.drainOnce();
 
-    expect(store.recent()[0]!.status).toBe("succeeded");
+    expect(store.recentTasks()[0]!.status).toBe("succeeded");
     expect(calls).toEqual([["gh", "pr", "comment", "12", "--repo", "o/r", "--body", `${HEADER}改好了`]]);
   });
 
@@ -479,7 +479,7 @@ describe("GitHub 评论 → 任务", () => {
     });
     await router.drainOnce();
 
-    const task = store.recent()[0]!;
+    const task = store.recentTasks()[0]!;
     expect(task.status).toBe("succeeded");
     expect(task.replyIssue).toBe(20);
     expect(calls).toEqual([["gh", "issue", "comment", "20", "--repo", "o/r", "--body", `${HEADER}改好了`]]);
@@ -504,7 +504,7 @@ describe("GitHub 评论 → 任务", () => {
     });
     await router.drainOnce();
 
-    const task = store.recent()[0]!;
+    const task = store.recentTasks()[0]!;
     expect(task.status).toBe("succeeded");
     const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
     expect(log).toContain("Issue #20 回帖失败");
@@ -535,7 +535,7 @@ describe("GitHub 评论 → 任务", () => {
     });
     await router.drainOnce();
 
-    const task = store.recent()[0]!;
+    const task = store.recentTasks()[0]!;
     expect(task.status).toBe("succeeded");
     const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
     expect(log).toContain("回帖失败");
@@ -563,7 +563,7 @@ describe("GitHub 评论 → 任务", () => {
     });
     await router.drainOnce();
 
-    expect(store.recent()[0]!.status).toBe("succeeded");
+    expect(store.recentTasks()[0]!.status).toBe("succeeded");
     expect(calls).toEqual([]);
   });
 });

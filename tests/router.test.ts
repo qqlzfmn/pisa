@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store";
-import { Router } from "../src/router";
+import { Router, formatDuration } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
 import { parseCommand, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
@@ -84,6 +84,24 @@ describe("parseCommand", () => {
   });
 });
 
+describe("formatDuration", () => {
+  test("不足 1 分钟显示秒", () => {
+    expect(formatDuration(42_000)).toBe("42s");
+    expect(formatDuration(59_999)).toBe("59s");
+  });
+
+  test("不足 1 小时显示 XmYs", () => {
+    expect(formatDuration(60_000)).toBe("1m0s");
+    expect(formatDuration(192_000)).toBe("3m12s");
+    expect(formatDuration(3_599_999)).toBe("59m59s");
+  });
+
+  test("1 小时以上显示 XhYm", () => {
+    expect(formatDuration(3_600_000)).toBe("1h0m");
+    expect(formatDuration(7_500_000)).toBe("2h5m");
+  });
+});
+
 describe("Router", () => {
   let repo: string;
   let stateDir: string;
@@ -105,8 +123,8 @@ describe("Router", () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  function build(worker: WorkerRunner) {
-    return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel });
+  function build(worker: WorkerRunner, now?: () => number) {
+    return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel, now });
   }
 
   /** 直接落一条任务，用于构造续跑/占用场景 */
@@ -160,7 +178,7 @@ describe("Router", () => {
       const router = build(okWorker);
       await router.handle(msg("/pisa @family 做X"));
 
-      const task = store.recent()[0]!;
+      const task = store.recentTasks()[0]!;
       expect(task.repo).toBe("family");
       expect(task.prompt).toBe("做X");
       expect(channel.sent.some((s) => s.text.includes("仓库：family"))).toBe(true);
@@ -170,7 +188,7 @@ describe("Router", () => {
       const router = build(okWorker);
       await router.handle(msg("@family 做X", { isDirect: true }));
 
-      const task = store.recent()[0]!;
+      const task = store.recentTasks()[0]!;
       expect(task.repo).toBe("family");
       expect(task.prompt).toBe("做X");
     });
@@ -179,7 +197,7 @@ describe("Router", () => {
       const router = build(okWorker);
       await router.handle(msg("/pisa @nope 做X"));
 
-      const task = store.recent()[0]!;
+      const task = store.recentTasks()[0]!;
       expect(task.repo).toBe("demo");
       expect(task.prompt).toBe("@nope 做X");
     });
@@ -188,7 +206,7 @@ describe("Router", () => {
       const router = build(okWorker);
       await router.handle(msg("@nope 做X", { isDirect: true }));
 
-      const task = store.recent()[0]!;
+      const task = store.recentTasks()[0]!;
       expect(task.repo).toBe("demo");
       expect(task.prompt).toBe("@nope 做X");
     });
@@ -206,7 +224,7 @@ describe("Router", () => {
       const router = build(okWorker);
       await router.handle(msg(`/pisa @demo continue ${parent.id} 再改一处`));
 
-      const task = store.recent()[0]!;
+      const task = store.recentTasks()[0]!;
       expect(task.repo).toBe("family");
       expect(task.baseRef).toBe("pisa/parent");
       expect(task.prompt).toBe("再改一处");
@@ -216,26 +234,28 @@ describe("Router", () => {
   test("私聊不带触发词也能建任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("把登录超时改成 30 分钟", { isDirect: true }));
-    expect(store.recent()[0]?.prompt).toBe("把登录超时改成 30 分钟");
+    expect(store.recentTasks()[0]?.prompt).toBe("把登录超时改成 30 分钟");
   });
 
   test("群聊仍然需要触发词", async () => {
     const router = build(okWorker);
     await router.handle(msg("把登录超时改成 30 分钟", { isDirect: false }));
-    expect(store.recent().length).toBe(0);
+    expect(store.recentTasks().length).toBe(0);
   });
 
   test("私聊 /status 不走任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("/status", { isDirect: true }));
-    expect(store.recent().length).toBe(0);
-    expect(channel.sent.some((s) => s.text.includes("还没有任务"))).toBe(true);
+    expect(store.recentTasks().length).toBe(0);
+    const text = channel.sent.at(-1)!.text;
+    expect(text).toContain("运行中\n(无)");
+    expect(text).toContain("汇总：0 个任务 · 成功 0 · 失败 0 · 暂停 0");
   });
 
   test("非白名单用户被拒，且不建任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 做点事", { userId: "stranger" }));
-    expect(store.recent().length).toBe(0);
+    expect(store.recentTasks().length).toBe(0);
     expect(channel.sent[0]?.text).toContain("无权限");
   });
 
@@ -244,18 +264,18 @@ describe("Router", () => {
     const m = msg("/pisa 做点事");
     await router.handle(m);
     await router.handle(m);
-    expect(store.recent().length).toBe(1);
+    expect(store.recentTasks().length).toBe(1);
   });
 
   test("完整链路：接单 → 执行 → 提交到分支，主分支不变", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 新建 out.txt"));
-    expect(store.recent()[0]?.status).toBe("queued");
+    expect(store.recentTasks()[0]?.status).toBe("queued");
 
     const ran = await router.drainOnce();
     expect(ran).toBe(true);
 
-    const task = store.recent()[0]!;
+    const task = store.recentTasks()[0]!;
     expect(task.status).toBe("succeeded");
     expect(task.branch).toBe(`pisa/${task.id}`);
 
@@ -333,7 +353,7 @@ describe("Router", () => {
     await router.handle(msg("/pisa 改坏它"));
     await router.drainOnce();
 
-    const task = store.recent()[0]!;
+    const task = store.recentTasks()[0]!;
     expect(task.status).toBe("failed");
     expect(task.error).toContain("编译失败");
     expect(sh(["git", "-C", repo, "rev-parse", "--verify", task.branch!]).code).not.toBe(0);
@@ -368,7 +388,7 @@ describe("Router", () => {
     expect(starts.length).toBe(2);
     expect(Math.abs(starts[0]! - starts[1]!)).toBeLessThan(200);
     expect(total).toBeLessThan(400);
-    expect(store.recent().every((t) => t.status === "succeeded")).toBe(true);
+    expect(store.recentTasks().every((t) => t.status === "succeeded")).toBe(true);
   });
 
   test("并发 1：第二个任务等第一个结束", async () => {
@@ -395,12 +415,12 @@ describe("Router", () => {
   test("continue 继承上一个任务的会话", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 第一个任务"));
-    const parent = store.recent()[0]!;
+    const parent = store.recentTasks()[0]!;
     store.transition(parent.id, "running", { branch: "pisa/parent", startedAt: Date.now() });
     store.transition(parent.id, "succeeded", { summary: "建了 a.txt", endedAt: Date.now() });
 
     await router.handle(msg(`/pisa continue ${parent.id} 再改一处`));
-    const child = store.recent()[0]!;
+    const child = store.recentTasks()[0]!;
     expect(child.baseRef).toBe("pisa/parent");
     expect(child.context).toContain(parent.id);
     expect(child.prompt).toBe("再改一处");
@@ -409,7 +429,7 @@ describe("Router", () => {
   test("continue 找不到任务时拒绝", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa continue t_missing 再改"));
-    expect(store.recent().length).toBe(0);
+    expect(store.recentTasks().length).toBe(0);
     expect(channel.sent[0]?.text).toContain("找不到任务");
   });
 
@@ -421,7 +441,7 @@ describe("Router", () => {
       const router = build(okWorker);
       await router.handle(msg("/pisa 新建 out.txt"));
       await router.drainOnce();
-      const id = store.recent()[0]!.id;
+      const id = store.recentTasks()[0]!.id;
 
       await router.handle(msg(`/pisa merge ${id}`));
       expect(channel.sent.some((s) => s.text.includes("已合并"))).toBe(true);
@@ -435,11 +455,11 @@ describe("Router", () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 第一轮"));
     await router.drainOnce();
-    const parent = store.recent()[0]!;
+    const parent = store.recentTasks()[0]!;
     store.linkMessage("c1", "9001", parent.id);
 
     await router.handle(msg("再加一行", { replyToMessageId: 9001 }));
-    const child = store.recent()[0]!;
+    const child = store.recentTasks()[0]!;
     expect(child.id).not.toBe(parent.id);
     expect(child.baseRef).toBe(parent.branch);
     expect(child.prompt).toBe("再加一行");
@@ -464,7 +484,7 @@ describe("Router", () => {
 
     await router2.handle(msg("/pisa 推一个提交"));
     await router2.drainOnce();
-    const t = store.recent()[0]!;
+    const t = store.recentTasks()[0]!;
     expect(t.status).toBe("succeeded");
     expect(sh(["git", "--git-dir", bare, "rev-parse", "--verify", t.branch!]).code).toBe(0);
 
@@ -472,17 +492,42 @@ describe("Router", () => {
     rmSync(bare, { recursive: true, force: true });
   });
 
-  test("status 列出最近任务", async () => {
-    const router = build(okWorker);
-    await router.handle(msg("/pisa 做点事"));
+  test("status 看板：运行中 + PR 链接 + 汇总", async () => {
+    const now = 1_700_000_000_000;
+    const longPrompt = "把登录超时从 5 分钟改成 30 分钟并补一条回归测试覆盖超时分支，同时确认失败重试与日志输出都符合预期";
+    seedTask({ id: "t_running", prompt: longPrompt, createdAt: now - 200_000 });
+    expect(store.claimQueued("t_running", now - 192_000, "pisa/t_running")).toBe(true);
+    seedTask({ id: "t_queued", prompt: "排队中的事", createdAt: now - 100_000 });
+    seedTask({ id: "t_done", repo: "demo", prompt: "加一条校验", createdAt: now - 600_000 });
+    expect(store.claimQueued("t_done", now - 590_000, "pisa/t_done")).toBe(true);
+    expect(
+      store.transition("t_done", "succeeded", { endedAt: now - 350_000, prUrl: "https://github.com/o/r/pull/12" }),
+    ).toBe(true);
+
+    const router = build(okWorker, () => now);
     await router.handle(msg("/pisa status"));
-    expect(channel.sent.some((s) => s.text.includes("最近") && s.text.includes("queued"))).toBe(true);
+
+    const text = channel.sent.at(-1)!.text;
+    expect(text).toContain("t_running · demo · 已运行 3m12s");
+    expect(text).toContain(longPrompt.slice(0, 40));
+    expect(text).not.toContain(longPrompt);
+    expect(text).toContain("排队（1）");
+    expect(text).toContain("t_queued · demo · 排队中的事");
+    expect(text).toContain("成功 · 4m0s · demo · 加一条校验 · https://github.com/o/r/pull/12");
+    expect(text).toContain("汇总：3 个任务 · 成功 1 · 失败 0 · 暂停 0");
+  });
+
+  test("recentTasks 限制数量并按创建时间倒序", () => {
+    seedTask({ id: "t_a", createdAt: 100 });
+    seedTask({ id: "t_b", createdAt: 200 });
+    seedTask({ id: "t_c", createdAt: 300 });
+    expect(store.recentTasks(2).map((t) => t.id)).toEqual(["t_c", "t_b"]);
   });
 
   test("排队中的任务可以取消", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 待办"));
-    const id = store.recent()[0]!.id;
+    const id = store.recentTasks()[0]!.id;
     await router.handle(msg(`/pisa cancel ${id}`));
 
     expect(store.get(id)?.status).toBe("cancelled");
@@ -493,8 +538,8 @@ describe("Router", () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 任务 A"));
     await router.handle(msg("/pisa 任务 B"));
-    const a = store.recent().find((t) => t.prompt === "任务 A")!;
-    const b = store.recent().find((t) => t.prompt === "任务 B")!;
+    const a = store.recentTasks().find((t) => t.prompt === "任务 A")!;
+    const b = store.recentTasks().find((t) => t.prompt === "任务 B")!;
 
     const workdirA = join(stateDir, "worktrees", a.id);
     expect(store.claimQueued(a.id, Date.now(), `pisa/${a.id}`)).toBe(true);
@@ -521,7 +566,7 @@ describe("Router", () => {
     };
     const router = build(resumable);
     await router.handle(msg("/pisa 新建 out.txt"));
-    const task = store.recent()[0]!;
+    const task = store.recentTasks()[0]!;
     const branch = `pisa/${task.id}`;
     const workdir = join(stateDir, "worktrees", task.id);
 
@@ -544,7 +589,7 @@ describe("Router", () => {
   test("resume 拒绝未中断、非本人、无工作副本的请求", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 待办"));
-    const task = store.recent()[0]!;
+    const task = store.recentTasks()[0]!;
 
     // 还在排队，不是中断状态
     await router.handle(msg(`/pisa resume ${task.id}`));
@@ -570,7 +615,7 @@ describe("Router", () => {
   test("paused 的任务可以取消", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 待办"));
-    const task = store.recent()[0]!;
+    const task = store.recentTasks()[0]!;
     expect(store.claimQueued(task.id, Date.now(), `pisa/${task.id}`)).toBe(true);
     expect(store.transition(task.id, "paused")).toBe(true);
 
@@ -591,7 +636,7 @@ describe("Router", () => {
     };
     const router = build(worker);
     await router.handle(msg("/pisa 关停测试"));
-    const task = store.recent()[0]!;
+    const task = store.recentTasks()[0]!;
 
     const drain = router.drainOnce();
     await started.promise;
@@ -610,7 +655,7 @@ describe("Router", () => {
   test("stop() 之后不再调度新任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 排队任务"));
-    const task = store.recent()[0]!;
+    const task = store.recentTasks()[0]!;
 
     await router.stop();
     expect(await router.drainOnce()).toBe(false);

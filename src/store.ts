@@ -247,15 +247,41 @@ export class Store {
     return row?.cancel_requested === 1;
   }
 
-  /** 遗留的执行中任务；启动时由 Router 分流为 paused 或 failed */
-  listRunning(): Task[] {
+  /** 执行中任务；启动恢复（分流为 paused / failed）与看板共用 */
+  runningTasks(): Task[] {
     const rows = this.db.query("SELECT * FROM tasks WHERE status = 'running' ORDER BY created_at").all() as Row[];
     return rows.map(toTask);
   }
 
-  recent(limit = 10): Task[] {
+  /** 排队任务，先来先跑 */
+  queuedTasks(): Task[] {
+    const rows = this.db.query("SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at").all() as Row[];
+    return rows.map(toTask);
+  }
+
+  /** 按创建时间倒序取任务，不筛状态 */
+  recentTasks(limit = 10): Task[] {
     const rows = this.db.query("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?").all(limit) as Row[];
     return rows.map(toTask);
+  }
+
+  /** 终态任务，按创建时间倒序；看板「最近完成」用，先筛后限避免被未完成任务挤掉 */
+  recentFinished(limit = 5): Task[] {
+    const rows = this.db
+      .query("SELECT * FROM tasks WHERE status IN ('succeeded','failed','cancelled') ORDER BY created_at DESC LIMIT ?")
+      .all(limit) as Row[];
+    return rows.map(toTask);
+  }
+
+  /** 各状态任务数；看板汇总行用 */
+  countByStatus(): Record<TaskStatus, number> {
+    const rows = this.db.query("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").all() as Array<{
+      status: TaskStatus;
+      n: number;
+    }>;
+    const counts: Record<TaskStatus, number> = { queued: 0, running: 0, paused: 0, succeeded: 0, failed: 0, cancelled: 0 };
+    for (const r of rows) counts[r.status] = r.n;
+    return counts;
   }
 
   close(): void {
