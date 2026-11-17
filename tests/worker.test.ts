@@ -89,13 +89,18 @@ describe("loadConfig · worker.envAllow", () => {
   });
 });
 
+/** omp 适配器会追加 -e/--mode 等参数，env 本身无法接收，用包装脚本代替 */
+function envPrinter(dir: string): string {
+  const path = join(dir, "printenv.sh");
+  writeFileSync(path, "#!/bin/sh\nexec env\n");
+  chmodSync(path, 0o755);
+  return path;
+}
+
 describe("Worker.run", () => {
   test("子进程拿不到未放行的凭据，但保留白名单变量与适配器注入的 PISA_*", async () => {
     const dir = tempDir();
-    // env 本身无法接收 omp 适配器追加的 -e/--mode 等参数，用包装脚本代替直接执行 env
-    const printEnv = join(dir, "printenv.sh");
-    writeFileSync(printEnv, "#!/bin/sh\nexec env\n");
-    chmodSync(printEnv, 0o755);
+    const printEnv = envPrinter(dir);
 
     const saved = {
       token: process.env.PISA_TELEGRAM_TOKEN,
@@ -120,6 +125,45 @@ describe("Worker.run", () => {
       expect(out).toMatch(/^HOME=/m);
       expect(out).toMatch(/^PISA_WORKDIR=/m);
       expect(out).toMatch(/^PISA_PROGRESS_FILE=/m);
+    } finally {
+      if (saved.token === undefined) delete process.env.PISA_TELEGRAM_TOKEN;
+      else process.env.PISA_TELEGRAM_TOKEN = saved.token;
+      if (saved.gh === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = saved.gh;
+    }
+  });
+
+  test("配置里显式放行的键会进子进程，未放行的仍被挡，且默认清单被整体替换", async () => {
+    const dir = tempDir();
+    const saved = {
+      token: process.env.PISA_TELEGRAM_TOKEN,
+      gh: process.env.GH_TOKEN,
+    };
+    process.env.PISA_TELEGRAM_TOKEN = "TG_SECRET";
+    process.env.GH_TOKEN = "GH_SECRET";
+    try {
+      const lines: string[] = [];
+      const worker = new Worker(
+        {
+          adapter: "omp",
+          command: envPrinter(dir),
+          timeoutSec: 30,
+          extraArgs: [],
+          concurrency: 1,
+          envAllow: ["PATH", "GH_TOKEN"],
+        },
+        join(dir, "state"),
+      );
+      const result = await worker.run(task, dir, (line) => lines.push(line), () => false);
+      const out = lines.join("\n");
+
+      expect(process.env.PISA_TELEGRAM_TOKEN).toBe("TG_SECRET");
+      expect(result.ok).toBe(true);
+      expect(out).toMatch(/^GH_TOKEN=GH_SECRET$/m);
+      expect(out).not.toContain("TG_SECRET");
+      // envAllow 是整体替换而非追加：HOME 在默认清单里，这里没放行就不该出现
+      expect(out).not.toMatch(/^HOME=/m);
+      expect(out).toMatch(/^PISA_WORKDIR=/m);
     } finally {
       if (saved.token === undefined) delete process.env.PISA_TELEGRAM_TOKEN;
       else process.env.PISA_TELEGRAM_TOKEN = saved.token;
