@@ -90,5 +90,6 @@
       "prompt": "自动探针失败，定位原因并修复。"
     }
   },
-  "stateDir": ".pisa"
+  "stateDir": ".pisa",
+  "retentionDays": 30
 }

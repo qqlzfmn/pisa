@@ -7,6 +7,7 @@ import { GitDeliverer } from "./deliver";
 import { Proactive } from "./proactive";
 import { GithubWatcher } from "./github-watcher";
 import { Scheduler } from "./scheduler";
+import { Retention } from "./retention";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import type { ChannelAdapter } from "./types";
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
   const proactive = new Proactive(cfg, (m) => router.handle(m));
   const githubWatcher = new GithubWatcher({ cfg, store, enqueue: (m) => router.handle(m) });
   const scheduler = new Scheduler({ cfg, store, enqueue: (m) => router.handle(m) });
+  const retention = new Retention({ cfg, store });
   await channel.start((m) => {
     proactive.observe(m);
     return router.handle(m);
@@ -76,6 +78,7 @@ async function main(): Promise<void> {
   proactive.start();
   githubWatcher.start();
   scheduler.start();
+  retention.start();
   if (gh?.enabled) {
     const watched = githubRepos(gh).map((r) => r.repo);
     console.log(`[pisa] GitHub 评论轮询已启用 · ${watched.join(", ") || "(无仓库)"}`);
@@ -128,6 +131,7 @@ async function main(): Promise<void> {
     proactive.stop();
     githubWatcher.stop();
     scheduler.stop();
+    retention.stop();
     await activeChannel.stop();
     store.close();
     process.exit(75);
