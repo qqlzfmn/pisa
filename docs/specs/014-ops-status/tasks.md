@@ -31,3 +31,7 @@
 
 - [x] T008 文档 (README)
       验证: 退出码表、巡检日志路径、手动验证命令与实现一致
+
+- [x] T009 配置无法解析时归为 `3` 待配置，不崩溃 (FR-005)
+      文件：`src/config.ts`、`src/health.ts`、`src/cli.ts`、`tests/health.test.ts`
+      验证: `loadConfigSafe` 返回 `error`；`inspect` 只报 `config-invalid`；CLI 子进程断言退出 `3`

@@ -90,16 +90,34 @@ function merge(base: Config, patch: Partial<Config>): Config {
   };
 }
 
-export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json"): Config {
+export interface ConfigLoad {
+  cfg: Config;
+  /** 文件存在但内容无法解析时的错误；文件缺失不算，交给健康检查判「待配置」 */
+  error: string | null;
+}
+
+/** 解析配置但不抛错：调用方需要把解析失败当作一种可报告的状态（pisa status） */
+export function loadConfigSafe(path = process.env.PISA_CONFIG ?? "pisa.config.json"): ConfigLoad {
   const abs = resolve(path);
   let cfg = DEFAULT_CONFIG;
+  let error: string | null = null;
   if (existsSync(abs)) {
-    cfg = merge(DEFAULT_CONFIG, JSON.parse(readFileSync(abs, "utf8")) as Partial<Config>);
+    try {
+      cfg = merge(DEFAULT_CONFIG, JSON.parse(readFileSync(abs, "utf8")) as Partial<Config>);
+    } catch (err) {
+      error = String((err as Error).message ?? err).slice(0, 200);
+    }
   }
   // 环境变量覆盖，便于容器与测试
   if (process.env.PISA_TRIGGER) cfg.trigger = process.env.PISA_TRIGGER;
   if (process.env.PISA_USERS) cfg.whitelist.users = process.env.PISA_USERS.split(",").map((s) => s.trim()).filter(Boolean);
   if (process.env.PISA_STATE_DIR) cfg.stateDir = process.env.PISA_STATE_DIR;
+  return { cfg, error };
+}
+
+export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json"): Config {
+  const { cfg, error } = loadConfigSafe(path);
+  if (error) throw new Error(`配置文件无法解析：${error}`);
   return cfg;
 }
 

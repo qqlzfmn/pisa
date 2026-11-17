@@ -82,6 +82,8 @@ export interface HealthDeps {
   cfg: Config;
   /** 配置文件绝对路径：缺文件说明还没配置 */
   configFile: string;
+  /** 配置文件存在但无法解析：直接判待配置，其余检查没有可信输入 */
+  configError?: string | null;
 }
 
 /**
@@ -89,8 +91,15 @@ export interface HealthDeps {
  * 配置不全（3）> 部件坏了（2）> 进程该重启（1）。
  */
 export function inspect(deps: HealthDeps): HealthReport {
-  const { cfg, configFile } = deps;
+  const { cfg, configFile, configError } = deps;
   const now = Date.now();
+  if (configError) {
+    return {
+      code: 3,
+      problems: [{ key: "config-invalid", message: `配置文件无法解析：${configError}` }],
+      checkedAt: now,
+    };
+  }
   const config: HealthProblem[] = [];
   const components: HealthProblem[] = [];
   const runner: HealthProblem[] = [];

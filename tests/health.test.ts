@@ -91,6 +91,14 @@ describe("inspect 四种退出码", () => {
     expect(r.problems.map((p) => p.key)).toContain("channel-none");
   });
 
+  test("配置无法解析 → 3，只报解析错误", () => {
+    repo();
+    const r = inspect({ cfg: cfg(), configFile: configFile(), configError: "Expected '}'" });
+    expect(r.code).toBe(3);
+    expect(r.problems.map((p) => p.key)).toEqual(["config-invalid"]);
+    expect(r.problems[0]!.message).toContain("无法解析");
+  });
+
   test("worker 命令不存在 → 2 部件错误", () => {
     repo();
     const c = cfg({ worker: { adapter: "omp", command: "pisa-no-such-worker", timeoutSec: 60, extraArgs: [], concurrency: 1 } });
@@ -215,6 +223,14 @@ describe("pisa status 命令", () => {
     const r = run(["status"]);
     expect(r.code).toBe(3);
     expect(r.out).toContain("待配置");
+  });
+
+  test("配置无法解析 → 3，不崩溃", () => {
+    writeFileSync(join(dir, "pisa.config.json"), "{bad json");
+    const r = run(["status"]);
+    expect(r.code).toBe(3);
+    expect(r.out).toContain("配置文件无法解析");
+    expect(r.err).toBe("");
   });
 
   test("部件错误 → 2", () => {

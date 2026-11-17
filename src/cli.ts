@@ -1,5 +1,6 @@
+#!/usr/bin/env bun
 import { resolve } from "node:path";
-import { loadConfig, type Config } from "./config";
+import { loadConfigSafe, type Config } from "./config";
 import { TelegramChannel } from "./channels/telegram";
 import { formatReport, inspect, shouldSpeak } from "./health";
 
@@ -30,8 +31,8 @@ async function status(args: string[]): Promise<number> {
     return 64;
   }
   const configFile = resolve(process.env.PISA_CONFIG ?? "pisa.config.json");
-  const cfg = loadConfig(configFile);
-  const report = inspect({ cfg, configFile });
+  const { cfg, error } = loadConfigSafe(configFile);
+  const report = inspect({ cfg, configFile, configError: error });
   const alert = args.includes("--alert");
 
   // 巡检模式先过一遍去重；手动查看每次完整输出
