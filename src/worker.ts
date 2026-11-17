@@ -70,7 +70,7 @@ export class Worker implements WorkerRunner {
       }
     }, 2000);
 
-    const texts: string[] = [];
+    let lastText = "";
     const rawTail: string[] = [];
 
     const pump = async (stream: ReadableStream<Uint8Array>, kind: "out" | "err") => {
@@ -92,7 +92,7 @@ export class Worker implements WorkerRunner {
             continue;
           }
           const parsed = this.adapter.parseLine(line);
-          if (parsed.text && texts[texts.length - 1] !== parsed.text) texts.push(parsed.text);
+          if (parsed.text && parsed.text !== lastText) lastText = parsed.text;
           if (parsed.raw) rawTail.push(parsed.raw);
           onLog(line.slice(0, 2000));
         }
@@ -112,7 +112,9 @@ export class Worker implements WorkerRunner {
     if (cancelled) return { ok: false, summary: "", error: "任务已取消", exitCode };
     if (timedOut) return { ok: false, summary: "", error: `执行超时（${this.cfg.timeoutSec}s）`, exitCode };
 
-    const summary = clip(redact((texts.join("\n\n") || rawTail.slice(-40).join("\n")).trim()), 4000);
+    // 摘要就是 Worker 的最后一条消息：提示词要求它把结论写在最后一条，
+    // 下游（下一轮上下文、评审、回帖）直接拿摘要当结论读，拼进过程闲聊会把结论挤出首行。
+    const summary = clip(redact((lastText || rawTail.slice(-40).join("\n")).trim()), 4000);
     if (exitCode !== 0) {
       const err = rawTail.slice(-20).join("\n") || `Worker 退出码 ${exitCode}`;
       return { ok: false, summary, error: redact(err).slice(0, 2000), exitCode };
