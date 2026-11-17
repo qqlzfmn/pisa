@@ -308,6 +308,12 @@ export class Store {
     return rows.map(toTask);
   }
 
+  /** 全部任务；对账要扫全量，不能依赖看板的截断 */
+  allTasks(): Task[] {
+    const rows = this.db.query("SELECT * FROM tasks ORDER BY created_at").all() as Row[];
+    return rows.map(toTask);
+  }
+
   /** 按创建时间倒序取任务，不筛状态 */
   recentTasks(limit = 10): Task[] {
     const rows = this.db.query("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?").all(limit) as Row[];

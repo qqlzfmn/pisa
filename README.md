@@ -133,6 +133,7 @@ bun run src/index.ts
 /pisa continue <任务号> <新要求>   从上一轮的分支和上下文继续做
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
+/pisa reconcile [任务号]          核对并清理残留（私聊可用 /reconcile）
 /pisa status                     任务看板（私聊可用 /status）
 ```
 
@@ -142,6 +143,12 @@ bun run src/index.ts
 - `/pisa rewind <任务号> --yes` 执行；已合并的任务用 `revert` 提交回退，不改写历史
 - `gh` 查不到 PR 状态时保留分支、不标记完成，修好后重发
 - 任务执行期间的其它外部调用（API、消息、数据库）不在账本内，无法撤销
+
+对账：
+
+- `/pisa reconcile` 只读扫描全部任务，列出本地分支、远程分支、worktree、PR 与任务记录的差异；无参数查全部，带任务号只查一个
+- `/pisa reconcile --fix` 清理失败/取消/已撤销任务与无主资源的残留；运行中任务的资源始终保留，成功任务的分支、远程分支和 PR 也保留
+- 资源确认已被删除时，`--fix` 同步清掉账本行；远程或 `gh` 不可用的部分只报「无法确认」，不做猜测
 
 误触保护：
 

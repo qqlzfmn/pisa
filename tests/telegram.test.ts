@@ -21,7 +21,7 @@ describe("TelegramChannel.setCommands", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe("https://api.telegram.org/bottok/setMyCommands");
     const names = calls[0]!.body.commands.map((c) => c.command).sort();
-    expect(names).toEqual(["cancel", "continue", "help", "merge", "resume", "rewind", "schedules", "status"]);
+    expect(names).toEqual(["cancel", "continue", "help", "merge", "reconcile", "resume", "rewind", "schedules", "status"]);
     expect(calls[0]!.body.commands.every((c) => c.description.length > 0)).toBe(true);
   });
 });

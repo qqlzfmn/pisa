@@ -67,14 +67,26 @@ export function pushBranch(workdir: string, branch: string): ExecResult {
   return sh(["git", "-C", workdir, "push", "-u", "origin", branch]);
 }
 
-/** 无 PR 能力时给一个可点的对比链接 */
-export function compareUrl(remote: string, base: string, branch: string): string | null {
-  if (!remote) return null;
+/** 远程地址拆成主机与路径：支持 git@host:path 与 http(s)://host/path */
+function splitRemote(remote: string): { host: string; path: string } | null {
   const ssh = remote.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
   const https = remote.match(/^https?:\/\/([^/]+)\/(.+?)(?:\.git)?$/);
   const host = ssh?.[1] ?? https?.[1];
   const path = (ssh?.[2] ?? https?.[2] ?? "").replace(/\.git$/, "");
-  if (!host || !path) return null;
+  return host && path ? { host, path } : null;
+}
+
+/** 远程地址里的 owner/repo；非托管形态返回 null */
+export function remoteRepo(remote: string): string | null {
+  const split = splitRemote(remote);
+  return split && /^[^/]+\/[^/]+$/.test(split.path) ? split.path : null;
+}
+
+/** 无 PR 能力时给一个可点的对比链接 */
+export function compareUrl(remote: string, base: string, branch: string): string | null {
+  const split = splitRemote(remote);
+  if (!split) return null;
+  const { host, path } = split;
   if (host.includes("github.com")) return `https://${host}/${path}/compare/${base}...${branch}?expand=1`;
   if (host.includes("cnb.cool")) return `https://${host}/${path}/-/compare/${base}...${branch}`;
   return `https://${host}/${path}/compare/${base}...${branch}`;

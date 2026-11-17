@@ -144,6 +144,7 @@ export type CommandKind =
   | "merge"
   | "resume"
   | "rewind"
+  | "reconcile"
   | "confirm";
 
 export interface CommandSpec {
@@ -166,6 +167,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "merge", alias: "合并", description: "把已完成任务合入主干", menu: true },
   { command: "resume", alias: "恢复", description: "恢复被中断的任务", menu: true },
   { command: "rewind", alias: "撤销", description: "预览并撤销任务副作用", menu: true },
+  { command: "reconcile", alias: "清理", description: "核对并清理任务残留", menu: true },
   { command: "confirm", alias: "确认", description: "确认被拦下的单英文词任务", menu: false },
 ];
 
@@ -187,6 +189,7 @@ const TAKES_BODY: Partial<Record<CommandKind, true>> = {
   merge: true,
   resume: true,
   rewind: true,
+  reconcile: true,
 };
 
 export interface ParsedCommand {

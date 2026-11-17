@@ -19,6 +19,14 @@ import {
   type Runner,
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import {
+  applyReconcile,
+  formatReconcilePlan,
+  formatReconcileResult,
+  localReconcileProbes,
+  planReconcile,
+  isTaskId,
+} from "./reconcile";
 import { TaskLogger } from "./log";
 
 export interface RouterDeps {
@@ -217,6 +225,7 @@ export class Router {
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
       else if (t === "/rewind" || t.startsWith("/rewind ")) cmd = { kind: "rewind", body: t.slice(7).trim() };
+      else if (t === "/reconcile" || t.startsWith("/reconcile ")) cmd = { kind: "reconcile", body: t.slice(10).trim() };
       else if (t && !t.startsWith("/")) cmd = { kind: "task", body: t };
       else if (t.startsWith("/")) {
         // 未知斜杠命令：只对可能是命令错拼的单词给提示，其余保持忽略
@@ -274,6 +283,7 @@ export class Router {
           `${cfg.trigger} continue <任务号> <新要求>  接着上一轮的分支做`,
           `${cfg.trigger} merge <任务号>     合并到主干（自举）`,
           `${cfg.trigger} rewind <任务号>    预览任务副作用（--yes 执行撤销）`,
+          `${cfg.trigger} reconcile [任务号]  核对并清理残留（--fix 执行清理）`,
           `${cfg.trigger} schedules      查看定时任务（私聊可用 /schedules）`,
           `${cfg.trigger} confirm        确认刚被拦下的单英文词任务`,
           `${cfg.trigger} help           本帮助（私聊可用 /help）`,
@@ -299,6 +309,11 @@ export class Router {
 
     if (cmd.kind === "rewind") {
       await this.handleRewind(msg, cmd.body);
+      return;
+    }
+
+    if (cmd.kind === "reconcile") {
+      await this.handleReconcile(msg, cmd.body);
       return;
     }
 
@@ -623,6 +638,40 @@ export class Router {
     }
     if (plan.merge !== "unknown" && results.every((r) => r.ok)) store.transition(id, "rewound");
     await this.reply(msg.chatId, formatRewindResult(plan, results));
+  }
+
+  /**
+   * `/pisa reconcile [任务号] [--fix]`：默认只列 DB 与磁盘/GitHub 的差异。
+   * 有 --fix 才执行；运行中任务的资源在 plan 阶段就被保留。
+   */
+  private async handleReconcile(msg: IncomingMessage, body: string): Promise<void> {
+    const { cfg, store } = this.deps;
+    if (!cfg.whitelist.users.includes(msg.userId)) {
+      await this.reply(msg.chatId, "无权限：该用户不在白名单。");
+      return;
+    }
+    const words = body.split(/\s+/).filter(Boolean);
+    const fix = words.includes("--fix");
+    const id = words.find((w) => !w.startsWith("--")) ?? "";
+    if (id && !isTaskId(id)) {
+      await this.reply(msg.chatId, `任务号无效：${id}\n用法：${cfg.trigger} reconcile [任务号] [--fix]`);
+      return;
+    }
+    const runner = this.deps.ghRunner ?? defaultRunner;
+    const probes = localReconcileProbes({ repos: cfg.repos, stateDir: cfg.stateDir, runner });
+    const plan = planReconcile({
+      tasks: store.allTasks(),
+      onlyTaskId: id || undefined,
+      repos: cfg.repos,
+      stateDir: cfg.stateDir,
+      probes,
+      effects: (taskId) => store.effectsOf(taskId),
+    });
+    if (!fix) {
+      await this.reply(msg.chatId, formatReconcilePlan(plan, cfg.trigger));
+      return;
+    }
+    await this.reply(msg.chatId, formatReconcileResult(plan, applyReconcile(plan, { runner, store })));
   }
 
   private async handleCancel(msg: IncomingMessage, body: string): Promise<void> {
