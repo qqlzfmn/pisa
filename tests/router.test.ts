@@ -179,6 +179,39 @@ describe("Router", () => {
     return task;
   }
 
+  describe("能力索引", () => {
+    test("/pisa examples 输出场景且不建任务", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa examples"));
+
+      expect(store.recentTasks()).toHaveLength(0);
+      const text = channel.sent.at(-1)!.text;
+      const blocks = text.match(/^   触发：/gm) ?? [];
+      expect(blocks.length).toBeGreaterThanOrEqual(6);
+      expect(blocks.length).toBeLessThanOrEqual(8);
+      expect(text).toContain("docs/usage.md");
+    });
+
+    test("私聊 /examples 免触发词", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/examples", { isDirect: true }));
+
+      expect(store.recentTasks()).toHaveLength(0);
+      expect(channel.sent.at(-1)?.text).toContain("触发：");
+    });
+
+    test("/pisa help 按派活/查询/维护/集成分组", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa help"));
+
+      const text = channel.sent.at(-1)!.text;
+      const headers = text.split("\n").filter((l) => ["派活", "查询", "维护", "集成"].includes(l));
+      expect(headers).toEqual(["派活", "查询", "维护", "集成"]);
+      expect(text).toContain("/pisa examples");
+      expect(text).toContain("/pisa confirm");
+    });
+  });
+
   describe("多仓库路由", () => {
     let family: string;
 

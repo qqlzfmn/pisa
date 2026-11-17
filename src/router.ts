@@ -19,6 +19,7 @@ import {
   type Runner,
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import { formatExamples, formatHelp } from "./usage";
 import { TaskLogger } from "./log";
 
 export interface RouterDeps {
@@ -213,6 +214,7 @@ export class Router {
       if (t === "/start" || t === "/help" || t === "帮助") cmd = { kind: "help", body: "" };
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
+      else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
@@ -263,22 +265,12 @@ export class Router {
     }
 
     if (cmd.kind === "help") {
-      await this.reply(
-        msg.chatId,
-        [
-          "pisa · 命令",
-          `${cfg.trigger} <需求>        接一个任务（私聊可直接说需求）`,
-          `${cfg.trigger} @别名 <需求>   指定仓库（多仓库时用）`,
-          `${cfg.trigger} cancel [任务号]  取消（私聊可用 /cancel）`,
-          `${cfg.trigger} resume <任务号>  恢复被进程重启中断的任务`,
-          `${cfg.trigger} continue <任务号> <新要求>  接着上一轮的分支做`,
-          `${cfg.trigger} merge <任务号>     合并到主干（自举）`,
-          `${cfg.trigger} rewind <任务号>    预览任务副作用（--yes 执行撤销）`,
-          `${cfg.trigger} schedules      查看定时任务（私聊可用 /schedules）`,
-          `${cfg.trigger} confirm        确认刚被拦下的单英文词任务`,
-          `${cfg.trigger} help           本帮助（私聊可用 /help）`,
-        ].join("\n"),
-      );
+      await this.reply(msg.chatId, formatHelp(cfg.trigger));
+      return;
+    }
+
+    if (cmd.kind === "examples") {
+      await this.reply(msg.chatId, formatExamples(cfg.trigger));
       return;
     }
 

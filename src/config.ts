@@ -140,11 +140,15 @@ export type CommandKind =
   | "help"
   | "status"
   | "schedules"
+  | "examples"
   | "continue"
   | "merge"
   | "resume"
   | "rewind"
   | "confirm";
+
+/** 帮助分组：派活（新任务与续跑）、查询（状态与用法）、维护（改撤合）、集成（不经 IM 的入口） */
+export type HelpGroup = "派活" | "查询" | "维护" | "集成";
 
 export interface CommandSpec {
   /** 英文命令名：精确匹配、模糊提示与 Telegram 菜单都用它 */
@@ -152,21 +156,26 @@ export interface CommandSpec {
   /** 中文别名，只参与精确匹配 */
   alias?: string;
   description: string;
+  /** 参数提示；有值的命令接收正文，也是帮助里的用法后缀 */
+  args?: string;
+  /** 帮助分组；帮助里只列有分组的命令 */
+  group?: HelpGroup;
   /** 是否注册到 Telegram 命令菜单 */
   menu?: boolean;
 }
 
-/** 命令清单：解析、错拼建议、菜单注册的唯一事实源 */
+/** 命令清单：解析、错拼建议、菜单注册与帮助分组的唯一事实源 */
 export const COMMANDS: readonly CommandSpec[] = [
-  { command: "cancel", alias: "取消", description: "取消任务", menu: true },
-  { command: "help", alias: "帮助", description: "查看命令帮助", menu: true },
-  { command: "status", alias: "状态", description: "查看任务看板", menu: true },
-  { command: "schedules", alias: "定时", description: "查看定时任务", menu: true },
-  { command: "continue", alias: "继续", description: "接着上一轮分支继续", menu: true },
-  { command: "merge", alias: "合并", description: "把已完成任务合入主干", menu: true },
-  { command: "resume", alias: "恢复", description: "恢复被中断的任务", menu: true },
-  { command: "rewind", alias: "撤销", description: "预览并撤销任务副作用", menu: true },
-  { command: "confirm", alias: "确认", description: "确认被拦下的单英文词任务", menu: false },
+  { command: "continue", alias: "继续", description: "接着上一轮分支继续", args: "<任务号> <新要求>", group: "派活", menu: true },
+  { command: "confirm", alias: "确认", description: "确认被拦下的单英文词任务", group: "派活", menu: false },
+  { command: "status", alias: "状态", description: "查看任务看板", group: "查询", menu: true },
+  { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
+  { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
+  { command: "help", alias: "帮助", description: "查看命令帮助", group: "查询", menu: true },
+  { command: "cancel", alias: "取消", description: "取消任务", args: "[任务号]", group: "维护", menu: true },
+  { command: "resume", alias: "恢复", description: "恢复被中断的任务", args: "<任务号>", group: "维护", menu: true },
+  { command: "rewind", alias: "撤销", description: "预览任务副作用，--yes 执行撤销", args: "<任务号> [--yes]", group: "维护", menu: true },
+  { command: "merge", alias: "合并", description: "验证后把已完成任务合入主干", args: "<任务号>", group: "维护", menu: true },
 ];
 
 /** Telegram setMyCommands 的载荷：只列用户主动使用的命令 */
@@ -180,14 +189,8 @@ for (const c of COMMANDS) {
   if (c.alias) KIND_BY_WORD[c.alias] = c.command;
 }
 
-/** 带参数的命令；其余命令忽略参数（与改造前一致） */
-const TAKES_BODY: Partial<Record<CommandKind, true>> = {
-  cancel: true,
-  continue: true,
-  merge: true,
-  resume: true,
-  rewind: true,
-};
+/** 接收正文的命令：有参数提示即有正文，其余命令忽略参数（与改造前一致） */
+const TAKES_BODY = new Set<CommandKind>(COMMANDS.filter((c) => c.args).map((c) => c.command));
 
 export interface ParsedCommand {
   kind: CommandKind | "task";
@@ -203,7 +206,7 @@ export function parseCommand(text: string, trigger: string): ParsedCommand | nul
   const [head, ...tail] = rest.split(/\s+/);
   const kind = KIND_BY_WORD[head!];
   if (!kind) return { kind: "task", body: rest };
-  return { kind, body: TAKES_BODY[kind] ? tail.join(" ").trim() : "" };
+  return { kind, body: TAKES_BODY.has(kind) ? tail.join(" ").trim() : "" };
 }
 
 /** 单个 ASCII 词：像命令、不像需求正文 */
