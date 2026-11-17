@@ -231,11 +231,12 @@ describe("Router", () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 第一个任务"));
     const parent = store.recent()[0]!;
-    store.setSessionId(parent.id, "sess-12345678");
+    store.transition(parent.id, "running", { branch: "pisa/parent", startedAt: Date.now() });
+    store.transition(parent.id, "succeeded", { summary: "建了 a.txt", endedAt: Date.now() });
 
     await router.handle(msg(`/pisa continue ${parent.id} 再改一处`));
     const child = store.recent()[0]!;
-    expect(child.resumeSessionId).toBe("sess-12345678");
+    expect(child.baseRef).toBe("pisa/parent");
     expect(child.context).toContain(parent.id);
     expect(child.prompt).toBe("再改一处");
   });
@@ -280,7 +281,7 @@ describe("状态机", () => {
       branch: null,
       prUrl: null,
       sessionId: null,
-      resumeSessionId: null,
+      baseRef: null,
       context: null,
       summary: null,
       error: null,

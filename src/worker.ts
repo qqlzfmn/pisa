@@ -65,7 +65,6 @@ export class OmpWorker implements WorkerRunner {
       ...this.cfg.extraArgs,
       "-e",
       extensionPath,
-      ...(task.resumeSessionId ? ["-r", task.resumeSessionId] : []),
       "--mode=json",
       "-p",
       buildPrompt(task),

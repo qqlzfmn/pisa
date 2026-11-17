@@ -122,7 +122,7 @@ export class Router {
     }
 
     let prompt = cmd.body;
-    let resumeSessionId: string | null = null;
+    let baseRef: string | null = null;
     let context: string | null = null;
 
     if (cmd.kind === "continue") {
@@ -136,11 +136,11 @@ export class Router {
         await channel.send(msg.chatId, "只有原请求者可以续跑。");
         return;
       }
-      if (!parent.sessionId) {
-        await channel.send(msg.chatId, `任务 ${parent.id} 没有可续跑的会话。`);
+      if (!parent.branch) {
+        await channel.send(msg.chatId, `任务 ${parent.id} 没有可续跑的分支。`);
         return;
       }
-      resumeSessionId = parent.sessionId;
+      baseRef = parent.branch;
       context = [
         `任务号：${parent.id}`,
         `上一轮请求：${parent.prompt}`,
@@ -188,7 +188,7 @@ export class Router {
       branch: null,
       prUrl: null,
       sessionId: null,
-      resumeSessionId,
+      baseRef,
       context,
       summary: null,
       error: null,
@@ -318,7 +318,7 @@ export class Router {
     const log = new TaskLogger(cfg.stateDir, task.id);
     log.write("start", `${repo.alias} ${branch}`);
 
-    const wt = createWorktree(repo.path, workdir, branch, repo.baseBranch ?? "HEAD");
+    const wt = createWorktree(repo.path, workdir, branch, task.baseRef ?? repo.baseBranch ?? "HEAD");
     if (wt.code !== 0) {
       log.write("worktree", wt.err);
       store.transition(task.id, "failed", { error: `创建工作副本失败：${wt.err}`, endedAt: this.now() });

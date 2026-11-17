@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   branch           TEXT,
   pr_url           TEXT,
   session_id       TEXT,
-  resume_session_id TEXT,
+  base_ref         TEXT,
   context          TEXT,
   summary          TEXT,
   error            TEXT,
@@ -47,7 +47,7 @@ interface Row {
   branch: string | null;
   pr_url: string | null;
   session_id: string | null;
-  resume_session_id: string | null;
+  base_ref: string | null;
   context: string | null;
   summary: string | null;
   error: string | null;
@@ -70,7 +70,7 @@ function toTask(r: Row): Task {
     branch: r.branch,
     prUrl: r.pr_url,
     sessionId: r.session_id,
-    resumeSessionId: r.resume_session_id,
+    baseRef: r.base_ref,
     context: r.context,
     summary: r.summary,
     error: r.error,
@@ -94,8 +94,8 @@ export class Store {
     if (!cols.some((c) => c.name === "session_id")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN session_id TEXT");
     }
-    if (!cols.some((c) => c.name === "resume_session_id")) {
-      this.db.exec("ALTER TABLE tasks ADD COLUMN resume_session_id TEXT");
+    if (!cols.some((c) => c.name === "base_ref")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN base_ref TEXT");
     }
     if (!cols.some((c) => c.name === "context")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN context TEXT");
@@ -118,9 +118,9 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, created_at, resume_session_id, context)
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, created_at, base_ref, context)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [t.id, t.source, t.channel, t.chatId, t.requester, t.repo, t.prompt, t.status, t.createdAt, t.resumeSessionId, t.context],
+      [t.id, t.source, t.channel, t.chatId, t.requester, t.repo, t.prompt, t.status, t.createdAt, t.baseRef, t.context],
     );
   }
 
@@ -155,7 +155,7 @@ export class Store {
       branch: "branch",
       prUrl: "pr_url",
       sessionId: "session_id",
-      resumeSessionId: "resume_session_id",
+      baseRef: "base_ref",
       context: "context",
       summary: "summary",
       error: "error",

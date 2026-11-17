@@ -24,8 +24,8 @@ export interface Task {
   branch: string | null;
   prUrl: string | null;
   sessionId: string | null;
-  /** 续跑时恢复的上一个 pi 会话 */
-  resumeSessionId: string | null;
+  /** 续跑时的起点分支（上一轮的分支） */
+  baseRef: string | null;
   /** 上一轮任务的上下文，注入 Worker 提示词 */
   context: string | null;
   summary: string | null;
