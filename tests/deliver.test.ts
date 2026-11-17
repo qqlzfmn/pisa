@@ -162,6 +162,26 @@ describe("GitDeliverer 敏感路径分拣", () => {
     expect(res.blocked).toEqual([".env"]);
   });
 
+  test("agent 关掉 rename 探测也拦得住敏感路径改名", async () => {
+    // 敏感文件已在仓库里：改名到普通文件名等于把内容换个名字放行
+    writeFileSync(join(repo, ".env"), "SECRET=1\n");
+    sh(["git", "-C", repo, "add", "-A"]);
+    sh(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "track env"]);
+    const workdir = setup();
+    writeFileSync(join(workdir, "a.txt"), "a\n");
+    // agent 能改共享的仓库配置：不显式开 rename 探测就读不到改名，拆成 D+A
+    expect(sh(["git", "-C", workdir, "config", "diff.renames", "false"]).code).toBe(0);
+    renameSync(join(workdir, ".env"), join(workdir, "notes.txt"));
+
+    const res = await new GitDeliverer(cfg).deliver({ ...baseTask, id: "t1", branch: "pisa/t1" }, workdir, cfg.repos[0]!);
+
+    expect(sh(["git", "-C", workdir, "show", "--name-only", "--pretty=format:", "HEAD"]).out).toBe("a.txt");
+    expect(res.blocked.sort()).toEqual([".env", "notes.txt"]);
+    // 内容没有换个名字被提交出去，旧路径的删除也没有跟着提交
+    expect(sh(["git", "-C", workdir, "cat-file", "-e", "HEAD:notes.txt"]).code).not.toBe(0);
+    expect(sh(["git", "-C", workdir, "cat-file", "-e", "HEAD:.env"]).code).toBe(0);
+  });
+
   test("改名到敏感路径时整条改名都不提交", async () => {
     const workdir = setup();
     renameSync(join(workdir, "README.md"), join(workdir, "server.pem"));

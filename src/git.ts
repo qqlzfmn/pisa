@@ -55,7 +55,9 @@ export function changedFiles(workdir: string): string[] {
 
 /** 索引条目（目录已展开）；改名/复制是「旧路径 + 新路径」一条，整体放行或整体拦截 */
 function stagedEntries(workdir: string): string[][] {
-  const p = Bun.spawnSync(["git", "-C", workdir, "diff", "--cached", "--name-status", "-z"], {
+  // 显式 -M：diff.renames 是仓库配置，agent 能关掉；关掉后改名拆成 D+A，
+  // 敏感文件改名到普通文件名就只剩新路径待判，内容会以新名字进提交
+  const p = Bun.spawnSync(["git", "-C", workdir, "diff", "--cached", "--name-status", "-z", "-M"], {
     stdout: "pipe",
     stderr: "pipe",
   });
