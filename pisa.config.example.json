@@ -13,6 +13,7 @@
     }
   ],
   "worker": {
+    "adapter": "omp",
     "command": "omp",
     "timeoutSec": 3600,
     "extraArgs": [],
@@ -38,6 +39,26 @@
     "tokenEnv": "PISA_WEBHOOK_TOKEN",
     "chatId": "<telegram chat id>",
     "userId": "<telegram user id>"
+  },
+  "proactive": {
+    "keywords": {
+      "enabled": false,
+      "words": ["挂了", "报错", "失败"],
+      "cooldownSec": 600,
+      "chatId": "<group chat id>",
+      "userId": "<telegram user id>",
+      "prompt": "群里有人报障且没人接：先定位原因，能修就修，不能修给出下一步。"
+    },
+    "probe": {
+      "enabled": false,
+      "command": "gh run list --limit 1 --json conclusion -q '.[0].conclusion' | grep -q success",
+      "intervalSec": 300,
+      "cooldownSec": 1800,
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "repo": "pisa",
+      "prompt": "自动探针失败，定位原因并修复。"
+    }
   },
   "stateDir": ".pisa"
 }

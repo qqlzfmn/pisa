@@ -132,6 +132,8 @@ bun run src/index.ts
 /pisa continue <任务号> <新要求>   从上一轮的分支和上下文继续做
 ```
 
+**回复机器人的任意一条任务消息，等于继续那个任务**，不用记任务号。
+
 执行时会实时回传进度（`🛠 命令` / `✏️ 文件`），破坏性命令会在 agent 内部被拦下。
 
 外部事件入口：
@@ -144,6 +146,33 @@ curl -X POST http://127.0.0.1:8799/event \
 ```
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
+
+## 主动发现
+
+两种触发方式，都不需要人 @：
+
+```json
+{
+  "proactive": {
+    "keywords": {
+      "enabled": true,
+      "words": ["挂了", "报错", "失败"],
+      "cooldownSec": 600
+    },
+    "probe": {
+      "enabled": true,
+      "command": "gh run list --limit 1 --json conclusion -q '.[0].conclusion' | grep -q success",
+      "intervalSec": 300,
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "prompt": "CI 有失败，定位并修复"
+    }
+  }
+}
+```
+
+- **关键词**：群里出现这些词且没人带触发词，自动开单（同一群有冷却）
+- **探针**：定时跑一条命令，退出码非 0 就开单；命令写法自由，CI、探活、磁盘检查都能接
 
 ## 自举
 
@@ -194,16 +223,18 @@ specify → plan → tasks → implement → converge
 - P3：崩溃自动重启、孤儿任务收口、任务级超时
 - pi 集成：Worker 挂 pisa 扩展，工具级进度上报 + 命令拦截 + 分支续跑
 - 自举：`/pisa merge` 验证后合入主干，看护进程拉起新代码
-- 测试 20 个全绿；`tsc --noEmit` 无报错
+- 订阅绑定：回复任务消息即续跑（消息 → 任务映射落库）
+- 主动发现：群聊关键词 + 定时探针
+- Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
+- 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
+- 测试 28 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：
 
-- P1 任务与讨论的订阅绑定（PR 评论、Issue 回复接续）——未实现
-- P2 主动发现（CI 失败、群聊报障无人 @ 时自动接手）——只做了被动 webhook
-- P3 会话状态外置与断线重连——当前用「上一轮分支 + 上下文注入」替代，不是真正的会话持久化
-- Agent 无关的 `WorkerAdapter`——Worker 仍绑定 omp 的 `--mode=json` 输出格式
-- push / PR 交付——代码在，配置关闭，仓库也未配远程
+- GitHub PR 评论 / Issue 回复的订阅绑定——目前只做了 IM 消息回复接续
+- P3 真正的会话持久化——仍用「上一轮分支 + 上下文注入」替代
+- `gh pr create` 未实测——仓库没配远程，只在本地裸仓库验证了 push
 
 ## 致谢
 

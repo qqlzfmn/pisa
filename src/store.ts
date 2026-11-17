@@ -28,6 +28,14 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 
+CREATE TABLE IF NOT EXISTS task_messages (
+  chat_id    TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  task_id    TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (chat_id, message_id)
+);
+
 CREATE TABLE IF NOT EXISTS events (
   event_id TEXT PRIMARY KEY,
   task_id  TEXT NOT NULL,
@@ -100,6 +108,23 @@ export class Store {
     if (!cols.some((c) => c.name === "context")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN context TEXT");
     }
+  }
+
+  /** 记录「哪条发出的消息属于哪个任务」，用于回复接续 */
+  linkMessage(chatId: string, messageId: string, taskId: string): void {
+    this.db.run("INSERT OR REPLACE INTO task_messages(chat_id, message_id, task_id, created_at) VALUES (?, ?, ?, ?)", [
+      chatId,
+      messageId,
+      taskId,
+      Date.now(),
+    ]);
+  }
+
+  taskByMessage(chatId: string, messageId: string): string | null {
+    const row = this.db.query("SELECT task_id FROM task_messages WHERE chat_id = ? AND message_id = ?").get(chatId, messageId) as
+      | { task_id: string }
+      | null;
+    return row?.task_id ?? null;
   }
 
   setSessionId(id: string, sessionId: string): void {

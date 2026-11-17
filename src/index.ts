@@ -2,8 +2,9 @@ import { join } from "node:path";
 import { loadConfig } from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
-import { OmpWorker } from "./worker";
+import { Worker } from "./worker";
 import { GitDeliverer } from "./deliver";
+import { Proactive } from "./proactive";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import type { ChannelAdapter } from "./types";
@@ -37,13 +38,18 @@ async function main(): Promise<void> {
   const router = new Router({
     cfg,
     store,
-    worker: new OmpWorker(cfg.worker, cfg.stateDir),
+    worker: new Worker(cfg.worker, cfg.stateDir),
     deliverer: new GitDeliverer(cfg),
     channel,
   });
 
-  await channel.start((m) => router.handle(m));
+  const proactive = new Proactive(cfg, (m) => router.handle(m));
+  await channel.start((m) => {
+    proactive.observe(m);
+    return router.handle(m);
+  });
   router.start();
+  proactive.start();
 
   // 事件入口：CI / 监控 / 脚本可以把任务推进来
   if (cfg.webhook?.enabled) {
@@ -83,6 +89,7 @@ async function main(): Promise<void> {
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
   const shutdown = async () => {
+    proactive.stop();
     await router.stop();
     await activeChannel.stop();
     store.close();

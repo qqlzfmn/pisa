@@ -9,6 +9,8 @@ export interface IncomingMessage {
   repo?: string;
   /** 私聊（一对一）消息 */
   isDirect?: boolean;
+  /** 回复的是哪条消息（用于接续对应任务） */
+  replyToMessageId?: number;
   receivedAt?: number;
 }
 
@@ -43,10 +45,15 @@ export interface WorkerResult {
   exitCode: number;
 }
 
+/** 发送回执：拿到消息 id 才能把「回复」绑定回任务 */
+export interface DeliveryReceipt {
+  messageId?: string;
+}
+
 export interface ChannelAdapter {
   name: string;
   start(onMessage: (m: IncomingMessage) => Promise<void> | void): Promise<void>;
-  send(chatId: string, text: string): Promise<void>;
+  send(chatId: string, text: string): Promise<DeliveryReceipt | void>;
   stop(): Promise<void>;
 }
 

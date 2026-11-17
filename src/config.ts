@@ -14,10 +14,23 @@ export interface Config {
   dmWithoutTrigger: boolean;
   whitelist: { users: string[]; repos: string[] };
   repos: RepoConfig[];
-  worker: { command: string; timeoutSec: number; extraArgs: string[]; concurrency: number };
+  worker: { adapter: string; command: string; timeoutSec: number; extraArgs: string[]; concurrency: number };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string; proxy?: string } };
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
+  proactive?: {
+    keywords?: { enabled: boolean; words: string[]; cooldownSec?: number; chatId?: string; userId?: string; prompt?: string };
+    probe?: {
+      enabled: boolean;
+      command: string;
+      intervalSec?: number;
+      cooldownSec?: number;
+      chatId: string;
+      userId: string;
+      repo?: string;
+      prompt?: string;
+    };
+  };
   stateDir: string;
 }
 
@@ -26,7 +39,7 @@ export const DEFAULT_CONFIG: Config = {
   dmWithoutTrigger: true,
   whitelist: { users: [], repos: [] },
   repos: [],
-  worker: { command: "omp", timeoutSec: 3600, extraArgs: [], concurrency: 2 },
+  worker: { adapter: "omp", command: "omp", timeoutSec: 3600, extraArgs: [], concurrency: 2 },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
   stateDir: ".pisa",

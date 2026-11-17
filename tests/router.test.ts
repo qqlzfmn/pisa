@@ -14,8 +14,11 @@ class FakeChannel implements ChannelAdapter {
   name = "fake";
   sent: Array<{ chatId: string; text: string }> = [];
   async start(): Promise<void> {}
-  async send(chatId: string, text: string): Promise<void> {
+  private seq = 0;
+  async send(chatId: string, text: string): Promise<{ messageId: string }> {
     this.sent.push({ chatId, text });
+    this.seq += 1;
+    return { messageId: String(this.seq) };
   }
   async stop(): Promise<void> {}
 }
@@ -35,7 +38,7 @@ function makeCfg(repoPath: string, stateDir: string): Config {
     dmWithoutTrigger: true,
     whitelist: { users: ["u1"], repos: ["demo"] },
     repos: [{ alias: "demo", path: repoPath, baseBranch: "main" }],
-    worker: { command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1 },
+    worker: { adapter: "omp", command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1 },
     delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
     channels: { cli: true },
     stateDir,
@@ -257,6 +260,47 @@ describe("Router", () => {
     await router.handle(msg(`/pisa merge ${id}`));
     expect(channel.sent.some((s) => s.text.includes("已合并"))).toBe(true);
     expect(sh(["git", "-C", repo, "cat-file", "-e", "main:out.txt"]).code).toBe(0);
+  });
+
+  test("回复任务消息自动续跑该任务", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 第一轮"));
+    await router.drainOnce();
+    const parent = store.recent()[0]!;
+    store.linkMessage("c1", "9001", parent.id);
+
+    await router.handle(msg("再加一行", { replyToMessageId: 9001 }));
+    const child = store.recent()[0]!;
+    expect(child.id).not.toBe(parent.id);
+    expect(child.baseRef).toBe(parent.branch);
+    expect(child.prompt).toBe("再加一行");
+  });
+
+  test("开启 push 后分支真的推到远程", async () => {
+    const bare = mkdtempSync(join(tmpdir(), "pisa-bare-"));
+    sh(["git", "init", "--bare", "-q", bare]);
+    sh(["git", "-C", repo, "remote", "add", "origin", bare]);
+    const cfg2: Config = {
+      ...cfg,
+      delivery: { ...cfg.delivery, push: true },
+      repos: [{ alias: "demo", path: repo, baseBranch: "main", remote: bare }],
+    };
+    const router2 = new Router({
+      cfg: cfg2,
+      store,
+      worker: okWorker,
+      deliverer: new GitDeliverer(cfg2),
+      channel,
+    });
+
+    await router2.handle(msg("/pisa 推一个提交"));
+    await router2.drainOnce();
+    const t = store.recent()[0]!;
+    expect(t.status).toBe("succeeded");
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "--verify", t.branch!]).code).toBe(0);
+
+    sh(["git", "-C", repo, "remote", "remove", "origin"]);
+    rmSync(bare, { recursive: true, force: true });
   });
 
   test("status 列出最近任务", async () => {

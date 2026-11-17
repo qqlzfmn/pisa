@@ -72,6 +72,16 @@ export class Router {
   /** 处理一条入口消息；幂等、鉴权、建任务都在这里 */
   async handle(msg: IncomingMessage): Promise<void> {
     const { cfg, store, channel } = this.deps;
+
+    // 回复某条任务消息 = 对该任务续跑
+    if (msg.replyToMessageId) {
+      const parentId = store.taskByMessage(msg.chatId, String(msg.replyToMessageId));
+      const text = msg.text.trim();
+      if (parentId && !text.startsWith(cfg.trigger) && !text.startsWith("/")) {
+        msg = { ...msg, text: `${cfg.trigger} continue ${parentId} ${text}` };
+      }
+    }
+
     let cmd = parseCommand(msg.text, cfg.trigger);
 
     // 专用 bot 的私聊：不需要触发词，直接说话就是任务
@@ -87,7 +97,7 @@ export class Router {
     const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
 
     if (cmd.kind === "help") {
-      await channel.send(
+      await this.reply(
         msg.chatId,
         [
           "pisa · 命令",
@@ -114,7 +124,7 @@ export class Router {
     if (cmd.kind === "status") {
       const rows = store.recent(5);
       if (rows.length === 0) {
-        await channel.send(msg.chatId, "还没有任务。");
+        await this.reply(msg.chatId, "还没有任务。");
         return;
       }
       const text = rows
@@ -123,7 +133,7 @@ export class Router {
           return `${t.id} · ${t.status}${t.branch ? " · " + t.branch : ""} · ${time}`;
         })
         .join("\n");
-      await channel.send(msg.chatId, `最近 ${rows.length} 个任务\n${text}`);
+      await this.reply(msg.chatId, `最近 ${rows.length} 个任务\n${text}`);
       return;
     }
 
@@ -135,15 +145,15 @@ export class Router {
       const [parentId, ...rest] = prompt.split(/\s+/);
       const parent = parentId ? store.get(parentId) : null;
       if (!parent) {
-        await channel.send(msg.chatId, `找不到任务 ${parentId ?? ""}`);
+        await this.reply(msg.chatId, `找不到任务 ${parentId ?? ""}`);
         return;
       }
       if (parent.requester !== msg.userId) {
-        await channel.send(msg.chatId, "只有原请求者可以续跑。");
+        await this.reply(msg.chatId, "只有原请求者可以续跑。");
         return;
       }
       if (!parent.branch) {
-        await channel.send(msg.chatId, `任务 ${parent.id} 没有可续跑的分支。`);
+        await this.reply(msg.chatId, `任务 ${parent.id} 没有可续跑的分支。`);
         return;
       }
       baseRef = parent.branch;
@@ -155,7 +165,7 @@ export class Router {
       ].join("\n");
       prompt = rest.join(" ").trim();
       if (!prompt) {
-        await channel.send(msg.chatId, `用法：${cfg.trigger} continue <任务号> <新要求>`);
+        await this.reply(msg.chatId, `用法：${cfg.trigger} continue <任务号> <新要求>`);
         return;
       }
     }
@@ -169,16 +179,16 @@ export class Router {
       const last = this.deniedAt.get(msg.userId) ?? 0;
       if (this.now() - last > 24 * 3600 * 1000) {
         this.deniedAt.set(msg.userId, this.now());
-        await channel.send(msg.chatId, denied);
+        await this.reply(msg.chatId, denied);
       }
       return;
     }
     if (!repo) {
-      await channel.send(msg.chatId, `仓库未配置：${msg.repo ?? "(默认)"}`);
+      await this.reply(msg.chatId, `仓库未配置：${msg.repo ?? "(默认)"}`);
       return;
     }
     if (!prompt) {
-      await channel.send(msg.chatId, `用法：${cfg.trigger} <需求描述>`);
+      await this.reply(msg.chatId, `用法：${cfg.trigger} <需求描述>`);
       return;
     }
 
@@ -204,7 +214,15 @@ export class Router {
       cancelRequested: false,
     };
     store.insertTask(task);
-    await channel.send(msg.chatId, `已接单 · ${task.id}\n仓库 ${repo.alias}，排队中。`);
+    await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库 ${repo.alias}，排队中。`);
+  }
+
+  /** 统一发送；带 taskId 时记住消息 id，之后用户回复这条消息即可续跑 */
+  private async reply(chatId: string, text: string, taskId?: string): Promise<void> {
+    const receipt = await this.deps.channel.send(chatId, text);
+    if (taskId && receipt && "messageId" in receipt && receipt.messageId) {
+      this.deps.store.linkMessage(chatId, receipt.messageId, taskId);
+    }
   }
 
   private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
@@ -222,20 +240,20 @@ export class Router {
     const id = body.trim();
     const task = id ? store.get(id) : null;
     if (!task) {
-      await channel.send(msg.chatId, `找不到任务 ${id || ""}`);
+      await this.reply(msg.chatId, `找不到任务 ${id || ""}`);
       return;
     }
     if (task.requester !== msg.userId) {
-      await channel.send(msg.chatId, "只有原请求者可以合并。");
+      await this.reply(msg.chatId, "只有原请求者可以合并。");
       return;
     }
     if (task.status !== "succeeded" || !task.branch) {
-      await channel.send(msg.chatId, `任务 ${task.id} 没有可合并的分支（${task.status}）。`);
+      await this.reply(msg.chatId, `任务 ${task.id} 没有可合并的分支（${task.status}）。`);
       return;
     }
     const repo = repoByAlias(cfg, task.repo);
     if (!repo) {
-      await channel.send(msg.chatId, `仓库未配置：${task.repo}`);
+      await this.reply(msg.chatId, `仓库未配置：${task.repo}`);
       return;
     }
 
@@ -243,7 +261,7 @@ export class Router {
     const verifyDir = resolve(cfg.stateDir, "verify", task.id);
     const wt = createWorktree(repo.path, verifyDir, verifyBranch, task.branch);
     if (wt.code !== 0) {
-      await channel.send(msg.chatId, `验证副本创建失败：${wt.err.slice(0, 300)}`);
+      await this.reply(msg.chatId, `验证副本创建失败：${wt.err.slice(0, 300)}`);
       return;
     }
 
@@ -262,28 +280,28 @@ export class Router {
     }
 
     if (!ok) {
-      await channel.send(msg.chatId, `未合并 · ${task.id}\n${detail}`);
+      await this.reply(msg.chatId, `未合并 · ${task.id}\n${detail}`);
       return;
     }
 
     const base = repo.baseBranch ?? "main";
     if (currentBranch(repo.path) !== base) {
-      await channel.send(msg.chatId, `主工作区当前不在 ${base}，请先切回再合并。`);
+      await this.reply(msg.chatId, `主工作区当前不在 ${base}，请先切回再合并。`);
       return;
     }
     const merge = sh(["git", "-C", repo.path, "merge", "--ff-only", task.branch]);
     if (merge.code !== 0) {
-      await channel.send(msg.chatId, `合并失败：${(merge.err || merge.out).slice(0, 600)}`);
+      await this.reply(msg.chatId, `合并失败：${(merge.err || merge.out).slice(0, 600)}`);
       return;
     }
 
-    await channel.send(msg.chatId, `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}`);
+    await this.reply(msg.chatId, `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}`);
 
     // 自举：由看护进程拉起新代码
     if (process.env.PISA_SUPERVISED === "1") {
       setTimeout(() => process.exit(1), 800);
     } else {
-      await channel.send(msg.chatId, "当前不是看护模式，改动在重启后生效。");
+      await this.reply(msg.chatId, "当前不是看护模式，改动在重启后生效。");
     }
   }
 
@@ -293,31 +311,31 @@ export class Router {
     if (!id) {
       const mine = store.recent(20).find((t) => t.chatId === msg.chatId && (t.status === "running" || t.status === "queued"));
       if (!mine) {
-        await channel.send(msg.chatId, "没有可取消的任务。");
+        await this.reply(msg.chatId, "没有可取消的任务。");
         return;
       }
       id = mine.id;
     }
     const task = store.get(id);
     if (!task) {
-      await channel.send(msg.chatId, `找不到任务 ${id}`);
+      await this.reply(msg.chatId, `找不到任务 ${id}`);
       return;
     }
     if (task.requester !== msg.userId) {
-      await channel.send(msg.chatId, "只有原请求者可以取消。");
+      await this.reply(msg.chatId, "只有原请求者可以取消。");
       return;
     }
     if (task.status === "queued") {
       store.transition(id, "cancelled", { endedAt: this.now() });
-      await channel.send(msg.chatId, `已取消 · ${id}`);
+      await this.reply(msg.chatId, `已取消 · ${id}`);
       return;
     }
     if (task.status !== "running") {
-      await channel.send(msg.chatId, `任务 ${id} 已结束（${task.status}）`);
+      await this.reply(msg.chatId, `任务 ${id} 已结束（${task.status}）`);
       return;
     }
     store.requestCancel(id);
-    await channel.send(msg.chatId, `取消中 · ${id}`);
+    await this.reply(msg.chatId, `取消中 · ${id}`);
   }
 
   /** 取一个排队任务执行；返回是否真的执行了 */
@@ -335,7 +353,7 @@ export class Router {
   }
 
   /** 轮询 pi 扩展写出的进度文件，节流后转发到对话 */
-  private watchProgress(task: Task, channel: ChannelAdapter): () => void {
+  private watchProgress(task: Task): () => void {
     const file = join(resolve(this.deps.cfg.stateDir), "progress", `${task.id}.jsonl`);
     let size = 0;
     let lastSentAt = 0;
@@ -346,7 +364,7 @@ export class Router {
       if (text === lastMsg || now - lastSentAt < 6000) return;
       lastMsg = text;
       lastSentAt = now;
-      void channel.send(task.chatId, text);
+      void this.reply(task.chatId, text, task.id);
     };
 
     const timer = setInterval(() => {
@@ -385,7 +403,7 @@ export class Router {
     const repo = repoByAlias(cfg, task.repo);
     if (!repo) {
       store.transition(task.id, "failed", { error: `仓库未配置：${task.repo}`, endedAt: this.now() });
-      await channel.send(task.chatId, `失败 · ${task.id}：仓库未配置`);
+      await this.reply(task.chatId, `失败 · ${task.id}：仓库未配置`);
       return;
     }
 
@@ -399,13 +417,13 @@ export class Router {
     if (wt.code !== 0) {
       log.write("worktree", wt.err);
       store.transition(task.id, "failed", { error: `创建工作副本失败：${wt.err}`, endedAt: this.now() });
-      await channel.send(task.chatId, `失败 · ${task.id}\n创建工作副本失败`);
+      await this.reply(task.chatId, `失败 · ${task.id}\n创建工作副本失败`);
       return;
     }
 
-    await channel.send(task.chatId, `开始执行 · ${task.id}\n分支 ${branch}`);
+    await this.reply(task.chatId, `开始执行 · ${task.id}\n分支 ${branch}`, task.id);
 
-    const stopWatch = this.watchProgress(task, channel);
+    const stopWatch = this.watchProgress(task);
     let result: WorkerResult;
     try {
       result = await worker.run(task, workdir, (line) => log.write("worker", line), () =>
@@ -421,7 +439,7 @@ export class Router {
       removeWorktree(repo.path, workdir);
       deleteBranch(repo.path, branch);
       store.transition(task.id, "cancelled", { endedAt: this.now() });
-      await channel.send(task.chatId, `已取消 · ${task.id}`);
+      await this.reply(task.chatId, `已取消 · ${task.id}`);
       return;
     }
 
@@ -430,7 +448,7 @@ export class Router {
       removeWorktree(repo.path, workdir);
       deleteBranch(repo.path, branch);
       store.transition(task.id, "failed", { error: result.error ?? "未知错误", endedAt: this.now() });
-      await channel.send(task.chatId, `失败 · ${task.id}\n${(result.error ?? "").slice(0, 800)}`);
+      await this.reply(task.chatId, `失败 · ${task.id}\n${(result.error ?? "").slice(0, 800)}`, task.id);
       return;
     }
 
@@ -442,7 +460,7 @@ export class Router {
       removeWorktree(repo.path, workdir);
       deleteBranch(repo.path, branch);
       store.transition(task.id, "failed", { error: (err as Error).message, endedAt: this.now() });
-      await channel.send(task.chatId, `失败 · ${task.id}\n${(err as Error).message.slice(0, 800)}`);
+      await this.reply(task.chatId, `失败 · ${task.id}\n${(err as Error).message.slice(0, 800)}`);
       return;
     }
 
@@ -462,6 +480,6 @@ export class Router {
     if (delivery.branch) lines.push(`分支：${delivery.branch}`);
     if (delivery.prUrl) lines.push(`链接：${delivery.prUrl}`);
     if (fresh?.sessionId) lines.push(`会话：${fresh.sessionId.slice(0, 8)}`);
-    await channel.send(task.chatId, lines.join("\n\n"));
+    await this.reply(task.chatId, lines.join("\n\n"), task.id);
   }
 }

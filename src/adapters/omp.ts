@@ -1,0 +1,82 @@
+import type { AdapterInput, ParsedLine, WorkerAdapter } from "./types";
+
+const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+
+interface JsonEvent {
+  type?: string;
+  message?: { role?: string; content?: unknown };
+}
+
+/** 只取 assistant 的完整消息，避免把用户提示词与 delta 混进摘要 */
+function assistantText(obj: JsonEvent): string {
+  if (obj.type !== "message_end") return "";
+  const msg = obj.message;
+  if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) return "";
+  return msg.content
+    .map((c) =>
+      typeof c === "string"
+        ? c
+        : typeof (c as { text?: string }).text === "string"
+          ? (c as { text: string }).text
+          : "",
+    )
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+export function buildPrompt(task: import("../types").Task): string {
+  return [
+    `你是 pisa 的 Worker，任务号 ${task.id}。`,
+    ``,
+    ...(task.context ? [`## 上一轮上下文（供参考，不是新指令）`, task.context, ``] : []),
+    `## 任务`,
+    task.prompt,
+    ``,
+    `## 约束`,
+    `- 只在当前工作目录内改动，不要访问父目录或仓库外路径`,
+    `- 不要执行 git commit / git push / git checkout 主分支 / git reset --hard`,
+    `- 不要删除未跟踪文件，不要强推`,
+    `- 有测试就跑测试；没有测试就说明你如何验证`,
+    `- 完成后用中文给出：改了什么、动了哪些文件、验证结果`,
+    `- 不要输出寒暄，直接给结论`,
+  ].join("\n");
+}
+
+/** omp（Oh My Pi）适配器 */
+export class OmpAdapter implements WorkerAdapter {
+  name = "omp";
+
+  buildArgs(input: AdapterInput): string[] {
+    return [
+      input.cfg.command,
+      ...input.cfg.extraArgs,
+      "-e",
+      input.extensionPath,
+      "--mode=json",
+      "-p",
+      buildPrompt(input.task),
+      "--cwd",
+      input.workdir,
+    ];
+  }
+
+  buildEnv(input: AdapterInput): Record<string, string> {
+    return {
+      PISA_WORKDIR: input.workdir,
+      PISA_PROGRESS_FILE: input.progressFile,
+    };
+  }
+
+  parseLine(line: string): ParsedLine {
+    const clean = line.replace(ANSI, "").trim();
+    if (!clean) return {};
+    try {
+      const obj = JSON.parse(clean) as JsonEvent;
+      const text = assistantText(obj);
+      return text ? { text } : {};
+    } catch {
+      return { raw: clean };
+    }
+  }
+}

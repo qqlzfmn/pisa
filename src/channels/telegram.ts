@@ -1,4 +1,4 @@
-import type { ChannelAdapter, IncomingMessage } from "../types";
+import type { ChannelAdapter, DeliveryReceipt, IncomingMessage } from "../types";
 
 type Handler = (m: IncomingMessage) => Promise<void> | void;
 
@@ -12,6 +12,7 @@ interface TgUpdate {
     text?: string;
     chat: { id: number; type: string };
     from?: { id: number; username?: string };
+    reply_to_message?: { message_id: number };
   };
 }
 
@@ -54,6 +55,7 @@ export class TelegramChannel implements ChannelAdapter {
             userId: String(m.from?.id ?? m.chat.id),
             text: m.text,
             isDirect: m.chat.type === "private",
+            replyToMessageId: m.reply_to_message?.message_id,
             receivedAt: (m.date ?? 0) * 1000,
           });
         }
@@ -65,15 +67,18 @@ export class TelegramChannel implements ChannelAdapter {
     }
   }
 
-  async send(chatId: string, text: string): Promise<void> {
+  async send(chatId: string, text: string): Promise<DeliveryReceipt> {
     const limit = 3800;
+    let last: DeliveryReceipt = {};
     for (let i = 0; i < text.length; i += limit) {
-      await this.api("sendMessage", {
+      const res = await this.api<{ message_id: number }>("sendMessage", {
         chat_id: chatId,
         text: text.slice(i, i + limit),
         disable_web_page_preview: true,
       });
+      if (res.result?.message_id) last = { messageId: String(res.result.message_id) };
     }
+    return last;
   }
 
   private async api<T = unknown>(method: string, body: Record<string, unknown>): Promise<{ ok: boolean; result?: T }> {
