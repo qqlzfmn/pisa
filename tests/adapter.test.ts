@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import { getAdapter } from "../src/adapters";
-import { loadPrompts } from "../src/prompts";
 import type { Task } from "../src/types";
+import { PROMPTS } from "./fixtures";
 
 const task: Task = {
   id: "t_1",
@@ -35,7 +34,7 @@ const input = {
   extensionPath: "/tmp/ext.ts",
   progressFile: "/tmp/p.jsonl",
   cfg: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1 },
-  prompts: loadPrompts(join(import.meta.dir, "..", "prompts")),
+  prompts: PROMPTS,
 };
 
 describe("WorkerAdapter", () => {
