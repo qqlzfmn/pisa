@@ -26,7 +26,7 @@ function newId(now = Date.now()): string {
 }
 
 export class Router {
-  private running = false;
+  private active = new Map<string, Promise<void>>();
   private stopped = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => number;
@@ -39,13 +39,33 @@ export class Router {
 
   start(intervalMs = 800): void {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.drainOnce(), intervalMs);
+    this.timer = setInterval(() => void this.fill(), intervalMs);
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    await Promise.race([
+      Promise.all([...this.active.values()]),
+      new Promise((r) => setTimeout(r, 10_000)),
+    ]);
+  }
+
+  /** 按并发上限补位；不等待任务完成 */
+  private async fill(): Promise<void> {
+    if (this.stopped) return;
+    const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
+    while (this.active.size < limit) {
+      const task = this.deps.store.nextQueued();
+      if (!task) break;
+      const branch = `pisa/${task.id}`;
+      if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
+      const p = this.runTask(task, branch)
+        .catch(() => {})
+        .finally(() => this.active.delete(task.id));
+      this.active.set(task.id, p);
+    }
   }
 
   /** 处理一条入口消息；幂等、鉴权、建任务都在这里 */
@@ -71,6 +91,22 @@ export class Router {
 
     if (cmd.kind === "cancel") {
       await this.handleCancel(msg, cmd.body);
+      return;
+    }
+
+    if (cmd.kind === "status") {
+      const rows = store.recent(5);
+      if (rows.length === 0) {
+        await channel.send(msg.chatId, "还没有任务。");
+        return;
+      }
+      const text = rows
+        .map((t) => {
+          const time = new Date(t.createdAt).toLocaleString("zh-CN", { hour12: false });
+          return `${t.id} · ${t.status}${t.branch ? " · " + t.branch : ""} · ${time}`;
+        })
+        .join("\n");
+      await channel.send(msg.chatId, `最近 ${rows.length} 个任务\n${text}`);
       return;
     }
 
@@ -162,19 +198,19 @@ export class Router {
 
   /** 取一个排队任务执行；返回是否真的执行了 */
   async drainOnce(): Promise<boolean> {
-    if (this.running || this.stopped) return false;
-    const task = this.deps.store.nextQueued();
-    if (!task) return false;
-    this.running = true;
-    try {
-      await this.runTask(task);
-    } finally {
-      this.running = false;
+    if (this.stopped) return false;
+    let started = false;
+    while (true) {
+      await this.fill();
+      if (this.active.size === 0) break;
+      started = true;
+      await Promise.all([...this.active.values()]);
+      if (!this.deps.store.nextQueued()) break;
     }
-    return true;
+    return started;
   }
 
-  private async runTask(task: Task): Promise<void> {
+  private async runTask(task: Task, branch: string): Promise<void> {
     const { cfg, store, channel, worker, deliverer } = this.deps;
     const repo = repoByAlias(cfg, task.repo);
     if (!repo) {
@@ -183,9 +219,7 @@ export class Router {
       return;
     }
 
-    const branch = `pisa/${task.id}`;
-    if (!store.transition(task.id, "running", { startedAt: this.now(), branch })) return;
-
+    // 占位已在 fill() 完成；这里只做执行
     const workdir = join(cfg.stateDir, "worktrees", task.id);
     const log = new TaskLogger(cfg.stateDir, task.id);
     log.write("start", `${repo.alias} ${branch}`);

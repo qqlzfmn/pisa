@@ -34,7 +34,7 @@ function makeCfg(repoPath: string, stateDir: string): Config {
     trigger: "/pisa",
     whitelist: { users: ["u1"], repos: ["demo"] },
     repos: [{ alias: "demo", path: repoPath, baseBranch: "main" }],
-    worker: { command: "noop", timeoutSec: 5, extraArgs: [] },
+    worker: { command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1 },
     delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
     channels: { cli: true },
     stateDir,
@@ -155,6 +155,59 @@ describe("Router", () => {
     writeFileSync(join(dir, "solo.txt"), "1\n");
     expect(changedFiles(dir)).toEqual(["solo.txt"]);
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("并发 2：两个任务同时开始", async () => {
+    cfg.worker.concurrency = 2;
+    const starts: number[] = [];
+    const slow: WorkerRunner = {
+      async run(_t, workdir): Promise<WorkerResult> {
+        starts.push(Date.now());
+        await new Promise((r) => setTimeout(r, 150));
+        writeFileSync(join(workdir, "out.txt"), "hi\n");
+        return { ok: true, summary: "ok", exitCode: 0 };
+      },
+    };
+    const router = build(slow);
+    await router.handle(msg("/pisa 任务 A"));
+    await router.handle(msg("/pisa 任务 B"));
+
+    const t0 = Date.now();
+    await router.drainOnce();
+    const total = Date.now() - t0;
+
+    expect(starts.length).toBe(2);
+    expect(Math.abs(starts[0]! - starts[1]!)).toBeLessThan(200);
+    expect(total).toBeLessThan(400);
+    expect(store.recent().every((t) => t.status === "succeeded")).toBe(true);
+  });
+
+  test("并发 1：第二个任务等第一个结束", async () => {
+    cfg.worker.concurrency = 1;
+    const spans: Array<[number, number]> = [];
+    const slow: WorkerRunner = {
+      async run(_t, workdir): Promise<WorkerResult> {
+        const s = Date.now();
+        await new Promise((r) => setTimeout(r, 80));
+        spans.push([s, Date.now()]);
+        writeFileSync(join(workdir, "out.txt"), "hi\n");
+        return { ok: true, summary: "ok", exitCode: 0 };
+      },
+    };
+    const router = build(slow);
+    await router.handle(msg("/pisa 任务 A"));
+    await router.handle(msg("/pisa 任务 B"));
+    await router.drainOnce();
+
+    expect(spans.length).toBe(2);
+    expect(spans[1]![0]).toBeGreaterThanOrEqual(spans[0]![1] - 5);
+  });
+
+  test("status 列出最近任务", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 做点事"));
+    await router.handle(msg("/pisa status"));
+    expect(channel.sent.some((s) => s.text.includes("最近") && s.text.includes("queued"))).toBe(true);
   });
 
   test("排队中的任务可以取消", async () => {

@@ -12,7 +12,7 @@ export interface Config {
   trigger: string;
   whitelist: { users: string[]; repos: string[] };
   repos: RepoConfig[];
-  worker: { command: string; timeoutSec: number; extraArgs: string[] };
+  worker: { command: string; timeoutSec: number; extraArgs: string[]; concurrency: number };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string } };
   stateDir: string;
@@ -22,7 +22,7 @@ export const DEFAULT_CONFIG: Config = {
   trigger: "/pisa",
   whitelist: { users: [], repos: [] },
   repos: [],
-  worker: { command: "omp", timeoutSec: 3600, extraArgs: [] },
+  worker: { command: "omp", timeoutSec: 3600, extraArgs: [], concurrency: 2 },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN" } },
   stateDir: ".pisa",
@@ -58,7 +58,7 @@ export function repoByAlias(cfg: Config, alias?: string): RepoConfig | undefined
 }
 
 /** 触发词解析：仅接受以 trigger 开头的文本 */
-export function parseCommand(text: string, trigger: string): { kind: "task" | "cancel" | "help"; body: string } | null {
+export function parseCommand(text: string, trigger: string): { kind: "task" | "cancel" | "help" | "status"; body: string } | null {
   const t = text.trim();
   if (!t.startsWith(trigger)) return null;
   const rest = t.slice(trigger.length).trim();
@@ -66,5 +66,6 @@ export function parseCommand(text: string, trigger: string): { kind: "task" | "c
   const [head, ...tail] = rest.split(/\s+/);
   if (head === "cancel" || head === "取消") return { kind: "cancel", body: tail.join(" ").trim() };
   if (head === "help" || head === "帮助") return { kind: "help", body: "" };
+  if (head === "status" || head === "状态") return { kind: "status", body: "" };
   return { kind: "task", body: rest };
 }

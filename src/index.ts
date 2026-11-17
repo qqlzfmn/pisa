@@ -44,7 +44,7 @@ async function main(): Promise<void> {
 
   await channel.start((m) => router.handle(m));
   router.start();
-  console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")}`);
+  console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
   const shutdown = async () => {
     await router.stop();

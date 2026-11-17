@@ -105,6 +105,15 @@ export class Store {
     return row ? toTask(row) : null;
   }
 
+  /** 原子占位：queued → running，失败说明已被别的槽位取走 */
+  claimQueued(id: string, startedAt: number, branch: string): boolean {
+    const res = this.db.run(
+      "UPDATE tasks SET status = 'running', started_at = ?, branch = ? WHERE id = ? AND status = 'queued'",
+      [startedAt, branch, id],
+    );
+    return res.changes > 0;
+  }
+
   nextQueued(): Task | null {
     const row = this.db.query("SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at LIMIT 1").get() as Row | null;
     return row ? toTask(row) : null;
