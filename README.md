@@ -303,3 +303,4 @@ specify → plan → tasks → implement → converge
 - 架构思路来自 DeepSeek Harness 团队《Super-agent 设计探索：迈向更自主的 Agent 系统》（2026-10-31）
 - 底座 [pi](https://github.com/earendil-works/pi) —— 会话、工具与扩展运行时
 - 规格流程参考 [GitHub spec-kit](https://github.com/github/spec-kit/blob/main/spec-driven.md)
+Issue 评论触发测试。
