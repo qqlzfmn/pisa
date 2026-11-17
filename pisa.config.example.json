@@ -40,6 +40,14 @@
     "chatId": "<telegram chat id>",
     "userId": "<telegram user id>"
   },
+  "github": {
+    "enabled": false,
+    "repo": "owner/pisa",
+    "intervalSec": 120,
+    "tokenEnv": "GH_TOKEN",
+    "chatId": "<telegram chat id>",
+    "userId": "<telegram user id>"
+  },
   "proactive": {
     "keywords": {
       "enabled": false,

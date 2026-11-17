@@ -1,0 +1,369 @@
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  formatReply,
+  listComments,
+  postComment,
+  prNumberFromIssueUrl,
+  type Runner,
+} from "../src/github";
+import { GithubWatcher } from "../src/github-watcher";
+import { Store } from "../src/store";
+import { Router } from "../src/router";
+import { GitDeliverer } from "../src/deliver";
+import { sh, type ExecResult } from "../src/git";
+import type { Config } from "../src/config";
+import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
+import type { WorkerRunner } from "../src/worker";
+
+const HEADER = "**pisa** 任务完成\n\n";
+
+function reply(code: number, out = "", err = ""): ExecResult {
+  return { code, out, err };
+}
+
+/** 按顺序返回预设结果；用完后重复最后一个 */
+function scripted(...replies: ExecResult[]) {
+  const calls: string[][] = [];
+  const runner: Runner = (args) => {
+    calls.push(args);
+    return replies[Math.min(calls.length - 1, replies.length - 1)]!;
+  };
+  return { runner, calls };
+}
+
+function apiReply(comments: Array<{ id: number; body: string; issue_url: string }>): ExecResult {
+  return reply(0, comments.map((c) => JSON.stringify({ ...c, user: { login: "alice" } })).join("\n"));
+}
+
+class FakeChannel implements ChannelAdapter {
+  name = "fake";
+  sent: Array<{ chatId: string; text: string }> = [];
+  async start(): Promise<void> {}
+  async send(chatId: string, text: string): Promise<{ messageId: string }> {
+    this.sent.push({ chatId, text });
+    return { messageId: String(this.sent.length) };
+  }
+  async stop(): Promise<void> {}
+}
+
+function makeRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "pisa-gh-repo-"));
+  sh(["git", "init", "-q", "-b", "main"], dir);
+  writeFileSync(join(dir, "README.md"), "hello\n");
+  sh(["git", "-C", dir, "add", "-A"]);
+  sh(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]);
+  return dir;
+}
+
+function makeCfg(repoPath: string, stateDir: string, github?: Config["github"]): Config {
+  return {
+    trigger: "/pisa",
+    dmWithoutTrigger: true,
+    whitelist: { users: ["u1"], repos: ["demo"] },
+    repos: [{ alias: "demo", path: repoPath, baseBranch: "main" }],
+    worker: { adapter: "omp", command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1 },
+    delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
+    channels: { cli: true },
+    github,
+    stateDir,
+  };
+}
+
+const okWorker: WorkerRunner = {
+  async run(): Promise<WorkerResult> {
+    return { ok: true, summary: "改好了", exitCode: 0 };
+  },
+};
+
+const baseTask: Task = {
+  id: "t_seed",
+  source: "s",
+  channel: "fake",
+  chatId: "c1",
+  requester: "u1",
+  repo: "demo",
+  prompt: "上一轮",
+  status: "queued",
+  branch: null,
+  prUrl: null,
+  sessionId: null,
+  baseRef: null,
+  context: null,
+  replyPr: null,
+  summary: null,
+  error: null,
+  createdAt: 0,
+  startedAt: null,
+  endedAt: null,
+  cancelRequested: false,
+};
+
+describe("prNumberFromIssueUrl", () => {
+  test("issue 与 pull 两种路径都取到号", () => {
+    expect(prNumberFromIssueUrl("https://api.github.com/repos/o/r/issues/12")).toBe(12);
+    expect(prNumberFromIssueUrl("https://api.github.com/repos/o/r/pull/7")).toBe(7);
+    expect(prNumberFromIssueUrl("https://api.github.com/repos/o/r/pull/7/")).toBe(7);
+  });
+
+  test("带查询串或锚点也算", () => {
+    expect(prNumberFromIssueUrl("https://api.github.com/repos/o/r/issues/42?x=1")).toBe(42);
+    expect(prNumberFromIssueUrl("https://github.com/o/r/pull/9#discussion")).toBe(9);
+  });
+
+  test("无关链接返回 null", () => {
+    expect(prNumberFromIssueUrl("")).toBeNull();
+    expect(prNumberFromIssueUrl("https://api.github.com/repos/o/r/issues")).toBeNull();
+    expect(prNumberFromIssueUrl("https://api.github.com/repos/o/r/issues/0")).toBeNull();
+  });
+});
+
+describe("formatReply", () => {
+  test("摘要原样带出", () => {
+    expect(formatReply(" 改好了 \n")).toBe(`${HEADER}改好了`);
+  });
+
+  test("超过 3000 字截断", () => {
+    const body = formatReply("x".repeat(5000));
+    expect(body).toBe(`${HEADER}${"x".repeat(3000)}`);
+  });
+});
+
+describe("listComments / postComment", () => {
+  test("拉取的参数与逐行解析", () => {
+    const { runner, calls } = scripted(
+      apiReply([
+        { id: 11, body: "/pisa 修一下", issue_url: "https://api.github.com/repos/o/r/issues/12" },
+        { id: 12, body: "只是聊天", issue_url: "https://api.github.com/repos/o/r/issues/13" },
+      ]),
+    );
+    const res = listComments(runner, "o/r", "2026-11-17T00:00:00.000Z");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value).toEqual([
+      { id: 11, body: "/pisa 修一下", issueUrl: "https://api.github.com/repos/o/r/issues/12", userLogin: "alice" },
+      { id: 12, body: "只是聊天", issueUrl: "https://api.github.com/repos/o/r/issues/13", userLogin: "alice" },
+    ]);
+    expect(calls[0]).toEqual([
+      "gh",
+      "api",
+      "repos/o/r/issues/comments?since=2026-11-17T00%3A00%3A00.000Z&per_page=100",
+      "--paginate",
+      "--jq",
+      ".[]",
+    ]);
+  });
+
+  test("命令失败与输出损坏都返回错误，不抛出", () => {
+    const failed = listComments(scripted(reply(1, "", "gh: Not Found")).runner, "o/r", "2026-11-17T00:00:00.000Z");
+    expect(failed).toEqual({ ok: false, error: "gh: Not Found" });
+
+    const broken = listComments(scripted(reply(0, "{not json")).runner, "o/r", "2026-11-17T00:00:00.000Z");
+    expect(broken.ok).toBe(false);
+    if (!broken.ok) expect(broken.error).toContain("评论解析失败");
+  });
+
+  test("回帖参数", () => {
+    const { runner, calls } = scripted(reply(0));
+    expect(postComment(runner, "o/r", 12, "正文")).toEqual({ ok: true, value: undefined });
+    expect(calls[0]).toEqual(["gh", "pr", "comment", "12", "--repo", "o/r", "--body", "正文"]);
+
+    const failed = postComment(scripted(reply(1, "", "no token")).runner, "o/r", 12, "正文");
+    expect(failed).toEqual({ ok: false, error: "no token" });
+  });
+});
+
+describe("GitHub 评论 → 任务", () => {
+  let repo: string;
+  let stateDir: string;
+  let store: Store;
+  let channel: FakeChannel;
+  let cfg: Config;
+
+  beforeEach(() => {
+    repo = makeRepo();
+    stateDir = mkdtempSync(join(tmpdir(), "pisa-gh-state-"));
+    store = new Store(":memory:");
+    channel = new FakeChannel();
+    cfg = makeCfg(repo, stateDir, { enabled: true, repo: "o/r", chatId: "c1", userId: "u1" });
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  function watcher(runner: Runner, now = () => 1_700_000_000_000) {
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    const w = new GithubWatcher({ cfg, store, runner, now, enqueue: (m: IncomingMessage) => router.handle(m) });
+    return { router, w };
+  }
+
+  test("只处理触发词开头的评论，并按 PR 号投递", async () => {
+    const { runner, calls } = scripted(
+      apiReply([
+        { id: 1, body: "/pisa 修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/12" },
+        { id: 2, body: "修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/12" },
+        { id: 3, body: "/pisax 不改", issue_url: "https://api.github.com/repos/o/r/issues/12" },
+        { id: 4, body: "/pisa", issue_url: "https://api.github.com/repos/o/r/issues/12" },
+      ]),
+    );
+    const { w } = watcher(runner);
+    await w.poll();
+
+    const tasks = store.recent();
+    expect(tasks.length).toBe(1);
+    expect(tasks[0]!.prompt).toBe("修一下登录");
+    expect(tasks[0]!.replyPr).toBe(12);
+    expect(tasks[0]!.channel).toBe("github");
+    expect(tasks[0]!.chatId).toBe("c1");
+    expect(tasks[0]!.requester).toBe("u1");
+    expect(tasks[0]!.source).toBe("github:comment:1");
+    // 启动时刻即下界
+    expect(calls[0]![2]).toContain("since=2023-11-14T22%3A13%3A20.000Z");
+  });
+
+  test("同一评论轮询两轮只建一个任务", async () => {
+    const comment = { id: 1, body: "/pisa 修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/12" };
+    const { runner } = scripted(apiReply([comment]), apiReply([comment]));
+    const { w } = watcher(runner);
+    await w.poll();
+    await w.poll();
+    expect(store.recent().length).toBe(1);
+  });
+
+  test("PR 已有成功任务时接续它的分支", async () => {
+    store.insertTask({ ...baseTask, id: "t_parent", prompt: "第一轮" });
+    expect(store.claimQueued("t_parent", Date.now(), "pisa/t_parent")).toBe(true);
+    expect(
+      store.transition("t_parent", "succeeded", {
+        summary: "建了 a.txt",
+        prUrl: "https://github.com/o/r/pull/12",
+        endedAt: Date.now(),
+      }),
+    ).toBe(true);
+
+    const { runner } = scripted(
+      apiReply([{ id: 5, body: "/pisa 再改一处", issue_url: "https://api.github.com/repos/o/r/issues/12" }]),
+    );
+    const { w } = watcher(runner);
+    await w.poll();
+
+    const child = store.recent().find((t) => t.prompt === "再改一处")!;
+    expect(child).toBeDefined();
+    expect(child.baseRef).toBe("pisa/t_parent");
+    expect(child.context).toContain("任务号：t_parent");
+    expect(child.context).toContain("#12");
+    expect(child.context).toContain("PR 评论：/pisa 再改一处");
+    expect(child.replyPr).toBe(12);
+  });
+
+  test("PR 没有成功任务时按普通任务处理", async () => {
+    const { runner } = scripted(
+      apiReply([{ id: 6, body: "/pisa 补一条测试", issue_url: "https://api.github.com/repos/o/r/issues/99" }]),
+    );
+    const { w } = watcher(runner);
+    await w.poll();
+
+    const task = store.recent()[0]!;
+    expect(task.prompt).toBe("补一条测试");
+    expect(task.baseRef).toBeNull();
+    expect(task.context).toBeNull();
+    expect(task.replyPr).toBe(99);
+  });
+
+  test("拉取失败时不建任务、不推进下界；成功后推进", async () => {
+    const comment = { id: 7, body: "/pisa 修一下", issue_url: "https://api.github.com/repos/o/r/issues/12" };
+    const { runner, calls } = scripted(reply(1, "", "gh: boom"), apiReply([comment]));
+    let clock = 1_700_000_000_000;
+    const { w } = watcher(runner, () => clock);
+
+    await w.poll();
+    expect(store.recent().length).toBe(0);
+
+    clock += 60_000;
+    await w.poll();
+    expect(store.recent().length).toBe(1);
+    // 失败那一轮不推进：两轮的下界相同
+    expect(calls[1]![2]).toBe(calls[0]![2]);
+    expect(calls[0]![2]).toContain("since=2023-11-14T22%3A13%3A20.000Z");
+  });
+
+  test("任务成功后向来源 PR 回帖", async () => {
+    const { runner: ghRunner, calls } = scripted(reply(0));
+    const router = new Router({
+      cfg,
+      store,
+      worker: okWorker,
+      deliverer: new GitDeliverer(cfg),
+      channel,
+      ghRunner,
+    });
+    await router.handle({
+      eventId: "github:comment:8",
+      channel: "github",
+      chatId: "c1",
+      userId: "u1",
+      text: "/pisa 修一下登录",
+      replyPr: 12,
+    });
+    await router.drainOnce();
+
+    expect(store.recent()[0]!.status).toBe("succeeded");
+    expect(calls).toEqual([["gh", "pr", "comment", "12", "--repo", "o/r", "--body", `${HEADER}改好了`]]);
+  });
+
+  test("回帖失败只记日志，任务仍成功", async () => {
+    const router = new Router({
+      cfg,
+      store,
+      worker: okWorker,
+      deliverer: new GitDeliverer(cfg),
+      channel,
+      ghRunner: scripted(reply(1, "", "no token")).runner,
+    });
+    await router.handle({
+      eventId: "github:comment:9",
+      channel: "github",
+      chatId: "c1",
+      userId: "u1",
+      text: "/pisa 修一下登录",
+      replyPr: 12,
+    });
+    await router.drainOnce();
+
+    const task = store.recent()[0]!;
+    expect(task.status).toBe("succeeded");
+    const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
+    expect(log).toContain("回帖失败");
+    expect(log).toContain("no token");
+  });
+
+  test("未启用 github 时不回帖", async () => {
+    cfg = makeCfg(repo, stateDir);
+    const { runner: ghRunner, calls } = scripted(reply(0));
+    const router = new Router({
+      cfg,
+      store,
+      worker: okWorker,
+      deliverer: new GitDeliverer(cfg),
+      channel,
+      ghRunner,
+    });
+    await router.handle({
+      eventId: "github:comment:10",
+      channel: "github",
+      chatId: "c1",
+      userId: "u1",
+      text: "/pisa 修一下登录",
+      replyPr: 12,
+    });
+    await router.drainOnce();
+
+    expect(store.recent()[0]!.status).toBe("succeeded");
+    expect(calls).toEqual([]);
+  });
+});

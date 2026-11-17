@@ -1,0 +1,18 @@
+# 006 · 任务拆分
+
+- [x] T1 `Config.github` 可选段与示例配置 (FR-001)
+      验证: `tsc --noEmit`；`pisa.config.example.json` 含 github 段
+- [x] T2 `src/github.ts`：`prNumberFromIssueUrl` / `listComments` / `postComment` / `formatReply`，`Runner` 可注入，错误走结果对象 (FR-002/FR-004/FR-008)
+      验证: `bun test tests/github-comments.test.ts`（`prNumberFromIssueUrl`、`listComments / postComment`、`formatReply` 三组）
+- [x] T3 `Task.replyPr` + `reply_pr` 列与轻量迁移 + `taskByPr` (FR-006/FR-008)
+      验证: `bun test tests/github-comments.test.ts`（去重/续跑用例建库即走迁移）
+- [x] T4 Router：`continueFrom` / `replyPr` 入参，复用 continue 的分支与上下文构造 (FR-006/FR-007)
+      验证: 「PR 已有成功任务时接续它的分支」「PR 没有成功任务时按普通任务处理」
+- [x] T5 Router：任务成功后回帖，失败只记日志 (FR-008/FR-009)
+      验证: 「任务成功后向来源 PR 回帖」「回帖失败只记日志，任务仍成功」「未启用 github 时不回帖」
+- [x] T6 `src/github-watcher.ts`：定时轮询、触发词过滤、增量下界、去重投递 (FR-002…FR-005/FR-010/FR-011)
+      验证: 「只处理触发词开头的评论，并按 PR 号投递」「同一评论轮询两轮只建一个任务」「拉取失败时不建任务、不推进下界；成功后推进」
+- [x] T7 `index.ts` 装配 watcher 与 `GH_TOKEN`、关停停止轮询 (FR-001/FR-011)
+      验证: `tsc --noEmit`；`bun test` 全绿
+- [x] T8 README 增加「GitHub PR 评论」小节
+      验证: 人工检查 README 正文

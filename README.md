@@ -178,6 +178,32 @@ curl -X POST http://127.0.0.1:8799/event \
 - **关键词**：群里出现这些词且没人带触发词，自动开单（同一群有冷却）
 - **探针**：定时跑一条命令，退出码非 0 就开单；命令写法自由，CI、探活、磁盘检查都能接
 
+## GitHub PR 评论
+
+评审人可以直接在 PR 评论里派活，不用绕回 IM：
+
+```json
+{
+  "github": {
+    "enabled": true,
+    "repo": "owner/pisa",
+    "intervalSec": 120,
+    "tokenEnv": "GH_TOKEN",
+    "chatId": "<telegram chat id>",
+    "userId": "<telegram user id>"
+  }
+}
+```
+
+- 轮询仓库的 Issue 评论（PR 评论走同一个 API），默认 120 秒一轮
+- 只认正文（去首尾空白）以 `/pisa ` 开头的评论，其余一律忽略
+- 启动时刻作为下界，不回放历史评论；拉取失败不推进下界，下一轮继续
+- 同一条评论按 GitHub 评论 id 去重，重启、轮询重叠都只建一个任务
+- PR 上已有成功任务时接续它的分支（`baseRef`），上下文带 PR 号与原评论；没有就按普通任务处理，正文是去掉触发词的部分
+- 任务成功后把摘要（限 3000 字）回帖到来源 PR；回帖失败只写日志，任务状态不变
+
+`gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由配置的 `chatId` / `userId` 决定。
+
 ## 自举
 
 pisa 可以改自己：
@@ -245,7 +271,7 @@ specify → plan → tasks → implement → converge
 
 ## 当前状态
 
-**P0、P1 并行、pi 集成与自举已实现；路线图里还有三项没做。**
+**P0、P1、P2、P3 已实现；路线图里还有两项没做。**
 
 已完成：
 
@@ -256,15 +282,15 @@ specify → plan → tasks → implement → converge
 - pi 集成：Worker 挂 pisa 扩展，工具级进度上报 + 命令拦截 + 分支续跑
 - 自举：`/pisa merge` 验证后合入主干，看护进程拉起新代码
 - 订阅绑定：回复任务消息即续跑（消息 → 任务映射落库）
+- GitHub PR 评论：`/pisa` 触发轮询，PR 上已有任务则接续分支，完成后摘要回帖
 - 主动发现：群聊关键词 + 定时探针
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 28 个全绿；`tsc --noEmit` 无报错
+- 测试 55 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：
 
-- GitHub PR 评论 / Issue 回复的订阅绑定——目前只做了 IM 消息回复接续
 - P3 真正的会话持久化——仍用「上一轮分支 + 上下文注入」替代
 - `gh pr create` 未实测——仓库没配远程，只在本地裸仓库验证了 push
 

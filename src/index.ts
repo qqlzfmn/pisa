@@ -5,6 +5,7 @@ import { Router } from "./router";
 import { Worker } from "./worker";
 import { GitDeliverer } from "./deliver";
 import { Proactive } from "./proactive";
+import { GithubWatcher } from "./github-watcher";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import type { ChannelAdapter } from "./types";
@@ -33,6 +34,12 @@ async function main(): Promise<void> {
   }
   const activeChannel = channel;
 
+  // gh 只认 GH_TOKEN；token 仍来自环境变量，可从 tokenEnv 指定的变量名转交
+  const gh = cfg.github;
+  if (gh?.enabled && gh.tokenEnv) {
+    const token = process.env[gh.tokenEnv];
+    if (token) process.env.GH_TOKEN = token;
+  }
   const router = new Router({
     cfg,
     store,
@@ -49,12 +56,15 @@ async function main(): Promise<void> {
   }
 
   const proactive = new Proactive(cfg, (m) => router.handle(m));
+  const githubWatcher = new GithubWatcher({ cfg, store, enqueue: (m) => router.handle(m) });
   await channel.start((m) => {
     proactive.observe(m);
     return router.handle(m);
   });
   router.start();
   proactive.start();
+  githubWatcher.start();
+  if (gh?.enabled) console.log(`[pisa] GitHub PR 评论轮询已启用 · ${gh.repo}`);
 
   // 事件入口：CI / 监控 / 脚本可以把任务推进来
   if (cfg.webhook?.enabled) {
@@ -101,6 +111,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     await router.stop(3000);
     proactive.stop();
+    githubWatcher.stop();
     await activeChannel.stop();
     store.close();
     process.exit(75);

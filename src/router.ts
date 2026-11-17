@@ -8,6 +8,7 @@ import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
 import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
+import { defaultRunner, formatReply, postComment, type Runner } from "./github";
 import { TaskLogger } from "./log";
 
 export interface RouterDeps {
@@ -16,6 +17,8 @@ export interface RouterDeps {
   worker: WorkerRunner;
   deliverer: Deliverer;
   channel: ChannelAdapter;
+  /** 回帖用的 gh 执行器；默认走真实命令，测试注入假实现 */
+  ghRunner?: Runner;
   /** 注入以便测试 */
   now?: () => number;
 }
@@ -178,14 +181,17 @@ export class Router {
     let baseRef: string | null = null;
     let context: string | null = null;
 
-    if (cmd.kind === "continue") {
-      const [parentId, ...rest] = prompt.split(/\s+/);
-      const parent = parentId ? store.get(parentId) : null;
+    // 续跑：命令式 `/pisa continue <任务号> <新要求>`，或 PR 评论直接指定父任务
+    if (cmd.kind === "continue" || msg.continueFrom) {
+      const words = cmd.kind === "continue" ? prompt.split(/\s+/) : [];
+      const parentId = cmd.kind === "continue" ? (words[0] ?? "") : msg.continueFrom!;
+      const parent = store.get(parentId);
       if (!parent) {
-        await this.reply(msg.chatId, `找不到任务 ${parentId ?? ""}`);
+        await this.reply(msg.chatId, `找不到任务 ${parentId}`);
         return;
       }
-      if (parent.requester !== msg.userId) {
+      // IM 续跑只允许原请求者；PR 评论以配置身份投递，评论作者与 IM 用户无从对应
+      if (cmd.kind === "continue" && parent.requester !== msg.userId) {
         await this.reply(msg.chatId, "只有原请求者可以续跑。");
         return;
       }
@@ -194,13 +200,15 @@ export class Router {
         return;
       }
       baseRef = parent.branch;
-      context = [
+      const lines = [
         `任务号：${parent.id}`,
         `上一轮请求：${parent.prompt}`,
         `上一轮结果：${(parent.summary ?? "(无摘要)").slice(0, 1500)}`,
-        `上一轮分支：${parent.branch ?? "-"}`,
-      ].join("\n");
-      prompt = rest.join(" ").trim();
+        `上一轮分支：${parent.branch}`,
+      ];
+      if (msg.replyPr) lines.push(`PR：#${msg.replyPr}`, `PR 评论：${msg.text.trim().slice(0, 1000)}`);
+      context = lines.join("\n");
+      prompt = (cmd.kind === "continue" ? words.slice(1).join(" ") : cmd.body).trim();
       if (!prompt) {
         await this.reply(msg.chatId, `用法：${cfg.trigger} continue <任务号> <新要求>`);
         return;
@@ -243,6 +251,7 @@ export class Router {
       sessionId: null,
       baseRef,
       context,
+      replyPr: msg.replyPr ?? null,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -474,6 +483,14 @@ export class Router {
     return () => clearInterval(timer);
   }
 
+  /** 回帖到来源 PR；失败只记日志，不改任务状态 */
+  private replyToPr(task: Task, summary: string, log: TaskLogger): void {
+    const gh = this.deps.cfg.github;
+    if (!task.replyPr || !gh?.enabled) return;
+    const res = postComment(this.deps.ghRunner ?? defaultRunner, gh.repo, task.replyPr, formatReply(summary));
+    log.write("reply-pr", res.ok ? `PR #${task.replyPr} 已回帖` : `PR #${task.replyPr} 回帖失败：${res.error.slice(0, 500)}`);
+  }
+
   private async runTask(task: Task, branch: string): Promise<void> {
     const { cfg, store, channel, worker, deliverer } = this.deps;
     const repo = repoByAlias(cfg, task.repo);
@@ -564,6 +581,7 @@ export class Router {
     });
     removeWorktree(repo.path, workdir);
     log.write("done", `files=${delivery.files.length} pushed=${delivery.pushed}`);
+    this.replyToPr(task, result.summary, log);
 
     const fresh = store.get(task.id);
     const lines = [`✅ ${task.id} 完成`, result.summary.slice(0, 1200)];

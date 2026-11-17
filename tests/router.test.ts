@@ -256,14 +256,21 @@ describe("Router", () => {
   });
 
   test("merge 把任务分支合入主干", async () => {
-    const router = build(okWorker);
-    await router.handle(msg("/pisa 新建 out.txt"));
-    await router.drainOnce();
-    const id = store.recent()[0]!.id;
+    // 看护模式下合并成功会自行退出进程；跑测试时不能带上，否则杀掉测试进程
+    const supervised = process.env.PISA_SUPERVISED;
+    delete process.env.PISA_SUPERVISED;
+    try {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 新建 out.txt"));
+      await router.drainOnce();
+      const id = store.recent()[0]!.id;
 
-    await router.handle(msg(`/pisa merge ${id}`));
-    expect(channel.sent.some((s) => s.text.includes("已合并"))).toBe(true);
-    expect(sh(["git", "-C", repo, "cat-file", "-e", "main:out.txt"]).code).toBe(0);
+      await router.handle(msg(`/pisa merge ${id}`));
+      expect(channel.sent.some((s) => s.text.includes("已合并"))).toBe(true);
+      expect(sh(["git", "-C", repo, "cat-file", "-e", "main:out.txt"]).code).toBe(0);
+    } finally {
+      if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+    }
   });
 
   test("回复任务消息自动续跑该任务", async () => {
@@ -469,6 +476,7 @@ describe("状态机", () => {
     sessionId: null,
     baseRef: null,
     context: null,
+    replyPr: null,
     summary: null,
     error: null,
     createdAt: 0,

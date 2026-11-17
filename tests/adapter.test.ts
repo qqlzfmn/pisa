@@ -16,6 +16,7 @@ const task: Task = {
   sessionId: null,
   baseRef: null,
   context: null,
+  replyPr: null,
   summary: null,
   error: null,
   createdAt: 0,

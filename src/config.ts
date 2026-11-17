@@ -18,6 +18,8 @@ export interface Config {
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string; proxy?: string } };
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
+  /** PR 评论 → 任务 → 回帖；repo 形如 owner/repo */
+  github?: { enabled: boolean; repo: string; intervalSec?: number; tokenEnv?: string; chatId: string; userId: string };
   proactive?: {
     keywords?: { enabled: boolean; words: string[]; cooldownSec?: number; chatId?: string; userId?: string; prompt?: string };
     probe?: {

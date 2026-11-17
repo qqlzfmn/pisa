@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { prNumberFromIssueUrl } from "./github";
 import type { Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   session_id       TEXT,
   base_ref         TEXT,
   context          TEXT,
+  reply_pr         INTEGER,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -57,6 +59,7 @@ interface Row {
   session_id: string | null;
   base_ref: string | null;
   context: string | null;
+  reply_pr: number | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -80,6 +83,7 @@ function toTask(r: Row): Task {
     sessionId: r.session_id,
     baseRef: r.base_ref,
     context: r.context,
+    replyPr: r.reply_pr,
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -107,6 +111,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "context")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN context TEXT");
+    }
+    if (!cols.some((c) => c.name === "reply_pr")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN reply_pr INTEGER");
     }
   }
 
@@ -143,9 +150,9 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, created_at, base_ref, context)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [t.id, t.source, t.channel, t.chatId, t.requester, t.repo, t.prompt, t.status, t.createdAt, t.baseRef, t.context],
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, created_at, base_ref, context, reply_pr)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [t.id, t.source, t.channel, t.chatId, t.requester, t.repo, t.prompt, t.status, t.createdAt, t.baseRef, t.context, t.replyPr],
     );
   }
 
@@ -161,6 +168,14 @@ export class Store {
       [startedAt, branch, id],
     );
     return res.changes > 0;
+  }
+
+  /** 该 PR 下最近一次成功的任务；pr_url 形如 .../pull/<n> */
+  taskByPr(pr: number): Task | null {
+    const rows = this.db
+      .query("SELECT * FROM tasks WHERE status = 'succeeded' AND pr_url LIKE ? ORDER BY created_at DESC")
+      .all(`%/pull/${pr}%`) as Row[];
+    return rows.map(toTask).find((t) => t.prUrl && prNumberFromIssueUrl(t.prUrl) === pr) ?? null;
   }
 
   nextQueued(): Task | null {
@@ -182,6 +197,7 @@ export class Store {
       sessionId: "session_id",
       baseRef: "base_ref",
       context: "context",
+      replyPr: "reply_pr",
       summary: "summary",
       error: "error",
       startedAt: "started_at",

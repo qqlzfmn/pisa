@@ -11,6 +11,10 @@ export interface IncomingMessage {
   isDirect?: boolean;
   /** 回复的是哪条消息（用于接续对应任务） */
   replyToMessageId?: number;
+  /** 直接续跑这个任务，跳过命令里的任务号（PR 评论绑定用） */
+  continueFrom?: string;
+  /** 任务完成后回帖到该 PR */
+  replyPr?: number;
   receivedAt?: number;
 }
 
@@ -30,6 +34,8 @@ export interface Task {
   baseRef: string | null;
   /** 上一轮任务的上下文，注入 Worker 提示词 */
   context: string | null;
+  /** 任务完成后回帖到该 PR；null 表示不回帖 */
+  replyPr: number | null;
   summary: string | null;
   error: string | null;
   createdAt: number;
