@@ -129,7 +129,7 @@ bun run src/index.ts
 私聊里可以直接说需求，不用加 /pisa；群聊仍需触发词。
 /status、/cancel、/help 在私聊可直接用。
 
-/pisa continue <任务号> <新要求>   接着上一个会话继续做
+/pisa continue <任务号> <新要求>   从上一轮的分支和上下文继续做
 ```
 
 执行时会实时回传进度（`🛠 命令` / `✏️ 文件`），破坏性命令会在 agent 内部被拦下。
@@ -184,16 +184,26 @@ specify → plan → tasks → implement → converge
 
 ## 当前状态
 
-**P0 与 P1 已实现并通过测试。**
+**P0、P1 并行、pi 集成与自举已实现；路线图里还有三项没做。**
+
+已完成：
 
 - P0：单 Worker 闭环，真实 omp 跑通（改文件 → 提交到 `pisa/<任务号>` → 主分支零改动）
 - P1：并发上限可配（默认 2），任务级隔离，`/pisa status` 查看状态
 - P2：webhook 事件入口（CI/监控可直接投递任务）
 - P3：崩溃自动重启、孤儿任务收口、任务级超时
-- pi 集成：Worker 挂 pisa 扩展，工具级进度上报 + 命令拦截 + 会话续跑
-- 测试 19 个全绿；`tsc --noEmit` 无报错
+- pi 集成：Worker 挂 pisa 扩展，工具级进度上报 + 命令拦截 + 分支续跑
+- 自举：`/pisa merge` 验证后合入主干，看护进程拉起新代码
+- 测试 20 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
-- 已支持自举：merge 后由看护进程自动重启
+
+未完成（路线图原计划）：
+
+- P1 任务与讨论的订阅绑定（PR 评论、Issue 回复接续）——未实现
+- P2 主动发现（CI 失败、群聊报障无人 @ 时自动接手）——只做了被动 webhook
+- P3 会话状态外置与断线重连——当前用「上一轮分支 + 上下文注入」替代，不是真正的会话持久化
+- Agent 无关的 `WorkerAdapter`——Worker 仍绑定 omp 的 `--mode=json` 输出格式
+- push / PR 交付——代码在，配置关闭，仓库也未配远程
 
 ## 致谢
 
