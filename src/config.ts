@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export interface RepoConfig {
   alias: string;
@@ -92,15 +92,37 @@ function merge(base: Config, patch: Partial<Config>): Config {
 
 export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json"): Config {
   const abs = resolve(path);
+  const baseDir = dirname(abs);
   let cfg = DEFAULT_CONFIG;
   if (existsSync(abs)) {
     cfg = merge(DEFAULT_CONFIG, JSON.parse(readFileSync(abs, "utf8")) as Partial<Config>);
   }
+  // 相对路径以配置文件所在目录为基准：守护进程与 CLI 从不同工作目录启动时指向同一份状态
+  if (!isAbsolute(cfg.stateDir)) cfg.stateDir = resolve(baseDir, cfg.stateDir);
+  cfg = {
+    ...cfg,
+    repos: cfg.repos.map((r) => ({
+      ...r,
+      path: typeof r.path === "string" && !isAbsolute(r.path) ? resolve(baseDir, r.path) : r.path,
+    })),
+  };
   // 环境变量覆盖，便于容器与测试
   if (process.env.PISA_TRIGGER) cfg.trigger = process.env.PISA_TRIGGER;
   if (process.env.PISA_USERS) cfg.whitelist.users = process.env.PISA_USERS.split(",").map((s) => s.trim()).filter(Boolean);
-  if (process.env.PISA_STATE_DIR) cfg.stateDir = process.env.PISA_STATE_DIR;
+  if (process.env.PISA_STATE_DIR) cfg.stateDir = resolve(process.env.PISA_STATE_DIR);
   return cfg;
+}
+
+/** 从 start 向上查找配置文件；找不到时回落到 start 下的默认文件名 */
+export function findConfig(start = process.cwd(), name = "pisa.config.json"): string {
+  let dir = resolve(start);
+  for (;;) {
+    const candidate = join(dir, name);
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return resolve(start, name);
+    dir = parent;
+  }
 }
 
 export function repoByAlias(cfg: Config, alias?: string): RepoConfig | undefined {

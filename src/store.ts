@@ -54,6 +54,11 @@ CREATE TABLE IF NOT EXISTS task_effects (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (task_id, kind, target)
 );
+
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 interface Row {
@@ -179,6 +184,28 @@ export class Store {
     return rows.map((r) => ({ taskId: r.task_id, kind: r.kind, target: r.target, detail: r.detail, createdAt: r.created_at }));
   }
 
+  /** 守护进程心跳：CLI 用它判断任务是否真的会被执行 */
+  beat(at = Date.now()): void {
+    this.db.run("INSERT INTO meta(key, value) VALUES ('heartbeat', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [
+      String(at),
+    ]);
+  }
+
+  lastBeat(): number | null {
+    const row = this.db.query("SELECT value FROM meta WHERE key = 'heartbeat'").get() as { value: string } | null;
+    if (!row) return null;
+    const n = Number(row.value);
+    return Number.isSafeInteger(n) ? n : null;
+  }
+
+  /** 事件 id 反查任务：CLI 重试时返回已有任务而不是再建一个 */
+  taskByEvent(eventId: string): Task | null {
+    const row = this.db
+      .query("SELECT t.* FROM tasks t JOIN events e ON e.task_id = t.id WHERE e.event_id = ?")
+      .get(eventId) as Row | null;
+    return row ? toTask(row) : null;
+  }
+
   /** 幂等：同一事件只能登记一次 */
   claimEvent(eventId: string, taskId: string): boolean {
     const res = this.db.run("INSERT OR IGNORE INTO events(event_id, task_id, seen_at) VALUES (?, ?, ?)", [
@@ -212,6 +239,17 @@ export class Store {
         t.replyRepo,
       ],
     );
+  }
+
+  /** 事件与任务同一事务：重复投递不建第二个任务，返回是否新建 */
+  insertTaskOnce(eventId: string, task: Task): boolean {
+    let inserted = false;
+    this.db.transaction(() => {
+      if (!this.claimEvent(eventId, task.id)) return;
+      this.insertTask(task);
+      inserted = true;
+    })();
+    return inserted;
   }
 
   get(id: string): Task | null {
@@ -312,6 +350,39 @@ export class Store {
   recentTasks(limit = 10): Task[] {
     const rows = this.db.query("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?").all(limit) as Row[];
     return rows.map(toTask);
+  }
+
+  /** CLI 列表：按仓库、状态过滤，先筛后限 */
+  listTasks(opts: { repo?: string; status?: TaskStatus; limit?: number } = {}): Task[] {
+    const where: string[] = [];
+    const vals: Array<string | number> = [];
+    if (opts.repo) {
+      where.push("repo = ?");
+      vals.push(opts.repo);
+    }
+    if (opts.status) {
+      where.push("status = ?");
+      vals.push(opts.status);
+    }
+    const sql = `SELECT * FROM tasks ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT ?`;
+    vals.push(Math.max(1, opts.limit ?? 20));
+    return (this.db.query(sql).all(...vals) as Row[]).map(toTask);
+  }
+
+  /** 某个 PR 关联的全部任务：CLI 用 PR 号找回可续跑的任务 */
+  tasksByPr(pr: number, repo?: string, limit = 20): Task[] {
+    const rows = this.db
+      .query("SELECT * FROM tasks WHERE pr_url LIKE ? ORDER BY created_at DESC")
+      .all(`%/pull/${pr}%`) as Row[];
+    return rows
+      .map(toTask)
+      .filter(
+        (t) =>
+          t.prUrl &&
+          prNumberFromIssueUrl(t.prUrl) === pr &&
+          (!repo || t.prUrl.includes(`github.com/${repo}/pull/${pr}`)),
+      )
+      .slice(0, Math.max(1, limit));
   }
 
   /** 终态任务，按创建时间倒序；看板「最近完成」用，先筛后限避免被未完成任务挤掉 */

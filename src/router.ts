@@ -1,6 +1,5 @@
 import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
@@ -20,6 +19,11 @@ import {
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
 import { TaskLogger } from "./log";
+import { newTaskId } from "./ids";
+import { continuationContext } from "./task-context";
+import { formatStatusBoard } from "./status";
+
+export { formatDuration } from "./status";
 
 export interface RouterDeps {
   cfg: Config;
@@ -32,28 +36,6 @@ export interface RouterDeps {
   /** 注入以便测试 */
   now?: () => number;
 }
-
-function newId(now = Date.now()): string {
-  const d = new Date(now);
-  const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
-  return `t_${ymd}_${randomBytes(3).toString("hex")}`;
-}
-
-/** 毫秒 → 人类可读时长：不足 1 分钟给秒，不足 1 小时给 XmYs，其余 XhYm */
-export function formatDuration(ms: number): string {
-  const sec = Math.max(0, Math.floor(ms / 1000));
-  if (sec < 60) return `${sec}s`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m${sec % 60}s`;
-  return `${Math.floor(sec / 3600)}h${Math.floor((sec % 3600) / 60)}m`;
-}
-
-/** 需求单行预览：折叠换行与连续空白，超长截断并补省略号 */
-function preview(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
-}
-
-const FINISHED_LABEL: Record<string, string> = { succeeded: "成功", failed: "失败", cancelled: "取消", rewound: "已撤销" };
 
 /** 单英文词任务的待确认正文，10 分钟过期 */
 const PENDING_TTL_MS = 10 * 60 * 1000;
@@ -81,7 +63,11 @@ export class Router {
 
   start(intervalMs = 800): void {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.fill(), intervalMs);
+    this.deps.store.beat();
+    this.timer = setInterval(() => {
+      this.deps.store.beat();
+      void this.fill();
+    }, intervalMs);
   }
 
   /**
@@ -115,40 +101,6 @@ export class Router {
       }
     }
     return result;
-  }
-
-  /** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
-  private statusBoard(): string {
-    const { store } = this.deps;
-    const now = this.now();
-    const running = store.runningTasks();
-    const queued = store.queuedTasks();
-    const finished = store.recentFinished(5);
-    const counts = store.countByStatus();
-    const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
-
-    const lines = ["运行中"];
-    if (running.length === 0) lines.push("(无)");
-    for (const t of running) {
-      const elapsed = formatDuration(now - (t.startedAt ?? t.createdAt));
-      lines.push(`${t.id} · ${t.repo} · 已运行 ${elapsed} · ${preview(t.prompt, 40)}`);
-    }
-
-    lines.push("", `排队（${queued.length}）`);
-    if (queued.length === 0) lines.push("(无)");
-    for (const t of queued.slice(0, 5)) lines.push(`${t.id} · ${t.repo} · ${preview(t.prompt, 40)}`);
-
-    lines.push("", "最近完成");
-    if (finished.length === 0) lines.push("(无)");
-    for (const t of finished) {
-      const spent = formatDuration((t.endedAt ?? t.createdAt) - (t.startedAt ?? t.createdAt));
-      const parts = [FINISHED_LABEL[t.status] ?? t.status, spent, t.repo, preview(t.prompt, 30)];
-      if (t.prUrl) parts.push(t.prUrl);
-      lines.push(parts.join(" · "));
-    }
-
-    lines.push("", `汇总：${total} 个任务 · 成功 ${counts.succeeded} · 失败 ${counts.failed} · 暂停 ${counts.paused}`);
-    return lines.join("\n");
   }
 
   /** 立即执行一个已进入 running 的任务；不等待完成 */
@@ -323,7 +275,7 @@ export class Router {
     }
 
     if (cmd.kind === "status") {
-      await this.reply(msg.chatId, this.statusBoard());
+      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now()));
       return;
     }
 
@@ -360,14 +312,7 @@ export class Router {
         branch = parent.branch;
         prUrl = parent.prUrl;
       }
-      const lines = [
-        `任务号：${parent.id}`,
-        `上一轮请求：${parent.prompt}`,
-        `上一轮结果：${(parent.summary ?? "(无摘要)").slice(0, 1500)}`,
-        `上一轮分支：${parent.branch}`,
-      ];
-      if (msg.replyPr) lines.push(`PR：#${msg.replyPr}`, `PR 评论：${msg.text.trim().slice(0, 1000)}`);
-      context = lines.join("\n");
+      context = continuationContext(parent, msg.replyPr ? { number: msg.replyPr, text: msg.text.trim() } : undefined);
       prompt = (cmd.kind === "continue" ? words.slice(1).join(" ") : cmd.body).trim();
       if (!prompt) {
         await this.reply(msg.chatId, `用法：${cfg.trigger} continue <任务号> <新要求>`);
@@ -376,7 +321,7 @@ export class Router {
     }
 
     const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
-    const taskId = newId(this.now());
+    const taskId = newTaskId(this.now());
     // 去重：同一事件只登记一次；重复投递直接丢弃
     if (!store.claimEvent(msg.eventId, taskId)) return;
 
