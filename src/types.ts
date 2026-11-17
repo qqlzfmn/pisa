@@ -69,6 +69,8 @@ export interface ChannelAdapter {
   start(onMessage: (m: IncomingMessage) => Promise<void> | void): Promise<void>;
   send(chatId: string, text: string): Promise<DeliveryReceipt | void>;
   stop(): Promise<void>;
+  /** 支持命令菜单的通道（Telegram）用它注册；不支持可以不实现 */
+  setCommands?(commands: ReadonlyArray<{ command: string; description: string }>): Promise<void>;
 }
 
 export interface DeliveryResult {

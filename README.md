@@ -135,6 +135,14 @@ bun run src/index.ts
 /pisa status                     任务看板（私聊可用 /status）
 ```
 
+误触保护：
+
+- 只有一个 token 且与命令编辑距离 ≤ 2（如 `/pisa stats`）不会建任务，直接回复建议命令
+- 其余单英文词（如 `/pisa refactor`）先要求确认，回复 `/pisa confirm` 才建任务，10 分钟内有效
+- 中文正文与多词正文照常直接建任务
+
+Telegram 启动时用 `setMyCommands` 注册命令菜单（私聊可直接点选）。
+
 `/pisa status` 分三段：
 
 - **运行中**：每行 `任务号 · 仓库 · 已运行 3m12s · 需求前 40 字`

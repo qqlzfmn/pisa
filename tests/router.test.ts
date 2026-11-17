@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Store } from "../src/store";
 import { Router, formatDuration } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
-import { parseCommand, type Config } from "../src/config";
+import { parseCommand, taskGuard, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh, changedFiles, createWorktree } from "../src/git";
@@ -81,6 +81,26 @@ describe("parseCommand", () => {
   });
   test("没有触发词不响应", () => {
     expect(parseCommand("你好", "/pisa")).toBeNull();
+  });
+
+  test("确认命令", () => {
+    expect(parseCommand("/pisa confirm", "/pisa")).toEqual({ kind: "confirm", body: "" });
+  });
+});
+
+describe("taskGuard", () => {
+  test("命令错拼给出建议", () => {
+    expect(taskGuard("stats")).toEqual({ kind: "suggest", command: "status" });
+    expect(taskGuard("cancell")).toEqual({ kind: "suggest", command: "cancel" });
+  });
+
+  test("其余单英文词要求确认", () => {
+    expect(taskGuard("refactor")).toEqual({ kind: "confirm" });
+  });
+
+  test("中文与多词正文放行", () => {
+    expect(taskGuard("修复")).toBeNull();
+    expect(taskGuard("fix login bug")).toBeNull();
   });
 });
 
@@ -662,6 +682,70 @@ describe("Router", () => {
     expect(await router.drainOnce()).toBe(false);
     expect(store.get(task.id)?.status).toBe("queued");
     expect(existsSync(join(stateDir, "worktrees", task.id))).toBe(false);
+  });
+
+  describe("命令误触防护", () => {
+    test("命令错拼不建任务，回复建议命令", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa stats"));
+
+      expect(store.recentTasks()).toHaveLength(0);
+      expect(channel.sent.at(-1)?.text).toContain("/pisa status");
+    });
+
+    test("单英文词先要求确认，确认后建任务", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa refactor"));
+      expect(store.recentTasks()).toHaveLength(0);
+      expect(channel.sent.at(-1)?.text).toContain("确认");
+
+      await router.handle(msg("/pisa confirm"));
+      const task = store.recentTasks()[0]!;
+      expect(task.prompt).toBe("refactor");
+    });
+
+    test("待确认 10 分钟后失效", async () => {
+      let now = 1_000_000;
+      const router = build(okWorker, () => now);
+      await router.handle(msg("/pisa refactor"));
+      now += 10 * 60 * 1000 + 1;
+
+      await router.handle(msg("/pisa confirm"));
+      expect(store.recentTasks()).toHaveLength(0);
+      expect(channel.sent.at(-1)?.text).toContain("没有待确认");
+    });
+
+    test("没有待确认时 confirm 不建任务", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa confirm"));
+
+      expect(store.recentTasks()).toHaveLength(0);
+      expect(channel.sent.at(-1)?.text).toContain("没有待确认");
+    });
+
+    test("等待确认时发别的命令视为放弃", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa refactor"));
+      await router.handle(msg("/pisa 待办"));
+      await router.handle(msg("/pisa confirm"));
+
+      expect(store.recentTasks().map((t) => t.prompt)).toEqual(["待办"]);
+    });
+
+    test("中文正文直通建任务", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 修复"));
+
+      expect(store.recentTasks()[0]?.prompt).toBe("修复");
+    });
+
+    test("私聊错拼斜杠命令给建议，不建任务", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/stats", { isDirect: true }));
+
+      expect(store.recentTasks()).toHaveLength(0);
+      expect(channel.sent.at(-1)?.text).toContain("/status");
+    });
   });
 });
 

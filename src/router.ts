@@ -1,8 +1,8 @@
 import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import type { Config, RepoConfig } from "./config";
-import { githubRepos, parseCommand, repoByAlias, splitRepoAlias } from "./config";
+import type { CommandKind, Config, RepoConfig } from "./config";
+import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
 import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
@@ -52,6 +52,15 @@ function preview(text: string, max: number): string {
 
 const FINISHED_LABEL: Record<string, string> = { succeeded: "成功", failed: "失败", cancelled: "取消" };
 
+/** 单英文词任务的待确认正文，10 分钟过期 */
+const PENDING_TTL_MS = 10 * 60 * 1000;
+
+interface PendingTask {
+  prompt: string;
+  repo?: string;
+  at: number;
+}
+
 export class Router {
   private active = new Map<string, Promise<void>>();
   /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
@@ -60,6 +69,8 @@ export class Router {
   private readonly now: () => number;
   /** 拒绝提示节流：同一用户 24h 只提示一次 */
   private deniedAt = new Map<string, number>();
+  /** 被拦下的单英文词任务：键 `${chatId}:${userId}`，每人只保留一条 */
+  private pending = new Map<string, PendingTask>();
 
   constructor(private deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
@@ -199,11 +210,53 @@ export class Router {
       if (t === "/start" || t === "/help" || t === "帮助") cmd = { kind: "help", body: "" };
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
+      else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
       else if (t && !t.startsWith("/")) cmd = { kind: "task", body: t };
+      else if (t.startsWith("/")) {
+        // 未知斜杠命令：只对可能是命令错拼的单词给提示，其余保持忽略
+        const guard = taskGuard(t.slice(1));
+        if (guard?.kind === "suggest") {
+          await this.reply(msg.chatId, this.suggestText(msg, guard.command, t.slice(1)));
+          return;
+        }
+      }
     }
     if (!cmd) return;
+
+    // 除确认以外的下一条命令视为放弃待确认；避免旧单词被迟到的 confirm 建单
+    if (cmd.kind !== "confirm") this.pending.delete(this.pendingKey(msg));
+
+    // 待确认的单英文词任务：确认后跳过防护，直接建任务
+    let fromConfirm = false;
+    if (cmd.kind === "confirm") {
+      const pending = this.takePending(msg);
+      if (!pending) {
+        await this.reply(msg.chatId, `没有待确认的任务。直接发 ${cfg.trigger} <需求> 接单。`);
+        return;
+      }
+      cmd = { kind: "task", body: pending.prompt };
+      if (pending.repo) msg = { ...msg, repo: pending.repo };
+      fromConfirm = true;
+    }
+
+    // 命令误触防护：打错命令只给建议；其余单英文词先要求确认，不落库
+    if (cmd.kind === "task" && !fromConfirm) {
+      const guard = taskGuard(cmd.body);
+      if (guard?.kind === "suggest") {
+        await this.reply(msg.chatId, this.suggestText(msg, guard.command, cmd.body.trim()));
+        return;
+      }
+      if (guard?.kind === "confirm") {
+        this.pending.set(this.pendingKey(msg), { prompt: cmd.body.trim(), repo: msg.repo, at: this.now() });
+        await this.reply(
+          msg.chatId,
+          `「${cmd.body.trim()}」只有一个英文单词，确认要把它当成任务吗？\n回复 ${cfg.trigger} confirm 确认（10 分钟内有效，其它命令视为放弃）。`,
+        );
+        return;
+      }
+    }
 
     if (cmd.kind === "help") {
       await this.reply(
@@ -217,6 +270,7 @@ export class Router {
           `${cfg.trigger} continue <任务号> <新要求>  接着上一轮的分支做`,
           `${cfg.trigger} merge <任务号>     合并到主干（自举）`,
           `${cfg.trigger} schedules      查看定时任务（私聊可用 /schedules）`,
+          `${cfg.trigger} confirm        确认刚被拦下的单英文词任务`,
           `${cfg.trigger} help           本帮助（私聊可用 /help）`,
         ].join("\n"),
       );
@@ -360,6 +414,34 @@ export class Router {
     };
     store.insertTask(task);
     await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库：${repo.alias}\n排队中。`);
+  }
+
+  /** 待确认任务按人与会话隔离，避免群里互相确认别人的任务 */
+  private pendingKey(msg: IncomingMessage): string {
+    return `${msg.chatId}:${msg.userId}`;
+  }
+
+  /** 取走待确认正文；过期的直接丢弃 */
+  private takePending(msg: IncomingMessage): PendingTask | null {
+    const key = this.pendingKey(msg);
+    const pending = this.pending.get(key);
+    if (!pending) return null;
+    this.pending.delete(key);
+    return this.now() - pending.at <= PENDING_TTL_MS ? pending : null;
+  }
+
+  /** 建议命令的写法：私聊用裸斜杠命令，群聊必须带触发词 */
+  private commandHint(msg: IncomingMessage, command: CommandKind): string {
+    const { cfg } = this.deps;
+    return msg.isDirect && cfg.dmWithoutTrigger ? `/${command}` : `${cfg.trigger} ${command}`;
+  }
+
+  private suggestText(msg: IncomingMessage, command: CommandKind, word: string): string {
+    return (
+      `${word} 不是已知命令。\n` +
+      `你要用的是：${this.commandHint(msg, command)}\n` +
+      `如果确实要接任务，把需求写完整（例如 ${this.deps.cfg.trigger} 修复登录超时）。`
+    );
   }
 
   /** 统一发送；带 taskId 时记住消息 id，之后用户回复这条消息即可续跑 */

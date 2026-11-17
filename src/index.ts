@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { githubRepos, loadConfig } from "./config";
+import { BOT_COMMANDS, githubRepos, loadConfig } from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker } from "./worker";
@@ -34,6 +34,15 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const activeChannel = channel;
+
+  // Telegram 命令菜单：失败只告警，不阻断启动
+  if (channel.setCommands) {
+    try {
+      await channel.setCommands(BOT_COMMANDS);
+    } catch (err) {
+      console.warn(`[pisa] 注册命令菜单失败：${(err as Error).message}`);
+    }
+  }
 
   // gh 只认 GH_TOKEN；token 仍来自环境变量，可从 tokenEnv 指定的变量名转交
   const gh = cfg.github;

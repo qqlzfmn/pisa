@@ -135,22 +135,105 @@ export function splitRepoAlias(text: string, repos: RepoConfig[]): { alias: stri
   return { alias, body: m[2]!.trim() };
 }
 
+export type CommandKind =
+  | "cancel"
+  | "help"
+  | "status"
+  | "schedules"
+  | "continue"
+  | "merge"
+  | "resume"
+  | "confirm";
+
+export interface CommandSpec {
+  /** 英文命令名：精确匹配、模糊提示与 Telegram 菜单都用它 */
+  command: CommandKind;
+  /** 中文别名，只参与精确匹配 */
+  alias?: string;
+  description: string;
+  /** 是否注册到 Telegram 命令菜单 */
+  menu?: boolean;
+}
+
+/** 命令清单：解析、错拼建议、菜单注册的唯一事实源 */
+export const COMMANDS: readonly CommandSpec[] = [
+  { command: "cancel", alias: "取消", description: "取消任务", menu: true },
+  { command: "help", alias: "帮助", description: "查看命令帮助", menu: true },
+  { command: "status", alias: "状态", description: "查看任务看板", menu: true },
+  { command: "schedules", alias: "定时", description: "查看定时任务", menu: true },
+  { command: "continue", alias: "继续", description: "接着上一轮分支继续", menu: true },
+  { command: "merge", alias: "合并", description: "把已完成任务合入主干", menu: true },
+  { command: "resume", alias: "恢复", description: "恢复被中断的任务", menu: true },
+  { command: "confirm", alias: "确认", description: "确认被拦下的单英文词任务", menu: false },
+];
+
+/** Telegram setMyCommands 的载荷：只列用户主动使用的命令 */
+export const BOT_COMMANDS: ReadonlyArray<{ command: string; description: string }> = COMMANDS.filter(
+  (c) => c.menu,
+).map(({ command, description }) => ({ command, description }));
+
+const KIND_BY_WORD: Record<string, CommandKind> = {};
+for (const c of COMMANDS) {
+  KIND_BY_WORD[c.command] = c.command;
+  if (c.alias) KIND_BY_WORD[c.alias] = c.command;
+}
+
+/** 带参数的四个命令；其余命令忽略参数（与改造前一致） */
+const TAKES_BODY: Partial<Record<CommandKind, true>> = { cancel: true, continue: true, merge: true, resume: true };
+
+export interface ParsedCommand {
+  kind: CommandKind | "task";
+  body: string;
+}
+
 /** 触发词解析：仅接受以 trigger 开头的文本 */
-export function parseCommand(
-  text: string,
-  trigger: string,
-): { kind: "task" | "cancel" | "help" | "status" | "continue" | "merge" | "resume" | "schedules"; body: string } | null {
+export function parseCommand(text: string, trigger: string): ParsedCommand | null {
   const t = text.trim();
   if (!t.startsWith(trigger)) return null;
   const rest = t.slice(trigger.length).trim();
   if (!rest) return { kind: "help", body: "" };
   const [head, ...tail] = rest.split(/\s+/);
-  if (head === "cancel" || head === "取消") return { kind: "cancel", body: tail.join(" ").trim() };
-  if (head === "help" || head === "帮助") return { kind: "help", body: "" };
-  if (head === "status" || head === "状态") return { kind: "status", body: "" };
-  if (head === "schedules" || head === "定时") return { kind: "schedules", body: "" };
-  if (head === "continue" || head === "继续") return { kind: "continue", body: tail.join(" ").trim() };
-  if (head === "merge" || head === "合并") return { kind: "merge", body: tail.join(" ").trim() };
-  if (head === "resume" || head === "恢复") return { kind: "resume", body: tail.join(" ").trim() };
-  return { kind: "task", body: rest };
+  const kind = KIND_BY_WORD[head!];
+  if (!kind) return { kind: "task", body: rest };
+  return { kind, body: TAKES_BODY[kind] ? tail.join(" ").trim() : "" };
+}
+
+/** 单个 ASCII 词：像命令、不像需求正文 */
+const SINGLE_ASCII_WORD = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+export type TaskGuard =
+  | { kind: "suggest"; command: CommandKind }
+  | { kind: "confirm" };
+
+/**
+ * 任务正文的误触防护：单个 ASCII 词不直接建任务。
+ * 与菜单命令编辑距离 ≤ 2 视为打错命令，返回建议；其余单词要求确认。
+ * 中文与多词正文返回 null，行为不变。
+ */
+export function taskGuard(body: string): TaskGuard | null {
+  const word = body.trim();
+  if (!SINGLE_ASCII_WORD.test(word)) return null;
+  const lower = word.toLowerCase();
+  let best: { command: CommandKind; distance: number } | null = null;
+  for (const c of COMMANDS) {
+    if (!c.menu) continue;
+    const distance = editDistance(lower, c.command);
+    if (distance <= 2 && (!best || distance < best.distance)) best = { command: c.command, distance };
+  }
+  return best ? { kind: "suggest", command: best.command } : { kind: "confirm" };
+}
+
+/** Levenshtein 距离：命令名都很短，二维滚动数组足够 */
+function editDistance(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0]!;
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const up = prev[j]!;
+      prev[j] = Math.min(up + 1, prev[j - 1]! + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = up;
+    }
+  }
+  return prev[b.length]!;
 }

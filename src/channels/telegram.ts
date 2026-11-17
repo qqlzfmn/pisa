@@ -81,6 +81,10 @@ export class TelegramChannel implements ChannelAdapter {
     return last;
   }
 
+  async setCommands(commands: ReadonlyArray<{ command: string; description: string }>): Promise<void> {
+    await this.api("setMyCommands", { commands });
+  }
+
   private async api<T = unknown>(method: string, body: Record<string, unknown>): Promise<{ ok: boolean; result?: T }> {
     const res = await fetch(`${API}/bot${this.token}/${method}`, {
       method: "POST",
