@@ -8,7 +8,14 @@ import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
 import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
-import { defaultRunner, formatReply, postComment, postIssueComment, type Runner } from "./github";
+import {
+  defaultRunner,
+  formatReply,
+  postComment,
+  postIssueComment,
+  postReplyOnce,
+  type Runner,
+} from "./github";
 import { TaskLogger } from "./log";
 
 export interface RouterDeps {
@@ -583,17 +590,28 @@ export class Router {
     if (!gh?.enabled || !repo) return;
     const runner = this.deps.ghRunner ?? defaultRunner;
     const body = formatReply(summary);
-    if (task.replyPr) {
-      const res = postComment(runner, repo, task.replyPr, body);
-      log.write("reply-pr", res.ok ? `PR #${task.replyPr} 已回帖` : `PR #${task.replyPr} 回帖失败：${res.error.slice(0, 500)}`);
-    }
-    if (task.replyIssue) {
-      const res = postIssueComment(runner, repo, task.replyIssue, body);
-      log.write(
-        "reply-issue",
-        res.ok ? `Issue #${task.replyIssue} 已回帖` : `Issue #${task.replyIssue} 回帖失败：${res.error.slice(0, 500)}`,
-      );
-    }
+    if (task.replyPr) this.postReply(runner, repo, task.replyPr, "pr", task, body, log);
+    if (task.replyIssue) this.postReply(runner, repo, task.replyIssue, "issue", task, body, log);
+  }
+
+  /** 带隐藏标记回帖：讨论串已有同标记说明发过，重试不再重复；检查失败则跳过，只记日志 */
+  private postReply(
+    runner: Runner,
+    repo: string,
+    n: number,
+    purpose: "pr" | "issue",
+    task: Task,
+    body: string,
+    log: TaskLogger,
+  ): void {
+    const kind = purpose === "pr" ? "PR" : "Issue";
+    const res = postReplyOnce(runner, repo, n, purpose, task.id, body);
+    const detail = !res.ok
+      ? `回帖失败：${res.error.slice(0, 500)}`
+      : res.value === "skipped"
+        ? "已存在同标记回帖，跳过"
+        : "已回帖";
+    log.write(`reply-${purpose}`, `${kind} #${n} ${detail}`);
   }
 
   /**

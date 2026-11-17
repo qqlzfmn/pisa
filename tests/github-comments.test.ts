@@ -8,7 +8,9 @@ import {
   listComments,
   postComment,
   postIssueComment,
+  postReplyOnce,
   prNumberFromIssueUrl,
+  replyMarker,
   type Runner,
 } from "../src/github";
 import { GithubWatcher } from "../src/github-watcher";
@@ -38,6 +40,11 @@ function scripted(...replies: ExecResult[]) {
 
 function apiReply(comments: Array<{ id: number; body: string; issue_url: string }>): ExecResult {
   return reply(0, comments.map((c) => JSON.stringify({ ...c, user: { login: "alice" } })).join("\n"));
+}
+
+/** 讨论串正文列表那次调用的输出：与 `--jq '.[]'` 一致，一行一个评论对象 */
+function threadBodies(bodies: string[]): ExecResult {
+  return reply(0, bodies.map((body) => JSON.stringify({ body })).join("\n"));
 }
 
 /**
@@ -212,6 +219,78 @@ describe("listComments / postComment", () => {
 
     const failed = postIssueComment(scripted(reply(1, "", "no token")).runner, "o/r", 20, "正文");
     expect(failed).toEqual({ ok: false, error: "no token" });
+  });
+});
+
+describe("postReplyOnce", () => {
+  const listArgs = ["gh", "api", "repos/o/r/issues/12/comments", "--paginate", "--jq", ".[]"];
+
+  test("无标记则发送，正文末尾带隐藏标记", () => {
+    const { runner, calls } = scripted(threadBodies(["普通聊天"]), reply(0));
+    expect(postReplyOnce(runner, "o/r", 12, "pr", "t_1", "**pisa** 任务完成\n\n改好了")).toEqual({
+      ok: true,
+      value: "posted",
+    });
+    expect(calls).toEqual([
+      listArgs,
+      [
+        "gh",
+        "pr",
+        "comment",
+        "12",
+        "--repo",
+        "o/r",
+        "--body",
+        `**pisa** 任务完成\n\n改好了\n\n${replyMarker("t_1", "pr")}`,
+      ],
+    ]);
+  });
+
+  test("已存在同标记则跳过：重试只发一次", () => {
+    // 假 GitHub：列表返回已发正文，回帖把正文追加进去
+    const posted: string[] = [];
+    const calls: string[][] = [];
+    const runner: Runner = (args) => {
+      calls.push(args);
+      if (args[1] === "api") return threadBodies(posted);
+      posted.push(args[args.length - 1]!);
+      return reply(0);
+    };
+    expect(postReplyOnce(runner, "o/r", 12, "pr", "t_7", "改好了")).toEqual({ ok: true, value: "posted" });
+    expect(postReplyOnce(runner, "o/r", 12, "pr", "t_7", "改好了")).toEqual({ ok: true, value: "skipped" });
+    expect(posted.length).toBe(1);
+    expect(posted[0]).toContain(replyMarker("t_7", "pr"));
+    // 跳过那次只查列表，没有再发
+    expect(calls.filter((c) => c[1] === "pr").length).toBe(1);
+  });
+
+  test("同任务不同用途不互相抑制，Issue 走 issue comment", () => {
+    const { runner, calls } = scripted(threadBodies(["x\n" + replyMarker("t_2", "pr")]), reply(0));
+    expect(postReplyOnce(runner, "o/r", 12, "issue", "t_2", "改好了")).toEqual({ ok: true, value: "posted" });
+    expect(calls[1]).toEqual([
+      "gh",
+      "issue",
+      "comment",
+      "12",
+      "--repo",
+      "o/r",
+      "--body",
+      `改好了\n\n${replyMarker("t_2", "issue")}`,
+    ]);
+  });
+
+  test("列表检查失败不发，返回错误", () => {
+    const { runner, calls } = scripted(reply(1, "", "gh: boom"));
+    expect(postReplyOnce(runner, "o/r", 12, "pr", "t_3", "改好了")).toEqual({
+      ok: false,
+      error: "讨论串检查失败：gh: boom",
+    });
+    expect(calls).toEqual([listArgs]);
+  });
+
+  test("标记含任务号与用途", () => {
+    expect(replyMarker("t_9", "pr")).toBe("<!-- pisa:reply task=t_9 on=pr -->");
+    expect(replyMarker("t_9", "issue")).toBe("<!-- pisa:reply task=t_9 on=issue -->");
   });
 });
 
@@ -456,8 +535,39 @@ describe("GitHub 评论 → 任务", () => {
     });
     await router.drainOnce();
 
-    expect(store.recentTasks()[0]!.status).toBe("succeeded");
-    expect(calls).toEqual([["gh", "pr", "comment", "12", "--repo", "o/r", "--body", `${HEADER}改好了`]]);
+    const task = store.recentTasks()[0]!;
+    expect(task.status).toBe("succeeded");
+    expect(calls).toEqual([
+      ["gh", "api", "repos/o/r/issues/12/comments", "--paginate", "--jq", ".[]"],
+      ["gh", "pr", "comment", "12", "--repo", "o/r", "--body", `${HEADER}改好了\n\n${replyMarker(task.id, "pr")}`],
+    ]);
+  });
+
+  test("讨论串已有同标记时跳过回帖", async () => {
+    const calls: string[][] = [];
+    // 列表返回的已有回帖带的就是本任务的标记：重试场景
+    const ghRunner: Runner = (args) => {
+      calls.push(args);
+      if (args[1] === "api") return threadBodies([`上一轮回帖\n\n${replyMarker(store.recentTasks()[0]!.id, "pr")}`]);
+      return reply(0);
+    };
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner });
+    await router.handle({
+      eventId: "github:comment:13",
+      channel: "github",
+      chatId: "c1",
+      userId: "u1",
+      text: "/pisa 修一下登录",
+      replyPr: 12,
+    });
+    await router.drainOnce();
+
+    const task = store.recentTasks()[0]!;
+    expect(task.status).toBe("succeeded");
+    // 只查了列表，没有发第二条
+    expect(calls.some((c) => c[1] === "pr")).toBe(false);
+    const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
+    expect(log).toContain("已存在同标记回帖，跳过");
   });
 
   test("任务成功后向来源 Issue 回帖", async () => {
@@ -483,7 +593,10 @@ describe("GitHub 评论 → 任务", () => {
     const task = store.recentTasks()[0]!;
     expect(task.status).toBe("succeeded");
     expect(task.replyIssue).toBe(20);
-    expect(calls).toEqual([["gh", "issue", "comment", "20", "--repo", "o/r", "--body", `${HEADER}改好了`]]);
+    expect(calls).toEqual([
+      ["gh", "api", "repos/o/r/issues/20/comments", "--paginate", "--jq", ".[]"],
+      ["gh", "issue", "comment", "20", "--repo", "o/r", "--body", `${HEADER}改好了\n\n${replyMarker(task.id, "issue")}`],
+    ]);
   });
 
   test("Issue 回帖失败只记日志，任务仍成功", async () => {
@@ -493,7 +606,8 @@ describe("GitHub 评论 → 任务", () => {
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
       channel,
-      ghRunner: scripted(reply(1, "", "no token")).runner,
+      // 列表检查成功、回帖失败
+      ghRunner: scripted(reply(0), reply(1, "", "no token")).runner,
     });
     await router.handle({
       eventId: "github:comment:12",
@@ -524,7 +638,8 @@ describe("GitHub 评论 → 任务", () => {
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
       channel,
-      ghRunner: scripted(reply(1, "", "no token")).runner,
+      // 列表检查成功、回帖失败
+      ghRunner: scripted(reply(0), reply(1, "", "no token")).runner,
     });
     await router.handle({
       eventId: "github:comment:9",
@@ -748,7 +863,11 @@ describe("GitHub 多仓库轮询", () => {
     await router.drainOnce();
 
     expect(store.recentTasks()[0]!.replyRepo).toBe("o/b");
-    expect(calls).toEqual([["gh", "pr", "comment", "12", "--repo", "o/b", "--body", `${HEADER}改好了`]]);
+    const task = store.recentTasks()[0]!;
+    expect(calls).toEqual([
+      ["gh", "api", "repos/o/b/issues/12/comments", "--paginate", "--jq", ".[]"],
+      ["gh", "pr", "comment", "12", "--repo", "o/b", "--body", `${HEADER}改好了\n\n${replyMarker(task.id, "pr")}`],
+    ]);
   });
 
   test("旧配置仍按单仓库轮询与回帖", async () => {

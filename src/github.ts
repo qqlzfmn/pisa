@@ -72,6 +72,30 @@ export function isPullRequest(runner: Runner, repo: string, n: number): GhResult
   return { ok: true, value: res.out.trim() !== "" };
 }
 
+/** 回帖的隐藏幂等标记：HTML 注释，GitHub 渲染时不可见；含任务号与用途 */
+export function replyMarker(taskId: string, purpose: "pr" | "issue"): string {
+  return `<!-- pisa:reply task=${taskId} on=${purpose} -->`;
+}
+
+/** 讨论串（PR 与 Issue 共用 issue 评论接口）的全部评论正文；`.[]` 逐行输出，正文里的换行被 JSON 转义，按行解析安全 */
+function listThreadBodies(runner: Runner, repo: string, n: number): GhResult<string[]> {
+  const res = runner(["gh", "api", `repos/${repo}/issues/${n}/comments`, "--paginate", "--jq", ".[]"]);
+  if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
+
+  const bodies: string[] = [];
+  for (const line of res.out.split("\n")) {
+    const text = line.trim();
+    if (!text) continue;
+    try {
+      const raw = JSON.parse(text) as Record<string, unknown>;
+      bodies.push(String(raw["body"] ?? ""));
+    } catch {
+      return { ok: false, error: `评论解析失败：${text.slice(0, 200)}` };
+    }
+  }
+  return { ok: true, value: bodies };
+}
+
 export function postComment(runner: Runner, repo: string, pr: number, body: string): GhResult {
   const res = runner(["gh", "pr", "comment", String(pr), "--repo", repo, "--body", body]);
   if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
@@ -82,4 +106,30 @@ export function postIssueComment(runner: Runner, repo: string, issue: number, bo
   const res = runner(["gh", "issue", "comment", String(issue), "--repo", repo, "--body", body]);
   if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
   return { ok: true, value: undefined };
+}
+
+/** 幂等回帖的结果：posted 真发了，skipped 讨论串里已有同标记 */
+export type ReplyOutcome = "posted" | "skipped";
+
+/**
+ * 带隐藏标记回帖：先查讨论串里是否已有同任务、同用途的标记，有则跳过。
+ * 重试（进程重启后重跑同一任务）因此不会产生第二条评论。
+ * 检查本身失败时无法确认是否已发，返回错误由调用方记日志，不发比重复发安全。
+ */
+export function postReplyOnce(
+  runner: Runner,
+  repo: string,
+  n: number,
+  purpose: "pr" | "issue",
+  taskId: string,
+  body: string,
+): GhResult<ReplyOutcome> {
+  const marker = replyMarker(taskId, purpose);
+  const seen = listThreadBodies(runner, repo, n);
+  if (!seen.ok) return { ok: false, error: `讨论串检查失败：${seen.error}` };
+  if (seen.value.some((text) => text.includes(marker))) return { ok: true, value: "skipped" };
+
+  const text = `${body}\n\n${marker}`;
+  const res = purpose === "pr" ? postComment(runner, repo, n, text) : postIssueComment(runner, repo, n, text);
+  return res.ok ? { ok: true, value: "posted" } : res;
 }

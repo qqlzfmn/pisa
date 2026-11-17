@@ -18,3 +18,5 @@
       验证: 人工检查 README 正文
 - [x] T9 评论续跑的分支/PR 语义：继承父任务分支与 prUrl、只清理自建分支、复用 PR 不再新建、分支占用明确失败 (FR-006/FR-012/FR-013)
       验证: `bun test tests/router.test.ts tests/github-comments.test.ts`；`tsc --noEmit`
+- [x] T10 回帖幂等：`replyMarker` / `postReplyOnce` 先查讨论串再发，已有同标记跳过，检查失败不发 (FR-014/FR-015)
+      验证: `bun test tests/github-comments.test.ts`（`postReplyOnce` 组、「讨论串已有同标记时跳过回帖」）；`tsc --noEmit`
