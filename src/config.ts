@@ -22,6 +22,8 @@ export interface GithubRepoConfig {
   repo: string;
   chatId: string;
   userId: string;
+  /** 本地仓库别名：评审任务在这里检出代码；缺省用默认本地仓库 */
+  alias?: string;
 }
 
 export interface GithubConfig {
@@ -35,6 +37,8 @@ export interface GithubConfig {
   userId?: string;
   /** 多仓库写法，优先于旧字段 */
   repos?: GithubRepoConfig[];
+  /** 自动评审：开放 PR 的新 head 提交触发只读评审任务，结论回帖到 PR */
+  review?: { enabled: boolean };
 }
 
 export interface Config {

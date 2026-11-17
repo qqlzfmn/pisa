@@ -153,6 +153,7 @@ describe("Router.rewind", () => {
       requester: "u1",
       repo: "demo",
       prompt: "做点事",
+      mode: "work",
       status: "queued",
       branch: null,
       prUrl: null,

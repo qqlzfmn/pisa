@@ -10,6 +10,7 @@ const task: Task = {
   requester: "u1",
   repo: "demo",
   prompt: "修一下登录",
+  mode: "work",
   status: "queued",
   branch: null,
   prUrl: null,
@@ -71,6 +72,23 @@ describe("WorkerAdapter", () => {
     );
     expect(user.text).toBeUndefined();
     expect(a.parseLine("not json").raw).toBe("not json");
+  });
+
+  test("评审任务：只读约束代替写代码约束，并设置 PISA_READONLY", () => {
+    const review = { ...input, task: { ...task, mode: "review" as const } };
+    const a = getAdapter("omp");
+    const prompt = a.buildArgs(review)[a.buildArgs(review).indexOf("-p") + 1]!;
+    expect(prompt).toContain("只读评审");
+    expect(prompt).toContain("PISA_READONLY");
+    expect(prompt).not.toContain("不要执行 git commit / git push / git checkout 主分支");
+    expect(prompt).not.toContain("完成后用中文给出");
+    expect(a.buildEnv(input).PISA_READONLY).toBeUndefined();
+  });
+
+  test("评审任务的环境带 PISA_READONLY=1", () => {
+    const env = getAdapter("omp").buildEnv({ ...input, task: { ...task, mode: "review" } });
+    expect(env.PISA_READONLY).toBe("1");
+    expect(env.PISA_WORKDIR).toBe("/tmp/wt");
   });
 
   test("未知适配器直接报错", () => {

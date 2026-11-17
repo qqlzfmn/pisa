@@ -1,7 +1,7 @@
-import { githubRepos, type Config } from "./config";
+import { githubRepos, type Config, type GithubRepoConfig } from "./config";
 import type { Store } from "./store";
 import type { IncomingMessage } from "./types";
-import { defaultRunner, isPullRequest, listComments, prNumberFromIssueUrl, type Runner } from "./github";
+import { defaultRunner, isPullRequest, listComments, listOpenPulls, prNumberFromIssueUrl, type Runner } from "./github";
 
 type Enqueue = (m: IncomingMessage) => Promise<void> | void;
 
@@ -19,12 +19,15 @@ export interface GithubWatcherDeps {
  * 去重靠投递时的稳定 eventId（`github:comment:<repo>:<id>`），由 Router 的 claimEvent 落库。
  * 每个仓库各自维护增量下界，一个仓库失败不影响其它仓库。
  * 编号是 PR 时接续该 PR 的任务并回帖到 PR；是普通 Issue 时从主干开新分支、回帖到 Issue。
+ * 打开评审开关后，同一轮轮询还会给开放 PR 的新 head 提交派评审任务。
  */
 export class GithubWatcher {
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
   /** 每个仓库的增量下界：只在整轮成功后推进，失败不推进以免漏评论 */
   private readonly since = new Map<string, string>();
+  /** 已投递的评审：`repo#pr@sha`；持久去重仍由 Router 的 eventId 占位负责 */
+  private readonly reviewed = new Set<string>();
   private readonly now: () => number;
   private readonly runner: Runner;
 
@@ -60,6 +63,12 @@ export class GithubWatcher {
         } catch (err) {
           // 投递异常只影响本仓库：下界不推进，下一轮重试
           console.warn(`[pisa] GitHub 评论投递失败 · ${target.repo}：${String(err).slice(0, 300)}`);
+        }
+        if (!gh.review?.enabled) continue;
+        try {
+          await this.pollReviews(target);
+        } catch (err) {
+          console.warn(`[pisa] PR 评审投递失败 · ${target.repo}：${String(err).slice(0, 300)}`);
         }
       }
     } finally {
@@ -105,5 +114,30 @@ export class GithubWatcher {
       }
     }
     if (complete) this.since.set(repo, startedAt);
+  }
+
+  /** 开放 PR → 评审任务：同一 PR 同一 head 提交只投一次，草稿跳过 */
+  private async pollReviews(target: GithubRepoConfig): Promise<void> {
+    const res = listOpenPulls(this.runner, target.repo);
+    if (!res.ok) {
+      console.warn(`[pisa] GitHub PR 列表拉取失败 · ${target.repo}：${res.error.slice(0, 300)}`);
+      return;
+    }
+    for (const pr of res.value) {
+      if (pr.draft) continue;
+      const key = `${target.repo}#${pr.number}@${pr.headSha}`;
+      if (this.reviewed.has(key)) continue;
+      await this.deps.enqueue({
+        eventId: `github:pr-review:${target.repo}:${pr.number}:${pr.headSha}`,
+        channel: "github",
+        chatId: target.chatId,
+        userId: target.userId,
+        text: `自动评审 PR #${pr.number}`,
+        repo: target.alias,
+        replyRepo: target.repo,
+        reviewPr: { number: pr.number, headSha: pr.headSha, title: pr.title, baseRef: pr.baseRef },
+      });
+      this.reviewed.add(key);
+    }
   }
 }

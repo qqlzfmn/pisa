@@ -44,11 +44,15 @@
     "enabled": false,
     "intervalSec": 120,
     "tokenEnv": "GH_TOKEN",
+    "review": {
+      "enabled": false
+    },
     "repos": [
       {
         "repo": "owner/pisa",
         "chatId": "<telegram chat id>",
-        "userId": "<telegram user id>"
+        "userId": "<telegram user id>",
+        "alias": "pisa"
       },
       {
         "repo": "owner/site",

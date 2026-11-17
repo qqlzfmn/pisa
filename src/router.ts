@@ -3,19 +3,21 @@ import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
-import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
+import type { ChannelAdapter, IncomingMessage, ReviewTarget, Task, TaskMode, WorkerResult } from "./types";
 import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
-import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
+import { createReviewWorktree, createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
 import {
   defaultRunner,
   formatReply,
+  formatReview,
   postComment,
   postIssueComment,
   postReplyOnce,
   prNumberFromIssueUrl,
   prStatus,
+  reviewPrompt,
   type Runner,
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
@@ -62,6 +64,17 @@ interface PendingTask {
   prompt: string;
   repo?: string;
   at: number;
+}
+
+/** 建任务所需的变化项；其余字段来自入口消息 */
+interface TaskSpec {
+  prompt: string;
+  mode?: TaskMode;
+  baseRef?: string | null;
+  context?: string | null;
+  branch?: string | null;
+  prUrl?: string | null;
+  replyPr?: number | null;
 }
 
 export class Router {
@@ -153,7 +166,7 @@ export class Router {
 
   /** 立即执行一个已进入 running 的任务；不等待完成 */
   private launch(task: Task): void {
-    const branch = task.branch ?? `pisa/${task.id}`;
+    const branch = task.branch ?? (task.mode === "review" ? null : `pisa/${task.id}`);
     const p = this.runTask(task, branch)
       .catch(() => {})
       .finally(() => this.active.delete(task.id));
@@ -167,7 +180,8 @@ export class Router {
     while (this.active.size < limit) {
       const task = this.deps.store.nextQueued();
       if (!task) break;
-      const branch = task.branch ?? `pisa/${task.id}`;
+      // 评审任务没有分支：分离 HEAD，用完即弃
+      const branch = task.branch ?? (task.mode === "review" ? null : `pisa/${task.id}`);
       if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
       this.launch({ ...task, branch, status: "running" });
     }
@@ -194,6 +208,12 @@ export class Router {
     const { cfg, store, channel } = this.deps;
 
     msg = this.routeByAlias(msg);
+
+    // 自动评审：文本由 watcher 生成，不走命令解析
+    if (msg.reviewPr) {
+      await this.enqueueReview(msg, msg.reviewPr);
+      return;
+    }
 
     // 回复某条任务消息 = 对该任务续跑
     if (msg.replyToMessageId) {
@@ -375,6 +395,25 @@ export class Router {
       }
     }
 
+    await this.createTask(msg, { prompt, baseRef, context, branch, prUrl });
+  }
+
+  /**
+   * 评审任务：只读检出 PR 的 head 提交，不建分支、不交付，结束后回帖。
+   * 提示词由 pisa 生成，没有用户正文，因此不进命令解析。
+   */
+  private async enqueueReview(msg: IncomingMessage, pr: ReviewTarget): Promise<void> {
+    await this.createTask(msg, {
+      prompt: reviewPrompt(msg.replyRepo ?? "?", pr),
+      mode: "review",
+      baseRef: pr.headSha,
+      replyPr: pr.number,
+    });
+  }
+
+  /** 幂等、鉴权、建任务的唯一入口：IM 任务与评审任务共用 */
+  private async createTask(msg: IncomingMessage, spec: TaskSpec): Promise<void> {
+    const { cfg, store } = this.deps;
     const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
     const taskId = newId(this.now());
     // 去重：同一事件只登记一次；重复投递直接丢弃
@@ -393,7 +432,7 @@ export class Router {
       await this.reply(msg.chatId, `仓库未配置：${msg.repo ?? "(默认)"}`);
       return;
     }
-    if (!prompt) {
+    if (!spec.prompt) {
       await this.reply(msg.chatId, `用法：${cfg.trigger} <需求描述>`);
       return;
     }
@@ -405,14 +444,15 @@ export class Router {
       chatId: msg.chatId,
       requester: msg.userId,
       repo: repo.alias,
-      prompt,
+      prompt: spec.prompt,
+      mode: spec.mode ?? "work",
       status: "queued",
-      branch,
-      prUrl,
+      branch: spec.branch ?? null,
+      prUrl: spec.prUrl ?? null,
       sessionId: null,
-      baseRef,
-      context,
-      replyPr: msg.replyPr ?? null,
+      baseRef: spec.baseRef ?? null,
+      context: spec.context ?? null,
+      replyPr: spec.replyPr ?? msg.replyPr ?? null,
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
       summary: null,
@@ -764,7 +804,8 @@ export class Router {
     const repo = task.replyRepo ?? githubRepos(gh)[0]?.repo;
     if (!gh?.enabled || !repo) return;
     const runner = this.deps.ghRunner ?? defaultRunner;
-    const body = formatReply(summary);
+    const body =
+      task.mode === "review" ? formatReview(task.replyPr ?? 0, task.baseRef ?? "", summary) : formatReply(summary);
     if (task.replyPr) this.postReply(runner, repo, task.replyPr, "pr", task, body, log);
     if (task.replyIssue) this.postReply(runner, repo, task.replyIssue, "issue", task, body, log);
   }
@@ -794,7 +835,7 @@ export class Router {
    * 失败/取消清理：只删任务自建的分支。
    * 续跑复用父任务分支时该分支是共享资产，删掉会毁掉上一轮成果与原 PR。
    */
-  private cleanupBranch(repoPath: string, task: Task, branch: string): void {
+  private cleanupBranch(repoPath: string, task: Task, branch: string | null): void {
     if (branch !== `pisa/${task.id}`) return;
     deleteBranch(repoPath, branch);
     this.deps.store.removeEffect(task.id, "branch", branch);
@@ -806,7 +847,7 @@ export class Router {
     this.deps.store.removeEffect(task.id, "worktree", workdir);
   }
 
-  private async runTask(task: Task, branch: string): Promise<void> {
+  private async runTask(task: Task, branch: string | null): Promise<void> {
     const { cfg, store, channel, worker, deliverer } = this.deps;
     const repo = repoByAlias(cfg, task.repo);
     if (!repo) {
@@ -821,12 +862,29 @@ export class Router {
     const log = new TaskLogger(cfg.stateDir, task.id);
     // 恢复中断任务：工作副本已存在，直接在其上继续，不重建也不重置分支
     const resuming = existsSync(workdir);
-    log.write("start", `${repo.alias} ${branch}`);
+    log.write("start", `${repo.alias} ${branch ?? `PR #${task.replyPr}`}`);
 
     if (resuming) {
       log.write("resume", "复用已有工作副本");
+    } else if (task.mode === "review") {
+      // 评审：抓取 PR 的 head 提交并以分离 HEAD 检出；没有分支可建
+      if (!task.replyPr || !task.baseRef) {
+        const error = "评审任务缺少 PR 号或 head 提交";
+        log.write("worktree", error);
+        store.transition(task.id, "failed", { error, endedAt: this.now() });
+        await this.reply(task.chatId, `失败 · ${task.id}\n${error}`);
+        return;
+      }
+      const wt = createReviewWorktree(repo.path, workdir, task.replyPr, task.baseRef);
+      if (wt.code !== 0) {
+        const error = `检出 PR #${task.replyPr} 失败：${wt.err || wt.out}`;
+        log.write("worktree", error);
+        store.transition(task.id, "failed", { error, endedAt: this.now() });
+        await this.reply(task.chatId, `失败 · ${task.id}\n${error.slice(0, 800)}`);
+        return;
+      }
     } else {
-      const wt = createWorktree(repo.path, workdir, branch, task.baseRef ?? repo.baseBranch ?? "HEAD");
+      const wt = createWorktree(repo.path, workdir, branch ?? `pisa/${task.id}`, task.baseRef ?? repo.baseBranch ?? "HEAD");
       if (wt.code !== 0) {
         // 分支被占：git 拒绝把同一分支挂到两个工作副本；绝不另建同名分支顶替
         const occupied = /already checked out|already used by worktree/i.test(wt.err);
@@ -841,9 +899,15 @@ export class Router {
 
     // 账本：工作副本与分支已落地；共享分支标明，撤销时不删
     store.effect(task.id, "worktree", workdir);
-    store.effect(task.id, "branch", branch, branch === `pisa/${task.id}` ? null : "shared");
+    if (branch) store.effect(task.id, "branch", branch, branch === `pisa/${task.id}` ? null : "shared");
 
-    await this.reply(task.chatId, `开始执行 · ${task.id}\n分支 ${branch}`, task.id);
+    await this.reply(
+      task.chatId,
+      task.mode === "review"
+        ? `开始评审 · ${task.id}\nPR #${task.replyPr} @ ${(task.baseRef ?? "").slice(0, 7)}`
+        : `开始执行 · ${task.id}\n分支 ${branch}`,
+      task.id,
+    );
 
     const stopWatch = this.watchProgress(task);
     let result: WorkerResult;
@@ -884,9 +948,23 @@ export class Router {
       return;
     }
 
+    // 评审到此为止：不提交、不推送、不开 PR，副本用完即弃
+    if (task.mode === "review") {
+      this.dropWorktree(repo.path, task, workdir);
+      store.transition(task.id, "succeeded", { summary: result.summary, endedAt: this.now() });
+      log.write("done", "review");
+      this.replyToSource(task, result.summary, log);
+      await this.reply(
+        task.chatId,
+        [`✅ ${task.id} 评审完成`, `PR #${task.replyPr}`, result.summary.slice(0, 1200)].join("\n\n"),
+        task.id,
+      );
+      return;
+    }
+
     let delivery;
     try {
-      delivery = await deliverer.deliver({ ...task, branch }, workdir, repo);
+      delivery = await deliverer.deliver({ ...task, branch: branch ?? `pisa/${task.id}` }, workdir, repo);
     } catch (err) {
       log.write("deliver", (err as Error).message);
       this.dropWorktree(repo.path, task, workdir);

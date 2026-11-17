@@ -26,6 +26,27 @@ function assistantText(obj: JsonEvent): string {
     .trim();
 }
 
+const WORK_CONSTRAINTS = [
+  `## 约束`,
+  `- 只在当前工作目录内改动，不要访问父目录或仓库外路径`,
+  `- 不要执行 git commit / git push / git checkout 主分支 / git reset --hard`,
+  `- 不要删除未跟踪文件，不要强推`,
+  `- 有测试就跑测试；没有测试就说明你如何验证`,
+  `- 完成后用中文给出：改了什么、动了哪些文件、验证结果`,
+  `- 不要输出寒暄，直接给结论`,
+];
+
+/** 评审任务的约束：工作副本是分离 HEAD、用完丢弃，改动不会被保存 */
+const REVIEW_CONSTRAINTS = [
+  `## 约束（只读评审）`,
+  `- 只读：不要修改工作目录里的任何文件，不要执行 git commit / push / checkout / reset / apply / clean`,
+  `- 环境变量 PISA_READONLY=1，pisa 扩展会拦截写文件与 git 提交类命令`,
+  `- 工作副本是分离 HEAD，评审结束会被删除；在里面改的文件不会被保存，也不会交付`,
+  `- 只做代码阅读与必要的只读命令，不安装依赖、不跑长时间任务`,
+  `- 结论用中文 Markdown：先给结论，再按严重程度列问题（文件与行号、问题、影响、建议），最后列没问题的部分`,
+  `- 不要输出寒暄，直接给结论`,
+];
+
 export function buildPrompt(task: Task, opts: { resume?: boolean } = {}): string {
   return [
     `你是 pisa 的 Worker，任务号 ${task.id}。`,
@@ -41,13 +62,7 @@ export function buildPrompt(task: Task, opts: { resume?: boolean } = {}): string
     `## 任务`,
     task.prompt,
     ``,
-    `## 约束`,
-    `- 只在当前工作目录内改动，不要访问父目录或仓库外路径`,
-    `- 不要执行 git commit / git push / git checkout 主分支 / git reset --hard`,
-    `- 不要删除未跟踪文件，不要强推`,
-    `- 有测试就跑测试；没有测试就说明你如何验证`,
-    `- 完成后用中文给出：改了什么、动了哪些文件、验证结果`,
-    `- 不要输出寒暄，直接给结论`,
+    ...(task.mode === "review" ? REVIEW_CONSTRAINTS : WORK_CONSTRAINTS),
   ].join("\n");
 }
 
@@ -74,6 +89,8 @@ export class OmpAdapter implements WorkerAdapter {
     return {
       PISA_WORKDIR: input.workdir,
       PISA_PROGRESS_FILE: input.progressFile,
+      // 评审任务：worker 扩展据此拦截写文件与改写历史的 git 命令
+      ...(input.task.mode === "review" ? { PISA_READONLY: "1" } : {}),
     };
   }
 

@@ -28,6 +28,21 @@ export function createWorktree(repoPath: string, workdir: string, branch: string
   return sh(["git", "-C", repoPath, "worktree", "add", workdir, branch]);
 }
 
+/**
+ * 评审副本：抓取 PR 的 head 提交，以分离 HEAD 检出，不建分支。
+ * 优先检事件公告的那份提交；它已不可抓取（PR 又推了新提交）时检最新抓到的提交。
+ * 抓取目标写进 refs/pisa/review/<n>，避免并发抓取共用 FETCH_HEAD。
+ */
+export function createReviewWorktree(repoPath: string, workdir: string, pr: number, headSha: string): ExecResult {
+  const ref = `refs/pisa/review/${pr}`;
+  const fetched = sh(["git", "-C", repoPath, "fetch", "--no-tags", "origin", `+pull/${pr}/head:${ref}`]);
+  if (fetched.code !== 0) return fetched;
+  const announced = headSha && sh(["git", "-C", repoPath, "cat-file", "-e", `${headSha}^{commit}`]).code === 0;
+  const target = announced ? headSha : sh(["git", "-C", repoPath, "rev-parse", ref]).out;
+  if (!target) return { code: -1, out: "", err: `抓取 PR #${pr} 后无法解析提交` };
+  return sh(["git", "-C", repoPath, "worktree", "add", "--detach", workdir, target]);
+}
+
 export function removeWorktree(repoPath: string, workdir: string): void {
   sh(["git", "-C", repoPath, "worktree", "remove", "--force", workdir]);
   sh(["git", "-C", repoPath, "worktree", "prune"]);

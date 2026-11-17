@@ -79,6 +79,7 @@ async function main(): Promise<void> {
   if (gh?.enabled) {
     const watched = githubRepos(gh).map((r) => r.repo);
     console.log(`[pisa] GitHub 评论轮询已启用 · ${watched.join(", ") || "(无仓库)"}`);
+    if (gh.review?.enabled) console.log("[pisa] PR 自动评审已启用 · 结论以评论回帖");
   }
 
   // 事件入口：CI / 监控 / 脚本可以把任务推进来

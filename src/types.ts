@@ -1,5 +1,8 @@
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
+/** 任务类型：work 产出改动与交付；review 只读评审 PR */
+export type TaskMode = "work" | "review";
+
 /** 任务对外产生的副作用种类：rewind 的依据 */
 export type EffectKind = "branch" | "push" | "pr" | "comment" | "worktree" | "merge";
 
@@ -32,7 +35,17 @@ export interface IncomingMessage {
   replyIssue?: number;
   /** 回帖目标仓库（owner/repo）；缺省时用 github 配置的单仓库 */
   replyRepo?: string;
+  /** 自动评审对象：有值时建评审任务，不提触发词 */
+  reviewPr?: ReviewTarget;
   receivedAt?: number;
+}
+
+/** 待评审的 PR：head 提交决定去重与检出 */
+export interface ReviewTarget {
+  number: number;
+  headSha: string;
+  title: string;
+  baseRef: string;
 }
 
 export interface Task {
@@ -43,6 +56,8 @@ export interface Task {
   requester: string;
   repo: string;
   prompt: string;
+  /** 任务类型：缺省 work；review 只读评审，不交付 */
+  mode: TaskMode;
   status: TaskStatus;
   branch: string | null;
   prUrl: string | null;

@@ -59,6 +59,74 @@ export function formatReply(summary: string): string {
   return `**pisa** 任务完成\n\n${summary.trim().slice(0, 3000)}`;
 }
 
+/** 评审回帖：标题带 PR 号与 head 短提交，方便对照评审的是哪一份代码 */
+export function formatReview(pr: number, headSha: string, summary: string): string {
+  return `**pisa** 自动评审 · PR #${pr} @ ${headSha.slice(0, 7)}\n\n${summary.trim().slice(0, 3000)}`;
+}
+
+/** 开放 PR 的评审所需字段 */
+export interface PullSummary {
+  number: number;
+  headSha: string;
+  title: string;
+  baseRef: string;
+  draft: boolean;
+}
+
+/** 目标仓库当前的开放 PR；草稿标记交给调用方决定是否跳过 */
+export function listOpenPulls(runner: Runner, repo: string): GhResult<PullSummary[]> {
+  const res = runner(["gh", "api", `repos/${repo}/pulls?state=open&per_page=100`, "--paginate", "--jq", ".[]"]);
+  if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
+  const pulls: PullSummary[] = [];
+  for (const line of res.out.split("\n")) {
+    const text = line.trim();
+    if (!text) continue;
+    let raw: Record<string, unknown>;
+    try {
+      raw = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return { ok: false, error: `PR 解析失败：${text.slice(0, 200)}` };
+    }
+    const number = Number(raw["number"]);
+    const head = raw["head"] as Record<string, unknown> | undefined;
+    const base = raw["base"] as Record<string, unknown> | undefined;
+    const headSha = String(head?.["sha"] ?? "");
+    if (!Number.isSafeInteger(number) || number <= 0 || !headSha) continue;
+    pulls.push({
+      number,
+      headSha,
+      title: String(raw["title"] ?? ""),
+      baseRef: String(base?.["ref"] ?? ""),
+      draft: raw["draft"] === true,
+    });
+  }
+  return { ok: true, value: pulls };
+}
+
+/** 评审任务的需求正文：审哪个 PR、代码在哪里、看什么、输出什么 */
+export function reviewPrompt(repo: string, pr: Pick<PullSummary, "number" | "headSha" | "title" | "baseRef">): string {
+  return [
+    `自动评审 PR #${pr.number}（${repo}）`,
+    "",
+    `标题：${pr.title || "(无标题)"}`,
+    `目标分支：${pr.baseRef || "(未知)"}`,
+    `head 提交：${pr.headSha}`,
+    "",
+    "工作目录已用分离 HEAD 检出该 PR 的 head 提交，本次为只读评审：不改文件、不建分支、不提交。" +
+      `完整差异可用 \`gh pr diff ${pr.number} --repo ${repo}\` 查看。`,
+    "",
+    "关注点：",
+    "- 正确性与边界：改动是否覆盖真实输入范围，是否存在错位、空值与越界",
+    "- 错误处理与并发：失败路径、资源释放、竞态与重试",
+    "- 安全：注入、越权、密钥外泄、外部输入未校验",
+    "- 测试：新行为是否有测试覆盖，测试能否真的失败",
+    "- 一致性：是否重复实现已有能力，是否偏离仓库现有约定",
+    "",
+    "输出中文 Markdown：第一行给结论（可以合并 / 有阻塞问题 / 需要讨论），" +
+      "随后按严重程度列出问题（文件与行号、问题、影响、建议），最后列出已确认没问题的部分。",
+  ].join("\n");
+}
+
 /** 拉取 since 之后新增或更新的 Issue / PR 评论；逐行解析 `--jq '.[]'` 的输出 */
 export function listComments(runner: Runner, repo: string, sinceIso: string): GhResult<PrComment[]> {
   const since = encodeURIComponent(sinceIso);

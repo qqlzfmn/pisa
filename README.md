@@ -280,9 +280,34 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 - Issue 来源的任务新建 PR 时，正文追加一行 `Closes #<n>`，合并 PR 后自动关闭 Issue
 - 复用分支的任务失败或取消时保留共享分支；任务自己新建的 `pisa/<任务号>` 才会被清理
 - 任务成功后把摘要（限 3000 字）回帖到评论所在的仓库；旧任务或没有仓库记录时回退到配置里的单仓库；回帖失败只写日志，任务状态不变
-- GitHub 评论产生的任务仍落在本地默认仓库：配置里没有 GitHub 仓库到本地别名的映射
+- `repos[].alias` 把 GitHub 仓库映射到本地仓库别名（`repos` 里的 `alias`），不配则用默认本地仓库
 
 `gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
+
+## PR 自动评审
+
+打开评审开关后，pisa 每轮轮询还会拉取目标仓库的开放 PR，给每个新的 head 提交派一个只读评审任务，结论评论回帖到该 PR：
+
+```json
+{
+  "github": {
+    "enabled": true,
+    "review": { "enabled": true },
+    "repos": [
+      { "repo": "owner/pisa", "chatId": "<telegram chat id>", "userId": "<telegram user id>", "alias": "pisa" }
+    ]
+  }
+}
+```
+
+- `github.review.enabled` 缺省关闭；关闭时不调用 PR 列表接口，也不建评审任务，已经产生的任务照常跑完
+- `repos[].alias` 指定评审在哪个本地仓库检出代码；未配置时用默认本地仓库
+- 评审任务只读：工作副本用分离 HEAD 检出 PR 的 head 提交，结束即删；不建分支、不提交、不推送、不开 PR
+- `PISA_READONLY=1` 让 Worker 扩展拦截写文件类工具与 `git commit/push/checkout/reset/apply/clean` 等命令
+- 去重键是「仓库 + PR 号 + head 提交」：同一份代码只评审一次，重启后也不重复；推了新提交才重新评审
+- 草稿 PR 跳过；关闭、合并的 PR 不管
+- 评审结论带「PR 号 @ 短提交」抬头，正文限 3000 字，重复回帖靠 `<!-- pisa:reply ... -->` 标记去重
+- 同一轮的评论轮询与评审轮询互不影响：PR 列表拉取失败只记日志
 
 ## 自举
 
@@ -363,11 +388,12 @@ specify → plan → tasks → implement → converge
 - 自举：`/pisa merge` 验证后合入主干，看护进程拉起新代码
 - 订阅绑定：回复任务消息即续跑（消息 → 任务映射落库）
 - GitHub 评论：`/pisa` 触发多仓库轮询（`github.repos`，旧的单仓库写法兼容），按仓库隔离增量下界、去重与回帖；PR 上已有任务则接续分支，普通 Issue 从主干开新分支；完成后回帖到评论所在仓库，Issue 来源的 PR 带 `Closes #<n>`
+- PR 自动评审：`github.review.enabled` 打开后，开放 PR 的新 head 提交触发只读评审任务，结论以评论回帖；同一 PR 同一提交只评一次
 - 主动发现：群聊关键词 + 定时探针
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 89 个全绿；`tsc --noEmit` 无报错
+- 测试全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：

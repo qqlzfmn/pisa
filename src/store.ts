@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
-import type { Effect, EffectKind, Task, TaskStatus } from "./types";
+import type { Effect, EffectKind, Task, TaskMode, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
 const SCHEMA = `
@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   requester        TEXT NOT NULL,
   repo             TEXT NOT NULL,
   prompt           TEXT NOT NULL,
+  mode             TEXT NOT NULL DEFAULT 'work',
   status           TEXT NOT NULL,
   branch           TEXT,
   pr_url           TEXT,
@@ -64,6 +65,7 @@ interface Row {
   requester: string;
   repo: string;
   prompt: string;
+  mode: TaskMode;
   status: TaskStatus;
   branch: string | null;
   pr_url: string | null;
@@ -90,6 +92,7 @@ function toTask(r: Row): Task {
     requester: r.requester,
     repo: r.repo,
     prompt: r.prompt,
+    mode: r.mode,
     status: r.status,
     branch: r.branch,
     prUrl: r.pr_url,
@@ -135,6 +138,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "mode")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'work'");
     }
   }
 
@@ -191,8 +197,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, mode, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -201,6 +207,7 @@ export class Store {
         t.requester,
         t.repo,
         t.prompt,
+        t.mode,
         t.status,
         t.branch,
         t.prUrl,
@@ -219,8 +226,8 @@ export class Store {
     return row ? toTask(row) : null;
   }
 
-  /** 原子占位：queued → running，失败说明已被别的槽位取走 */
-  claimQueued(id: string, startedAt: number, branch: string): boolean {
+  /** 原子占位：queued → running，失败说明已被别的槽位取走；评审任务没有分支 */
+  claimQueued(id: string, startedAt: number, branch: string | null): boolean {
     const res = this.db.run(
       "UPDATE tasks SET status = 'running', started_at = ?, branch = ? WHERE id = ? AND status = 'queued'",
       [startedAt, branch, id],
