@@ -37,6 +37,54 @@ export interface GithubConfig {
   repos?: GithubRepoConfig[];
 }
 
+/** 事件来源共有的投递身份：任务落在 repo 别名（缺省默认仓库），回执发到 chatId */
+export interface TriggerIdentity {
+  enabled: boolean;
+  chatId: string;
+  userId: string;
+  /** 本地仓库别名；缺省用默认仓库 */
+  repo?: string;
+  /** 任务操作指令；缺省由适配器给默认措辞 */
+  prompt?: string;
+}
+
+/** GitHub Actions 的 workflow_run 完成事件；密钥与验证令牌都从环境变量取 */
+export interface GithubActionsTriggerConfig extends TriggerIdentity {
+  secretEnv: string;
+  /** 仓库白名单（owner/repo），空表示不限 */
+  repos?: string[];
+  /** 分支白名单，空表示不限 */
+  branches?: string[];
+  /** 只接这些运行结论，缺省 failure */
+  conclusions?: string[];
+}
+
+/** 飞书事件订阅：encryptKey 用于签名，verificationToken 用于 URL 校验 */
+export interface FeishuTriggerConfig extends TriggerIdentity {
+  encryptKeyEnv: string;
+  verificationTokenEnv?: string;
+  /** 发送者 open_id 白名单，空表示不限 */
+  users?: string[];
+  /** 群消息需要 @ 机器人；缺省 true */
+  mentionAsTrigger?: boolean;
+}
+
+/** 本地文件监听：目录递归，变化去抖后开单 */
+export interface FileTriggerConfig extends TriggerIdentity {
+  paths: string[];
+  debounceMs?: number;
+}
+
+export interface TriggersConfig {
+  enabled: boolean;
+  /** 监听端口，缺省 8800 */
+  port?: number;
+  host?: string;
+  githubActions?: GithubActionsTriggerConfig;
+  feishu?: FeishuTriggerConfig;
+  files?: FileTriggerConfig;
+}
+
 export interface Config {
   trigger: string;
   /** 私聊里不带触发词也当成任务 */
@@ -65,6 +113,8 @@ export interface Config {
       prompt?: string;
     };
   };
+  /** 事件入口：GitHub Actions / 飞书 / 文件监听，统一走 TriggerHub */
+  triggers?: TriggersConfig;
   stateDir: string;
 }
 

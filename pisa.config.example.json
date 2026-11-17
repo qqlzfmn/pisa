@@ -90,5 +90,39 @@
       "prompt": "自动探针失败，定位原因并修复。"
     }
   },
+  "triggers": {
+    "enabled": false,
+    "port": 8800,
+    "githubActions": {
+      "enabled": false,
+      "secretEnv": "PISA_GH_ACTIONS_SECRET",
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "repos": ["owner/pisa"],
+      "branches": ["main"],
+      "conclusions": ["failure"],
+      "repo": "pisa",
+      "prompt": "定位失败原因并修复。"
+    },
+    "feishu": {
+      "enabled": false,
+      "encryptKeyEnv": "PISA_FEISHU_ENCRYPT_KEY",
+      "verificationTokenEnv": "PISA_FEISHU_VERIFY_TOKEN",
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "users": ["ou_xxx"],
+      "mentionAsTrigger": true,
+      "repo": "pisa"
+    },
+    "files": {
+      "enabled": false,
+      "paths": ["/absolute/path/to/watch"],
+      "debounceMs": 500,
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "repo": "pisa",
+      "prompt": "检查这次文件变化是否符合预期。"
+    }
+  },
   "stateDir": ".pisa"
 }

@@ -98,7 +98,7 @@ pisa/
 ├── docs/
 │   ├── constitution.md    # 项目宪法：不可协商的架构与质量约束
 │   └── specs/             # 每个 feature 一个目录：spec / plan / tasks
-├── src/                   # Router、任务调度、事件总线
+├── src/                   # Router、任务调度、事件总线（src/triggers/ 是事件入口适配器）
 ├── extensions/            # pi 扩展：进度上报 + 策略拦截
 ├── scripts/supervise.sh   # 崩溃自动重启
 └── tests/
@@ -284,6 +284,56 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 
 `gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
 
+## 事件入口（Trigger 适配层）
+
+CI 失败、飞书消息、本地文件变化可以直接开单，不用外部脚本拼 webhook：
+
+```json
+{
+  "triggers": {
+    "enabled": true,
+    "port": 8800,
+    "githubActions": {
+      "enabled": true,
+      "secretEnv": "PISA_GH_ACTIONS_SECRET",
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "repos": ["owner/pisa"],
+      "branches": ["main"],
+      "conclusions": ["failure"],
+      "repo": "pisa"
+    },
+    "feishu": {
+      "enabled": true,
+      "encryptKeyEnv": "PISA_FEISHU_ENCRYPT_KEY",
+      "verificationTokenEnv": "PISA_FEISHU_VERIFY_TOKEN",
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "users": ["ou_xxx"],
+      "mentionAsTrigger": true,
+      "repo": "pisa"
+    },
+    "files": {
+      "enabled": true,
+      "paths": ["/absolute/path/to/watch"],
+      "debounceMs": 500,
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "repo": "pisa"
+    }
+  }
+}
+```
+
+- 统一契约 `TriggerAdapter`（`src/triggers/types.ts`）：`handshake` → `verify` → `normalize`，返回归一化事件而不是抛异常；分发层（`src/triggers/hub.ts`）只做 HTTP 搬运
+- 投递身份由各来源的 `chatId` / `userId` 决定，鉴权仍走 Router 白名单（`whitelist.users` / `whitelist.repos`），不另建一套
+- 去重键就是消息的 `eventId`，由 Router 的 `claimEvent` 唯一占位：平台重试、进程重启都只建一个任务
+- GitHub Actions：`POST /triggers/github-actions`；`X-Hub-Signature-256` HMAC-SHA256 校验；只接 `workflow_run` 的 `completed`，结论默认只认 `failure`，`repos` / `branches` 非空时再过滤；去重键 `<repo>:<run_id>:<run_attempt>`
+- 飞书：`POST /triggers/feishu`；`X-Lark-Signature` 校验 + 300 秒时间窗；`url_verification` 握手在验签之前应答；只处理文本消息，私聊直投，群消息 @ 机器人时补触发词；`users` 是发送者 open_id 白名单；回执仍走现有 IM 通道，不回写飞书
+- 文件：`fs.watch` 递归监听目录（单文件监听父目录），`debounceMs`（默认 500）内的变化合并成一条消息；去重键由路径 + 大小 + 内容摘要算出，同一内容重写不重复开单
+- 缺凭据只告警并跳过该来源；没有可用来源时不启动监听端口，行为与没有这段配置一致
+- 只需把平台事件指向 `http://127.0.0.1:<port>/triggers/<来源>`；跨机部署时自行加反代与访问控制
+
 ## 自举
 
 pisa 可以改自己：
@@ -367,7 +417,8 @@ specify → plan → tasks → implement → converge
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 89 个全绿；`tsc --noEmit` 无报错
+- 事件入口：`triggers` 统一适配层——GitHub Actions（签名校验、失败过滤、仓库/分支白名单）、飞书（签名 + URL 校验 + @ 白名单）、文件监听（去抖 + 内容去重）
+- 测试 157 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：
