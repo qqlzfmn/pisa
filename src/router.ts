@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Config, RepoConfig } from "./config";
 import { parseCommand, repoByAlias } from "./config";
@@ -220,7 +220,8 @@ export class Router {
     }
 
     // 占位已在 fill() 完成；这里只做执行
-    const workdir = join(cfg.stateDir, "worktrees", task.id);
+    // 必须是绝对路径：omp 的 --cwd 按相对路径解析会二次拼接
+    const workdir = resolve(cfg.stateDir, "worktrees", task.id);
     const log = new TaskLogger(cfg.stateDir, task.id);
     log.write("start", `${repo.alias} ${branch}`);
 
