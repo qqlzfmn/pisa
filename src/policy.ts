@@ -75,6 +75,11 @@ function normalizeAdmission(raw: unknown, source: PolicySource): AdmissionCell[]
       throw new Error(`策略配置无效：sources.${source}.admission 的每一项必须是对象`);
     }
     const cell = item as Partial<AdmissionCell>;
+    for (const key of Object.keys(cell)) {
+      if (!Object.hasOwn(ADMISSION_CELL_FIELDS, key)) {
+        throw new Error(`策略配置无效：sources.${source}.admission 的每一项含未知字段 ${key}`);
+      }
+    }
     if (typeof cell.listed !== "boolean" || typeof cell.mentioned !== "boolean" || !isMode(cell.mode)) {
       throw new Error(
         `策略配置无效：sources.${source}.admission 的每一项需要 listed、mentioned 两个布尔值与 off/observe/auto 之一`,
@@ -99,6 +104,7 @@ function hashPolicy(sources: Record<PolicySource, SourcePolicy>): string {
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
+const ADMISSION_CELL_FIELDS: Record<string, true> = { listed: true, mentioned: true, mode: true };
 const POLICY_FIELDS: Record<string, true> = { version: true, sources: true };
 const SOURCE_FIELDS: Record<string, true> = { allowed: true, admission: true };
 
@@ -110,7 +116,7 @@ function sourceConf(raw: PolicyConfig | undefined, source: PolicySource): Partia
     throw new Error(`策略配置无效：sources.${source} 必须是对象`);
   }
   for (const key of Object.keys(conf)) {
-    if (!SOURCE_FIELDS[key]) throw new Error(`策略配置无效：sources.${source} 含未知字段 ${key}`);
+    if (!Object.hasOwn(SOURCE_FIELDS, key)) throw new Error(`策略配置无效：sources.${source} 含未知字段 ${key}`);
   }
   const { allowed, admission } = conf as Partial<SourcePolicy>;
   if (allowed !== undefined && typeof allowed !== "boolean") {
@@ -121,8 +127,11 @@ function sourceConf(raw: PolicyConfig | undefined, source: PolicySource): Partia
 
 /** 把可选配置补成完整策略；配置错误直接抛出，避免带病运行 */
 export function effectivePolicy(raw?: PolicyConfig): EffectivePolicy {
+  if (raw !== undefined && (typeof raw !== "object" || raw === null || Array.isArray(raw))) {
+    throw new Error("策略配置无效：policy 必须是对象");
+  }
   for (const key of Object.keys(raw ?? {})) {
-    if (!POLICY_FIELDS[key]) throw new Error(`策略配置无效：policy 含未知字段 ${key}`);
+    if (!Object.hasOwn(POLICY_FIELDS, key)) throw new Error(`策略配置无效：policy 含未知字段 ${key}`);
   }
   const rawSources: unknown = raw?.sources;
   if (rawSources !== undefined) {

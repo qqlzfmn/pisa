@@ -100,7 +100,8 @@ export class TelegramChannel implements ChannelAdapter {
   }
 
   async setCommands(commands: ReadonlyArray<{ command: string; description: string }>): Promise<void> {
-    await this.api("setMyCommands", { commands });
+    // 同样在启动链上：代理挂住时不能拖住 Router 与其它入口
+    await this.api("setMyCommands", { commands }, 8000);
   }
 
   private async api<T = unknown>(

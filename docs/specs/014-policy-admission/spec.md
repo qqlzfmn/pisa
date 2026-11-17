@@ -49,7 +49,7 @@
 | FR-003 | 默认准入表：名单内（无论是否 @）为 `auto`，名单外（无论是否 @）为 `off`；所有来源 `allowed` 为 `true`。不配置 `policy` 时与旧行为一致：白名单用户发起即执行，名单外拒绝 |
 | FR-004 | 策略版本由生效策略内容计算；配置写了 `policy.version` 时直接使用该值。生效策略任一字段变化都会改变默认版本号 |
 | FR-005 | 建任务前做准入判定：`off` 回复拒绝原因且不建任务；`observe` 回复「已记录、不执行」且不建任务；`auto` 才继续仓库校验并建任务 |
-| FR-006 | `IncomingMessage` 增加可选 `mentioned`：`true` 表示这条消息明确要求 pisa 做事；缺省视为 `true`。Telegram 私聊为 `true`，群聊用 `getMe` 得到的 bot 用户名精确匹配 `@username`；`getMe` 限时 8 秒且失败不阻断启动（日志告警），拿不到用户名时群聊按未 @ 处理，名单外无法借此进入。webhook、cron、GitHub 命令、CLI 与测试通道不设置，按显式请求处理 |
+| FR-006 | `IncomingMessage` 增加可选 `mentioned`：`true` 表示这条消息明确要求 pisa 做事；缺省视为 `true`。Telegram 私聊为 `true`，群聊用 `getMe` 得到的 bot 用户名精确匹配 `@username`；启动链上的 Telegram 调用（`getMe`、`setMyCommands`）都限时 8 秒，失败只告警不阻断启动，拿不到用户名时群聊按未 @ 处理，名单外无法借此进入。webhook、cron、GitHub 命令、CLI 与测试通道不设置，按显式请求处理 |
 | FR-007 | 任务新增 `mandate`（`source`、`channel`、`listed`、`mentioned`、`mode`）与 `policyVersion`；新增列并做轻量迁移。旧任务两列为 `null` |
 | FR-008 | `resume` 在身份、状态、工作副本校验之后重新判定：用任务记录的 `source` 与 `mentioned`、当前白名单计算 `listed`；结果不是 `auto` 时拒绝，回复当前 `policyVersion` 与原因，任务保持 `paused`。旧任务无 `mandate` 时按 `channel` 推导来源、`mentioned = true` 参与校验 |
 | FR-009 | 新增命令 `policy`（中文别名「策略」，进菜单、私聊可用 `/policy`），输出策略版本与每个来源的 `allowed` 和四格模式 |

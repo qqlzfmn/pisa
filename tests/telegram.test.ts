@@ -11,13 +11,17 @@ afterEach(() => {
 describe("TelegramChannel.setCommands", () => {
   test("调用 setMyCommands 注册菜单命令", async () => {
     const calls: Array<{ url: string; body: { commands: Array<{ command: string; description: string }> } }> = [];
+    let signal: AbortSignal | null | undefined;
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      signal = init?.signal;
       return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
     }) as typeof fetch;
 
     await new TelegramChannel("tok").setCommands(BOT_COMMANDS);
 
+    // 启动链上的调用必须限时：代理挂住时不能拖住 Router 与其它入口
+    expect(signal).toBeInstanceOf(AbortSignal);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe("https://api.telegram.org/bottok/setMyCommands");
     const names = calls[0]!.body.commands.map((c) => c.command).sort();

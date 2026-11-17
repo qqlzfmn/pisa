@@ -141,6 +141,24 @@ describe("准入策略", () => {
     expect(() => effectivePolicy({ sources: { im: "off" } } as never)).toThrow("必须是对象");
   });
 
+  test("policy 本身不是对象时报错", () => {
+    // null / 数组 / 原始值：Object.keys 为空，不校验就会静默落回默认表（全放名单内）
+    expect(() => effectivePolicy(null as never)).toThrow("policy 必须是对象");
+    expect(() => effectivePolicy([] as never)).toThrow("policy 必须是对象");
+    expect(() => effectivePolicy("auto" as never)).toThrow("policy 必须是对象");
+  });
+
+  test("原型链上的键名不算已知字段", () => {
+    // Record 查表的真值判断会把 toString / constructor 当已知字段，拼错字段随之被吞掉
+    expect(() => effectivePolicy({ toString: {} } as never)).toThrow("未知字段");
+    expect(() => effectivePolicy({ sources: { im: { constructor: {} } } } as never)).toThrow("未知字段");
+    expect(() =>
+      effectivePolicy({
+        sources: { im: { admission: [{ listed: true, mentioned: true, mode: "auto", allowd: false }] } },
+      } as never),
+    ).toThrow("未知字段");
+  });
+
   test("通道映射到来源", () => {
     expect(sourceOf("telegram")).toBe("im");
     expect(sourceOf("cli")).toBe("im");

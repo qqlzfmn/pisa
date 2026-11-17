@@ -204,11 +204,11 @@ curl -X POST http://127.0.0.1:8799/event \
 
 - 来源：`im`（Telegram、CLI 等）、`github`、`webhook`、`cron`、`proactive`；未列出的来源保持默认
 - `off` 拒绝并说明；`observe` 记录判定但不建任务；`auto` 建任务
-- 四格缺失的按 `off` 处理，重复格或未知来源在启动时报错
+- 四格缺失的按 `off` 处理；重复格、未知字段、类型不符与未知来源在启动时报错，不静默落回默认表
 - 版本号默认由生效规则哈希生成，配置 `policy.version` 可固定；改动任一格版本号变化
 - 每个任务记录 `mandate`（来源、名单内外、是否 @、模式）与 `policyVersion`；策略变更不改写既有任务
 - `resume` 前按当前名单重新校验；不再满足 `auto` 时拒绝恢复、任务保持暂停，并回复当前版本与原因
-- Telegram 群聊用 bot 用户名精确匹配 `@username`；拿不到用户名时群聊按未 @ 处理
+- Telegram 群聊用 bot 用户名精确匹配 `@username`；启动时的 `getMe`、`setMyCommands` 都限时 8 秒，失败只告警不阻断启动，拿不到用户名时群聊按未 @ 处理
 - `/pisa policy`（私聊 `/policy`）查看版本、各来源开关与四格模式
 
 ## 多仓库
