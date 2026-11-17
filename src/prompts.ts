@@ -11,7 +11,10 @@ export const TEAM_FILE = "team.json";
 
 /** 段落里允许出现的占位符 */
 const PLACEHOLDERS: Record<string, true> = { id: true, prompt: true, context: true };
+/** 渲染用：只替换合法名字 */
 const PLACEHOLDER = /\{\{\s*([\w-]+)\s*\}\}/g;
+/** 校验用：抓出所有 `{{...}}`，名字不认识就报错，避免拼错的占位符原样进入提示词 */
+const PLACEHOLDER_ANY = /\{\{([^{}]*?)\}\}/g;
 
 type Source = "builtin" | "team";
 
@@ -73,8 +76,8 @@ function readLayer(path: string, requireAll: boolean): PromptLayer {
     if (typeof value !== "string" || !value.trim()) {
       throw new Error(`${path}：段落「${key}」必须是非空字符串`);
     }
-    for (const match of value.matchAll(PLACEHOLDER)) {
-      const name = match[1]!;
+    for (const match of value.matchAll(PLACEHOLDER_ANY)) {
+      const name = match[1]!.trim();
       if (!Object.hasOwn(PLACEHOLDERS, name)) {
         throw new Error(
           `${path}：段落「${key}」包含未知占位符「{{${name}}}」（可用：${Object.keys(PLACEHOLDERS).join(", ")}）`,

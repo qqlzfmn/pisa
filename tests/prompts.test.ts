@@ -99,6 +99,11 @@ describe("分层覆盖", () => {
     for (const key of SEGMENT_KEYS) expect(set.sources[key]).toBe("builtin");
   });
 
+  test("占位符两侧允许空白", () => {
+    const set = loadPrompts(fixture(builtin, { version: 2, segments: { intro: "开场 {{ id }}" } }));
+    expect(renderPrompt(set, vars)).toBe("开场 t_1\n\n任务 修一下登录\n\n约束");
+  });
+
   test("版本号不同也能叠加，摘要展示两层版本", () => {
     const set = loadPrompts(fixture(builtin, { version: 3, segments: { intro: "团队开场 {{id}}" } }));
     const summary = formatPromptSummary(set, "/pisa");
@@ -141,6 +146,12 @@ describe("非法配置在装载时被拒绝", () => {
   test("未知占位符", () => {
     expect(() => loadPrompts(fixture(builtin, { version: 1, segments: { task: "任务 {{repo}}" } }))).toThrow(
       "未知占位符「{{repo}}」",
+    );
+    expect(() => loadPrompts(fixture(builtin, { version: 1, segments: { task: "任务 {{repo.name}}" } }))).toThrow(
+      "未知占位符「{{repo.name}}」",
+    );
+    expect(() => loadPrompts(fixture(builtin, { version: 1, segments: { task: "任务 {{}}" } }))).toThrow(
+      "未知占位符「{{}}」",
     );
   });
 
