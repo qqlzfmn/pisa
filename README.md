@@ -145,6 +145,16 @@ curl -X POST http://127.0.0.1:8799/event \
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
 
+## 自举
+
+pisa 可以改自己：
+
+1. 给机器人发需求（或从 webhook 投递），Worker 在 `pisa/<任务号>` 分支上改代码
+2. `/pisa merge <任务号>`：在临时副本跑 `bun test`，通过后 `--ff-only` 合入 `main`
+3. 看护模式（`PISA_SUPERVISED=1`）下进程退出，`scripts/supervise.sh` 拉起新代码
+
+这条链路已经实测：任务改 README → merge → 进程 PID 变化 → 新内容生效。
+
 ## 开发方式
 
 本项目使用 **规格驱动开发（SDD）**，流程见 [SDD.md](./SDD.md)：

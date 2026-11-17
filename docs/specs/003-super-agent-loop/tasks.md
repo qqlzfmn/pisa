@@ -9,3 +9,4 @@
 - [x] T7 看护脚本 `scripts/supervise.sh`
 - [x] T8 测试：19 个用例通过
 - [x] T9 真实 omp 验证：进度上报、会话 id、continue 分支续跑
+- [x] T10 自举：merge 验证 + 合入主干 + 看护进程重启（已实测）
