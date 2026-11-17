@@ -62,7 +62,7 @@ export function repoByAlias(cfg: Config, alias?: string): RepoConfig | undefined
 }
 
 /** 触发词解析：仅接受以 trigger 开头的文本 */
-export function parseCommand(text: string, trigger: string): { kind: "task" | "cancel" | "help" | "status" | "continue"; body: string } | null {
+export function parseCommand(text: string, trigger: string): { kind: "task" | "cancel" | "help" | "status" | "continue" | "merge"; body: string } | null {
   const t = text.trim();
   if (!t.startsWith(trigger)) return null;
   const rest = t.slice(trigger.length).trim();
@@ -72,5 +72,6 @@ export function parseCommand(text: string, trigger: string): { kind: "task" | "c
   if (head === "help" || head === "帮助") return { kind: "help", body: "" };
   if (head === "status" || head === "状态") return { kind: "status", body: "" };
   if (head === "continue" || head === "继续") return { kind: "continue", body: tail.join(" ").trim() };
+  if (head === "merge" || head === "合并") return { kind: "merge", body: tail.join(" ").trim() };
   return { kind: "task", body: rest };
 }

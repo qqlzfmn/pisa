@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { Config, RepoConfig } from "./config";
 import { parseCommand, repoByAlias } from "./config";
@@ -7,7 +7,7 @@ import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./type
 import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
-import { createWorktree, deleteBranch, isGitRepo, removeWorktree } from "./git";
+import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
 import { TaskLogger } from "./log";
 
 export interface RouterDeps {
@@ -93,7 +93,8 @@ export class Router {
           "pisa · 命令",
           `${cfg.trigger} <需求>        接一个任务（私聊可直接说需求）`,
           `${cfg.trigger} cancel [任务号]  取消（私聊可用 /cancel）`,
-          `${cfg.trigger} continue <任务号> <新要求>  接着上一个会话做`,
+          `${cfg.trigger} continue <任务号> <新要求>  接着上一轮的分支做`,
+          `${cfg.trigger} merge <任务号>     合并到主干（自举）`,
           `${cfg.trigger} help           本帮助（私聊可用 /help）`,
         ].join("\n"),
       );
@@ -102,6 +103,11 @@ export class Router {
 
     if (cmd.kind === "cancel") {
       await this.handleCancel(msg, cmd.body);
+      return;
+    }
+
+    if (cmd.kind === "merge") {
+      await this.handleMerge(msg, cmd.body);
       return;
     }
 
@@ -208,6 +214,77 @@ export class Router {
     if (!cfg.whitelist.repos.includes(repo.alias)) return `无权限：仓库 ${repo.alias} 不在白名单。`;
     if (!isGitRepo(repo.path)) return `仓库路径不是 git 仓库：${repo.path}`;
     return null;
+  }
+
+  /** 自举：把已完成任务的分支验证后合入主干 */
+  private async handleMerge(msg: IncomingMessage, body: string): Promise<void> {
+    const { cfg, store, channel } = this.deps;
+    const id = body.trim();
+    const task = id ? store.get(id) : null;
+    if (!task) {
+      await channel.send(msg.chatId, `找不到任务 ${id || ""}`);
+      return;
+    }
+    if (task.requester !== msg.userId) {
+      await channel.send(msg.chatId, "只有原请求者可以合并。");
+      return;
+    }
+    if (task.status !== "succeeded" || !task.branch) {
+      await channel.send(msg.chatId, `任务 ${task.id} 没有可合并的分支（${task.status}）。`);
+      return;
+    }
+    const repo = repoByAlias(cfg, task.repo);
+    if (!repo) {
+      await channel.send(msg.chatId, `仓库未配置：${task.repo}`);
+      return;
+    }
+
+    const verifyBranch = `verify/${task.id}`;
+    const verifyDir = resolve(cfg.stateDir, "verify", task.id);
+    const wt = createWorktree(repo.path, verifyDir, verifyBranch, task.branch);
+    if (wt.code !== 0) {
+      await channel.send(msg.chatId, `验证副本创建失败：${wt.err.slice(0, 300)}`);
+      return;
+    }
+
+    let ok = true;
+    let detail = "没有测试目录，跳过测试";
+    try {
+      const hasTests = existsSync(join(verifyDir, "tests")) || existsSync(join(verifyDir, "test"));
+      if (hasTests) {
+        const test = sh(["bun", "test"], verifyDir);
+        ok = test.code === 0;
+        detail = ok ? "测试通过" : `测试失败：\n${(test.err || test.out).slice(-600)}`;
+      }
+    } finally {
+      removeWorktree(repo.path, verifyDir);
+      deleteBranch(repo.path, verifyBranch);
+    }
+
+    if (!ok) {
+      await channel.send(msg.chatId, `未合并 · ${task.id}\n${detail}`);
+      return;
+    }
+
+    const base = repo.baseBranch ?? "main";
+    if (currentBranch(repo.path) !== base) {
+      await channel.send(msg.chatId, `主工作区当前不在 ${base}，请先切回再合并。`);
+      return;
+    }
+    const merge = sh(["git", "-C", repo.path, "merge", "--ff-only", task.branch]);
+    if (merge.code !== 0) {
+      await channel.send(msg.chatId, `合并失败：${(merge.err || merge.out).slice(0, 600)}`);
+      return;
+    }
+
+    await channel.send(msg.chatId, `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}`);
+
+    // 自举：由看护进程拉起新代码
+    if (process.env.PISA_SUPERVISED === "1") {
+      setTimeout(() => process.exit(1), 800);
+    } else {
+      await channel.send(msg.chatId, "当前不是看护模式，改动在重启后生效。");
+    }
   }
 
   private async handleCancel(msg: IncomingMessage, body: string): Promise<void> {

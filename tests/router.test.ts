@@ -248,6 +248,17 @@ describe("Router", () => {
     expect(channel.sent[0]?.text).toContain("找不到任务");
   });
 
+  test("merge 把任务分支合入主干", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 新建 out.txt"));
+    await router.drainOnce();
+    const id = store.recent()[0]!.id;
+
+    await router.handle(msg(`/pisa merge ${id}`));
+    expect(channel.sent.some((s) => s.text.includes("已合并"))).toBe(true);
+    expect(sh(["git", "-C", repo, "cat-file", "-e", "main:out.txt"]).code).toBe(0);
+  });
+
   test("status 列出最近任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 做点事"));
