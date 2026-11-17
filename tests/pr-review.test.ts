@@ -447,6 +447,36 @@ describe("评审结论的提取", () => {
     expect(formatReview(7, "a".repeat(40), res.summary)).toContain("结论：有阻塞问题");
   });
 
+  test("结论之后又补了一句收尾：仍取结论，不收尾句", async () => {
+    const conclusion = "结论：可以合并\n\n1. src/worker.ts:113 —— 摘要从结论里取，不再截断";
+    const res = await stub([conclusion, "以上。有疑问随时说。"]).run(task("review"), dir, () => {}, () => false);
+
+    expect(res.ok).toBe(true);
+    expect(res.summary).toBe(conclusion);
+  });
+
+  test("首行带 Markdown 装饰也认作结论", async () => {
+    for (const conclusion of ["## 结论：可以合并", "**结论：需要讨论**\n\n1. 影响面不清", "- 结论：有阻塞问题"]) {
+      const res = await stub([conclusion]).run(task("review"), dir, () => {}, () => false);
+      expect(res.ok).toBe(true);
+      expect(res.summary).toBe(conclusion);
+    }
+  });
+
+  test("模型没给结论：任务失败，摘要留作诊断", async () => {
+    const res = await stub(["第 1 轮：读 src/router.ts 的 launch。", "看完了，改动挺干净。"]).run(
+      task("review"),
+      dir,
+      () => {},
+      () => false,
+    );
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain("评审没有产出结论");
+    expect(res.error).toContain("看完了，改动挺干净。");
+    expect(res.summary).toBe("看完了，改动挺干净。");
+  });
+
   test("工作任务的摘要仍是全部助手消息", async () => {
     const texts = ["先看 src/router.ts", "改了 src/router.ts:169", "改完了"];
     const res = await stub(texts).run(task("work"), dir, () => {}, () => false);

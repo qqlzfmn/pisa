@@ -5,6 +5,22 @@ import type { Task, WorkerResult } from "./types";
 import { redact } from "./log";
 import { getAdapter, type WorkerAdapter } from "./adapters";
 
+/** 评审首行契约，见 `reviewPrompt` 与 `REVIEW_CONSTRAINTS` */
+const REVIEW_VERDICT = /^结论[*_]*[：:][*_]*\s*(?:可以合并|有阻塞问题|需要讨论)/;
+
+/**
+ * 评审结论：提示词要求最后一条助手消息的第一行写 `结论：…`，但模型有时在结论后面
+ * 再补一句收尾，位置不可靠，所以从最后一条消息往前找首行符合契约的那条。首行的
+ * Markdown 装饰（`**`、`##`、`>`、`- `）不算内容。
+ */
+function reviewConclusion(texts: string[]): string | null {
+  for (let i = texts.length - 1; i >= 0; i--) {
+    const lines = texts[i]!.split("\n").map((line) => line.replace(/^[\s*_#>`-]+/, ""));
+    if (REVIEW_VERDICT.test(lines.find((line) => line.trim()) ?? "")) return texts[i]!;
+  }
+  return null;
+}
+
 export interface WorkerRunner {
   run(
     task: Task,
@@ -110,12 +126,27 @@ export class Worker implements WorkerRunner {
     if (cancelled) return { ok: false, summary: "", error: "任务已取消", exitCode };
     if (timedOut) return { ok: false, summary: "", error: `执行超时（${this.cfg.timeoutSec}s）`, exitCode };
 
-    // 评审的结论写在最后一条助手消息里：前序工具旁白会把从头截断的结论整段挤掉
-    const narrative = task.mode === "review" ? texts[texts.length - 1] : texts.join("\n\n");
+    // 评审回帖的正文是结论，工作任务的摘要仍是全部助手消息拼接
+    const narrative = task.mode === "review" ? (texts[texts.length - 1] ?? "") : texts.join("\n\n");
     const summary = redact((narrative || rawTail.slice(-40).join("\n")).trim()).slice(0, 4000);
     if (exitCode !== 0) {
       const err = rawTail.slice(-20).join("\n") || `Worker 退出码 ${exitCode}`;
       return { ok: false, summary, error: redact(err).slice(0, 2000), exitCode };
+    }
+    if (task.mode === "review") {
+      const conclusion = reviewConclusion(texts);
+      if (!conclusion) {
+        const said = summary.split("\n").map((line) => line.trim()).find(Boolean)?.slice(0, 80) ?? "（没有助手消息）";
+        return {
+          ok: false,
+          summary,
+          error: redact(
+            `评审没有产出结论：助手消息首行不是「结论：可以合并 / 有阻塞问题 / 需要讨论」，没有可回帖的内容（首行：${said}）`,
+          ),
+          exitCode,
+        };
+      }
+      return { ok: true, summary: redact(conclusion.trim()).slice(0, 4000), exitCode };
     }
     return { ok: true, summary: summary || "（Worker 未返回文字摘要）", exitCode };
   }
