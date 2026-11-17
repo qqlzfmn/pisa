@@ -3,10 +3,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
-import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
+import type { ChannelAdapter, EffectJob, IncomingMessage, Task, WorkerResult } from "./types";
 import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
+import { EffectQueue, type EffectQueueOptions } from "./effects";
 import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
 import {
   defaultRunner,
@@ -29,6 +30,8 @@ export interface RouterDeps {
   channel: ChannelAdapter;
   /** 回帖用的 gh 执行器；默认走真实命令，测试注入假实现 */
   ghRunner?: Runner;
+  /** Outbox 队列的退避参数与时钟；缺省用 2s→60s 真实退避 */
+  effectOptions?: EffectQueueOptions;
   /** 注入以便测试 */
   now?: () => number;
 }
@@ -74,9 +77,20 @@ export class Router {
   private deniedAt = new Map<string, number>();
   /** 被拦下的单英文词任务：键 `${chatId}:${userId}`，每人只保留一条 */
   private pending = new Map<string, PendingTask>();
+  /** 外部动作的 Outbox 队列：先落库再执行，失败退避，重启重放 */
+  private readonly effects: EffectQueue;
 
   constructor(private deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
+    this.effects = new EffectQueue(deps.store, (job) => this.runEffect(job), {
+      now: this.now,
+      ...deps.effectOptions,
+    });
+  }
+
+  /** 重启后继续执行上次没做完的外部动作；返回本轮重放条数 */
+  replayEffects(): number {
+    return this.effects.replay();
   }
 
   start(intervalMs = 800): void {
@@ -91,6 +105,7 @@ export class Router {
    */
   async stop(timeoutMs = 3000): Promise<void> {
     this.stopping = true;
+    this.effects.stop();
     clearInterval(this.timer ?? undefined);
     this.timer = null;
     const cap = Promise.withResolvers<void>();
@@ -758,36 +773,61 @@ export class Router {
   }
 
   /** 回帖到来源 PR / Issue；失败只记日志，不改任务状态 */
-  private replyToSource(task: Task, summary: string, log: TaskLogger): void {
+  private async replyToSource(task: Task, summary: string, log: TaskLogger): Promise<void> {
     const gh = this.deps.cfg.github;
     // 多仓库：任务记住评论所在仓库；旧任务与 IM 触发的回帖退回配置里的单仓库
     const repo = task.replyRepo ?? githubRepos(gh)[0]?.repo;
     if (!gh?.enabled || !repo) return;
-    const runner = this.deps.ghRunner ?? defaultRunner;
     const body = formatReply(summary);
-    if (task.replyPr) this.postReply(runner, repo, task.replyPr, "pr", task, body, log);
-    if (task.replyIssue) this.postReply(runner, repo, task.replyIssue, "issue", task, body, log);
+    if (task.replyPr) await this.postReply(repo, task.replyPr, "pr", task, body, log);
+    if (task.replyIssue) await this.postReply(repo, task.replyIssue, "issue", task, body, log);
   }
 
-  /** 带隐藏标记回帖：讨论串已有同标记说明发过，重试不再重复；检查失败则跳过，只记日志 */
-  private postReply(
-    runner: Runner,
+  /**
+   * 回帖先入队再执行：同一 (仓库, 号, 任务) 只投一次，失败按退避重试，重启后重放。
+   * 回帖正文带隐藏标记，重试撞上已发出的讨论串也不会重复。
+   */
+  private async postReply(
     repo: string,
     n: number,
     purpose: "pr" | "issue",
     task: Task,
     body: string,
     log: TaskLogger,
-  ): void {
+  ): Promise<void> {
     const kind = purpose === "pr" ? "PR" : "Issue";
-    const res = postReplyOnce(runner, repo, n, purpose, task.id, body);
-    if (res.ok && res.value === "posted") this.deps.store.effect(task.id, "comment", `${repo}#${n}`, `${kind} 回帖`);
-    const detail = !res.ok
-      ? `回帖失败：${res.error.slice(0, 500)}`
-      : res.value === "skipped"
+    const outcome = await this.effects.enqueue("comment", `${repo}#${n}:${task.id}`, {
+      repo,
+      n,
+      purpose,
+      taskId: task.id,
+      body,
+    });
+    if (outcome.ok && outcome.result === "posted") {
+      this.deps.store.effect(task.id, "comment", `${repo}#${n}`, `${kind} 回帖`);
+    }
+    const detail = !outcome.ok
+      ? `回帖失败：${outcome.error.slice(0, 500)}`
+      : outcome.result === "skipped"
         ? "已存在同标记回帖，跳过"
         : "已回帖";
     log.write(`reply-${purpose}`, `${kind} #${n} ${detail}`);
+  }
+
+  /** Outbox 执行器：push / pr 交给交付器，评论交给 gh */
+  private async runEffect(job: EffectJob): Promise<string | null> {
+    if (job.kind !== "comment") return this.deps.deliverer.runEffect(job);
+    const p = job.payload;
+    const res = postReplyOnce(
+      this.deps.ghRunner ?? defaultRunner,
+      String(p.repo),
+      Number(p.n),
+      p.purpose === "pr" ? "pr" : "issue",
+      String(p.taskId),
+      String(p.body),
+    );
+    if (!res.ok) throw new Error(res.error);
+    return res.value;
   }
 
   /**
@@ -886,9 +926,14 @@ export class Router {
 
     let delivery;
     try {
-      delivery = await deliverer.deliver({ ...task, branch }, workdir, repo);
+      delivery = await deliverer.deliver({ ...task, branch }, workdir, repo, this.effects);
     } catch (err) {
       log.write("deliver", (err as Error).message);
+      // 关停打断入队动作：任务与工作副本保持原样，未完成的 effect 下次启动重放
+      if (this.stopping) {
+        log.write("stopping", "交付中断，任务保持 running");
+        return;
+      }
       this.dropWorktree(repo.path, task, workdir);
       this.cleanupBranch(repo.path, task, branch);
       store.transition(task.id, "failed", { error: (err as Error).message, endedAt: this.now() });
@@ -909,8 +954,7 @@ export class Router {
     });
     this.dropWorktree(repo.path, task, workdir);
     log.write("done", `files=${delivery.files.length} pushed=${delivery.pushed}`);
-    this.replyToSource(task, result.summary, log);
-
+    await this.replyToSource(task, result.summary, log);
     const fresh = store.get(task.id);
     const lines = [`✅ ${task.id} 完成`, result.summary.slice(0, 1200)];
     if (delivery.files.length) lines.push(`改动 ${delivery.files.length} 个文件：${delivery.files.slice(0, 8).join(", ")}`);

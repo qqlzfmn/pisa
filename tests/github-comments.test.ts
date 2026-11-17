@@ -17,6 +17,7 @@ import { GithubWatcher } from "../src/github-watcher";
 import { Store } from "../src/store";
 import { Router } from "../src/router";
 import { GitDeliverer, prBody } from "../src/deliver";
+import { EffectQueue, type EffectQueueOptions } from "../src/effects";
 import { createWorktree, sh, type ExecResult } from "../src/git";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
@@ -313,6 +314,16 @@ describe("isPullRequest", () => {
   });
 });
 
+/** 排空已排队的微任务：重放是后台执行的，断言前让出一轮 */
+async function flush(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 0);
+  return promise;
+}
+
+/** 测试里跳过退避等待：只验证重试次数与最终结果，不耗真实时间 */
+const FAST_RETRY: EffectQueueOptions = { sleep: async () => {} };
+
 describe("GitHub 评论 → 任务", () => {
   let repo: string;
   let stateDir: string;
@@ -335,7 +346,7 @@ describe("GitHub 评论 → 任务", () => {
   });
 
   function watcher(runner: Runner, now = () => 1_700_000_000_000) {
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), effectOptions: FAST_RETRY, channel });
     const w = new GithubWatcher({ cfg, store, runner, now, enqueue: (m: IncomingMessage) => router.handle(m) });
     return { router, w };
   }
@@ -449,7 +460,7 @@ describe("GitHub 评论 → 任务", () => {
         return { ok: true, summary: "再改一处", exitCode: 0 };
       },
     };
-    const router = new Router({ cfg, store, worker: editingWorker, deliverer: new GitDeliverer(cfg), channel });
+    const router = new Router({ cfg, store, worker: editingWorker, deliverer: new GitDeliverer(cfg), effectOptions: FAST_RETRY, channel });
     await router.handle({
       eventId: "github:comment:20",
       channel: "github",
@@ -522,6 +533,7 @@ describe("GitHub 评论 → 任务", () => {
       store,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
+      effectOptions: FAST_RETRY,
       channel,
       ghRunner,
     });
@@ -541,6 +553,50 @@ describe("GitHub 评论 → 任务", () => {
       ["gh", "api", "repos/o/r/issues/12/comments", "--paginate", "--jq", ".[]"],
       ["gh", "pr", "comment", "12", "--repo", "o/r", "--body", `${HEADER}改好了\n\n${replyMarker(task.id, "pr")}`],
     ]);
+    // 回帖经 Outbox 执行，同一 (仓库, 号, 任务) 只留一行且已完成
+    const effect = store.effectJob("comment", `o/r#12:${task.id}`)!;
+    expect(effect.status).toBe("done");
+    expect(effect.result).toBe("posted");
+  });
+
+  test("重启后重放未完成的回帖", async () => {
+    const calls: string[][] = [];
+    const ghRunner: Runner = (args) => {
+      calls.push(args);
+      return reply(0);
+    };
+    // 上个进程：回帖已落库，还没执行就退出了
+    const leftover = store.enqueueEffect(
+      "comment",
+      "o/r#12:t_old",
+      { repo: "o/r", n: 12, purpose: "pr", taskId: "t_old", body: "改好了" },
+      Date.now(),
+    );
+    expect(leftover.status).toBe("pending");
+
+    const router = new Router({
+      cfg,
+      store,
+      worker: okWorker,
+      deliverer: new GitDeliverer(cfg),
+      effectOptions: FAST_RETRY,
+      channel,
+      ghRunner,
+    });
+    expect(router.replayEffects()).toBe(1);
+    await flush();
+
+    expect(store.effectJob("comment", "o/r#12:t_old")!.status).toBe("done");
+    expect(calls.at(-1)).toEqual([
+      "gh",
+      "pr",
+      "comment",
+      "12",
+      "--repo",
+      "o/r",
+      "--body",
+      `改好了\n\n${replyMarker("t_old", "pr")}`,
+    ]);
   });
 
   test("讨论串已有同标记时跳过回帖", async () => {
@@ -551,7 +607,7 @@ describe("GitHub 评论 → 任务", () => {
       if (args[1] === "api") return threadBodies([`上一轮回帖\n\n${replyMarker(store.recentTasks()[0]!.id, "pr")}`]);
       return reply(0);
     };
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner });
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), effectOptions: FAST_RETRY, channel, ghRunner });
     await router.handle({
       eventId: "github:comment:13",
       channel: "github",
@@ -577,6 +633,7 @@ describe("GitHub 评论 → 任务", () => {
       store,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
+      effectOptions: FAST_RETRY,
       channel,
       ghRunner,
     });
@@ -605,6 +662,7 @@ describe("GitHub 评论 → 任务", () => {
       store,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
+      effectOptions: FAST_RETRY,
       channel,
       // 列表检查成功、回帖失败
       ghRunner: scripted(reply(0), reply(1, "", "no token")).runner,
@@ -637,6 +695,7 @@ describe("GitHub 评论 → 任务", () => {
       store,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
+      effectOptions: FAST_RETRY,
       channel,
       // 列表检查成功、回帖失败
       ghRunner: scripted(reply(0), reply(1, "", "no token")).runner,
@@ -666,6 +725,7 @@ describe("GitHub 评论 → 任务", () => {
       store,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
+      effectOptions: FAST_RETRY,
       channel,
       ghRunner,
     });
@@ -739,7 +799,7 @@ describe("GitHub 多仓库轮询", () => {
   function setup(gh: Config["github"], runner: Runner, clock: () => number) {
     const cfg = makeCfg(repo, stateDir, gh);
     cfg.whitelist.users = ["u1", "ua", "ub"];
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), effectOptions: FAST_RETRY, channel });
     const w = new GithubWatcher({ cfg, store, runner, now: clock, enqueue: (m: IncomingMessage) => router.handle(m) });
     return { cfg, router, w };
   }
@@ -849,7 +909,7 @@ describe("GitHub 多仓库轮询", () => {
       ],
     });
     const { runner: ghRunner, calls } = scripted(reply(0));
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner });
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), effectOptions: FAST_RETRY, channel, ghRunner });
 
     await router.handle({
       eventId: "github:comment:o/b:42",
@@ -925,6 +985,11 @@ describe("GitDeliverer 更新既有 PR", () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
+  /** 真实 Outbox：push / PR 都经 deliverer.runEffect 执行 */
+  function queue(deliverer: GitDeliverer): EffectQueue {
+    return new EffectQueue(new Store(":memory:"), (job) => deliverer.runEffect(job));
+  }
+
   /** 父任务分支 + 已挂载的工作副本，带一处改动 */
   function setup(): string {
     expect(sh(["git", "-C", repo, "branch", "pisa/parent", "main"]).code).toBe(0);
@@ -949,6 +1014,7 @@ describe("GitDeliverer 更新既有 PR", () => {
       { ...baseTask, id: "t_child", branch: "pisa/parent", prUrl: "https://github.com/o/r/pull/12" },
       workdir,
       cfg.repos[0]!,
+      queue(deliverer),
     );
 
     expect(calls).toEqual([]);
@@ -969,7 +1035,7 @@ describe("GitDeliverer 更新既有 PR", () => {
       },
     });
 
-    const res = await deliverer.deliver({ ...baseTask, id: "t_new", branch: "pisa/parent" }, workdir, cfg.repos[0]!);
+    const res = await deliverer.deliver({ ...baseTask, id: "t_new", branch: "pisa/parent" }, workdir, cfg.repos[0]!, queue(deliverer));
 
     expect(calls).toEqual(["pisa/parent"]);
     expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
@@ -990,6 +1056,7 @@ describe("GitDeliverer 更新既有 PR", () => {
       { ...baseTask, id: "t_issue", prompt: "", branch: "pisa/parent", replyIssue: 20 },
       workdir,
       cfg.repos[0]!,
+      queue(deliverer),
     );
 
     expect(bodies).toEqual(["任务号：t_issue\n\n---\n\n由 pisa 自动创建。\n\nCloses #20"]);

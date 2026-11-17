@@ -64,6 +64,8 @@ async function main(): Promise<void> {
       `[pisa] 中断任务：${recovered.paused} 个可恢复（paused），${recovered.failed} 个标记 failed`,
     );
   }
+  const replayed = router.replayEffects();
+  if (replayed > 0) console.log(`[pisa] 重放未完成的外部动作：${replayed} 条`);
 
   const proactive = new Proactive(cfg, (m) => router.handle(m));
   const githubWatcher = new GithubWatcher({ cfg, store, enqueue: (m) => router.handle(m) });

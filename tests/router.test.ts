@@ -508,6 +508,10 @@ describe("Router", () => {
     const t = store.recentTasks()[0]!;
     expect(t.status).toBe("succeeded");
     expect(sh(["git", "--git-dir", bare, "rev-parse", "--verify", t.branch!]).code).toBe(0);
+    // 推送经 Outbox：键含仓库、分支与提交号，动作已完成
+    const sha = sh(["git", "-C", repo, "rev-parse", t.branch!]).out;
+    const push = store.effectJob("push", `demo:${t.branch}:${sha}`)!;
+    expect(push.status).toBe("done");
 
     sh(["git", "-C", repo, "remote", "remove", "origin"]);
     rmSync(bare, { recursive: true, force: true });

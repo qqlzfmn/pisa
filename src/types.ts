@@ -13,6 +13,32 @@ export interface Effect {
   createdAt: number;
 }
 
+/** 需要先落库再执行的外部动作种类：推送、建 PR、回帖 */
+export type EffectJobKind = Extract<EffectKind, "push" | "pr" | "comment">;
+
+export type EffectJobStatus = "pending" | "done" | "failed";
+
+/** Outbox 行：先落库、后执行，失败退避重试，重启后重放 */
+export interface EffectJob {
+  id: number;
+  kind: EffectJobKind;
+  /** 同 (kind, dedupeKey) 只执行一次 */
+  dedupeKey: string;
+  payload: Record<string, unknown>;
+  status: EffectJobStatus;
+  /** 已失败的次数 */
+  attempts: number;
+  /** 下次可执行时间戳 */
+  nextAt: number;
+  result: string | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 入队结果：ok 表示动作已完成（含此前已完成），result 为动作产物（如 PR 地址） */
+export type EffectOutcome = { ok: true; result: string | null } | { ok: false; error: string };
+
 export interface IncomingMessage {
   eventId: string;
   channel: string;

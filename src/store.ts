@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
-import type { Effect, EffectKind, Task, TaskStatus } from "./types";
+import type { Effect, EffectJob, EffectJobKind, EffectJobStatus, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
 const SCHEMA = `
@@ -54,6 +54,22 @@ CREATE TABLE IF NOT EXISTS task_effects (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (task_id, kind, target)
 );
+
+CREATE TABLE IF NOT EXISTS effects (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind       TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  payload    TEXT NOT NULL,
+  status     TEXT NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  next_at    INTEGER NOT NULL,
+  result     TEXT,
+  error      TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(kind, dedupe_key)
+);
+CREATE INDEX IF NOT EXISTS idx_effects_pending ON effects(status, next_at);
 `;
 
 interface Row {
@@ -79,6 +95,36 @@ interface Row {
   started_at: number | null;
   ended_at: number | null;
   cancel_requested: number;
+}
+
+interface EffectRow {
+  id: number;
+  kind: EffectJobKind;
+  dedupe_key: string;
+  payload: string;
+  status: EffectJobStatus;
+  attempts: number;
+  next_at: number;
+  result: string | null;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function toEffectJob(r: EffectRow): EffectJob {
+  return {
+    id: r.id,
+    kind: r.kind,
+    dedupeKey: r.dedupe_key,
+    payload: JSON.parse(r.payload) as Record<string, unknown>,
+    status: r.status,
+    attempts: r.attempts,
+    nextAt: r.next_at,
+    result: r.result,
+    error: r.error,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
 }
 
 function toTask(r: Row): Task {
@@ -177,6 +223,59 @@ export class Store {
       .query("SELECT task_id, kind, target, detail, created_at FROM task_effects WHERE task_id = ? ORDER BY created_at, kind, target")
       .all(taskId) as Array<{ task_id: string; kind: EffectKind; target: string; detail: string | null; created_at: number }>;
     return rows.map((r) => ({ taskId: r.task_id, kind: r.kind, target: r.target, detail: r.detail, createdAt: r.created_at }));
+  }
+
+  /**
+   * 入队：同 (kind, dedupeKey) 只保留一行。已完成的直接复用结果；
+   * 上次耗尽的失败行重置为待执行，新的调用方代表新的意图。
+   */
+  enqueueEffect(kind: EffectJobKind, dedupeKey: string, payload: Record<string, unknown>, now: number): EffectJob {
+    this.db.run(
+      `INSERT OR IGNORE INTO effects(kind, dedupe_key, payload, status, attempts, next_at, created_at, updated_at)
+       VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)`,
+      [kind, dedupeKey, JSON.stringify(payload), now, now, now],
+    );
+    this.db.run(
+      "UPDATE effects SET status = 'pending', attempts = 0, next_at = ?, error = NULL, updated_at = ? WHERE kind = ? AND dedupe_key = ? AND status = 'failed'",
+      [now, now, kind, dedupeKey],
+    );
+    return this.effectJob(kind, dedupeKey)!;
+  }
+
+  effectJob(kind: EffectJobKind, dedupeKey: string): EffectJob | null {
+    const row = this.db
+      .query("SELECT * FROM effects WHERE kind = ? AND dedupe_key = ?")
+      .get(kind, dedupeKey) as EffectRow | null;
+    return row ? toEffectJob(row) : null;
+  }
+
+  /** 所有未完成的 effect，按可执行时间排序；重启后重放用 */
+  pendingEffects(): EffectJob[] {
+    const rows = this.db
+      .query("SELECT * FROM effects WHERE status = 'pending' ORDER BY next_at, id")
+      .all() as EffectRow[];
+    return rows.map(toEffectJob);
+  }
+
+  /** 一次失败：记次数、错误与下次可执行时间 */
+  deferEffect(id: number, attempts: number, nextAt: number, error: string, now: number): void {
+    this.db.run("UPDATE effects SET attempts = ?, next_at = ?, error = ?, updated_at = ? WHERE id = ?", [
+      attempts,
+      nextAt,
+      error,
+      now,
+      id,
+    ]);
+  }
+
+  settleEffect(id: number, status: "done" | "failed", result: string | null, error: string | null, now: number): void {
+    this.db.run("UPDATE effects SET status = ?, result = ?, error = ?, updated_at = ? WHERE id = ?", [
+      status,
+      result,
+      error,
+      now,
+      id,
+    ]);
   }
 
   /** 幂等：同一事件只能登记一次 */

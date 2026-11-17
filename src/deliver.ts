@@ -1,5 +1,7 @@
 import type { Config, RepoConfig } from "./config";
-import type { DeliveryResult, Task } from "./types";
+import { repoByAlias } from "./config";
+import type { DeliveryResult, EffectJob, Task } from "./types";
+import type { EffectEnqueuer } from "./effects";
 import {
   changedFiles,
   commitAll,
@@ -8,10 +10,13 @@ import {
   hasGh,
   pushBranch,
   remoteUrl,
+  sh,
 } from "./git";
 
 export interface Deliverer {
-  deliver(task: Task, workdir: string, repo: RepoConfig): Promise<DeliveryResult>;
+  deliver(task: Task, workdir: string, repo: RepoConfig, effects: EffectEnqueuer): Promise<DeliveryResult>;
+  /** 执行入队的 push / pr；失败抛出，由 EffectQueue 退避重试 */
+  runEffect(job: EffectJob): Promise<string | null>;
 }
 
 /** 审核与交付：PR 正文带上任务号与需求；Issue 来源追加 Closes 关联 */
@@ -33,7 +38,12 @@ export class GitDeliverer implements Deliverer {
     private deps: DelivererDeps = {},
   ) {}
 
-  async deliver(task: Task, workdir: string, repo: RepoConfig): Promise<DeliveryResult> {
+  async deliver(
+    task: Task,
+    workdir: string,
+    repo: RepoConfig,
+    effects: EffectEnqueuer,
+  ): Promise<DeliveryResult> {
     const files = changedFiles(workdir);
     // 续跑既有 PR 时没有改动也要保住 PR 绑定
     if (files.length === 0) return { files: [], pushed: false, prUrl: task.prUrl ?? undefined };
@@ -49,24 +59,30 @@ export class GitDeliverer implements Deliverer {
     let pushed = false;
 
     if (this.cfg.delivery.push && remote) {
-      const p = pushBranch(workdir, branch);
-      if (p.code !== 0) throw new Error(`推送失败: ${p.err || p.out}`);
+      // 推送按提交去重：同一提交只推一次，续跑产生的新提交照常推
+      const sha = sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out;
+      const outcome = await effects.enqueue("push", `${repo.alias}:${branch}:${sha}`, {
+        repo: repo.alias,
+        branch,
+      });
+      if (!outcome.ok) throw new Error(`推送失败: ${outcome.error}`);
       pushed = true;
     }
 
     // 已有 PR：分支推送即更新 PR，不再新建
     if (task.prUrl) return { branch, prUrl: task.prUrl, files, pushed };
 
-    const ghReady = this.deps.hasGh ?? hasGh;
     let prUrl: string | undefined;
-    if (this.cfg.delivery.pr && pushed && remote.includes("github.com") && ghReady()) {
-      const pr = (this.deps.createPr ?? createPr)(workdir, {
+    if (this.cfg.delivery.pr && pushed && remote.includes("github.com") && (this.deps.hasGh ?? hasGh)()) {
+      // 同分支只开一个 PR：上一次入队成功的行直接复用地址
+      const outcome = await effects.enqueue("pr", `${repo.alias}:${branch}`, {
+        repo: repo.alias,
         title,
         body: prBody(task),
         base,
         head: branch,
       });
-      if (pr.code === 0) prUrl = pr.out.split("\n").pop()?.trim();
+      if (outcome.ok && outcome.result) prUrl = outcome.result;
     }
 
     if (!prUrl && remote) {
@@ -74,5 +90,29 @@ export class GitDeliverer implements Deliverer {
     }
 
     return { branch, prUrl, files, pushed };
+  }
+
+  async runEffect(job: EffectJob): Promise<string | null> {
+    const alias = String(job.payload.repo);
+    const repo = repoByAlias(this.cfg, alias);
+    if (!repo) throw new Error(`仓库未配置：${alias}`);
+
+    if (job.kind === "push") {
+      const branch = String(job.payload.branch);
+      const res = pushBranch(repo.path, branch);
+      if (res.code !== 0) throw new Error(res.err || res.out || `git push 退出码 ${res.code}`);
+      return null;
+    }
+    if (job.kind !== "pr") throw new Error(`交付器不处理 ${job.kind} effect`);
+
+    // 从主仓库执行：工作副本可能已被清理，分支引用仍在共享的 .git 里
+    const pr = (this.deps.createPr ?? createPr)(repo.path, {
+      title: String(job.payload.title),
+      body: String(job.payload.body),
+      base: String(job.payload.base),
+      head: String(job.payload.head),
+    });
+    if (pr.code !== 0) throw new Error(pr.err || pr.out || `gh pr create 退出码 ${pr.code}`);
+    return pr.out.split("\n").pop()?.trim() || null;
   }
 }
