@@ -24,6 +24,36 @@ export function prNumberFromIssueUrl(url: string): number | null {
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
+/** PR 所在仓库 owner/repo：只认 .../pull/<n> 链接，compare 链接返回 null */
+export function prRepoFromUrl(url: string): string | null {
+  const m = url.trim().match(/^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/\d+\/?(?:[?#].*)?$/);
+  return m?.[1] ?? null;
+}
+
+export interface PrState {
+  state: string;
+  mergeCommit: string | null;
+}
+
+/** PR 状态与合并提交；查询失败返回 null，调用方不能据此判断已合并 */
+export function prStatus(runner: Runner, repo: string, n: number): PrState | null {
+  const res = runner(["gh", "pr", "view", String(n), "--repo", repo, "--json", "state,mergeCommit"]);
+  if (res.code !== 0) return null;
+  try {
+    const raw = JSON.parse(res.out) as { state?: unknown; mergeCommit?: unknown };
+    const mc = raw.mergeCommit as { oid?: unknown } | null | undefined;
+    return { state: String(raw.state ?? ""), mergeCommit: typeof mc?.oid === "string" ? mc.oid : null };
+  } catch {
+    return null;
+  }
+}
+
+export function closePr(runner: Runner, repo: string, n: number): GhResult {
+  const res = runner(["gh", "pr", "close", String(n), "--repo", repo]);
+  if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
+  return { ok: true, value: undefined };
+}
+
 /** 回帖正文：摘要截断到 3000 字 */
 export function formatReply(summary: string): string {
   return `**pisa** 任务完成\n\n${summary.trim().slice(0, 3000)}`;

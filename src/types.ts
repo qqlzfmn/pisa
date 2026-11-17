@@ -1,4 +1,17 @@
-export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled";
+export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
+
+/** 任务对外产生的副作用种类：rewind 的依据 */
+export type EffectKind = "branch" | "push" | "pr" | "comment" | "worktree" | "merge";
+
+export interface Effect {
+  taskId: string;
+  kind: EffectKind;
+  /** 分类内唯一的对象标识：分支名、远程名（如 origin）、PR 编号、仓库#编号、工作目录、主干名 */
+  target: string;
+  /** 附加信息：分支账本存 `shared`（与上一轮共用）；push 存被推送的分支；merge 存 {"base","from","to"} */
+  detail: string | null;
+  createdAt: number;
+}
 
 export interface IncomingMessage {
   eventId: string;
@@ -86,9 +99,11 @@ export const ALLOWED: Record<TaskStatus, TaskStatus[]> = {
   running: ["paused", "succeeded", "failed", "cancelled"],
   // 中断：进程重启时从 running 转入；只能由请求者恢复或放弃
   paused: ["running", "cancelled"],
-  succeeded: [],
-  failed: [],
-  cancelled: [],
+  // 终态任务可被 rewind 标记；rewound 自身不可再迁出
+  succeeded: ["rewound"],
+  failed: ["rewound"],
+  cancelled: ["rewound"],
+  rewound: [],
 };
 
 export function canTransition(from: TaskStatus, to: TaskStatus): boolean {

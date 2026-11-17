@@ -132,8 +132,16 @@ bun run src/index.ts
 
 /pisa continue <任务号> <新要求>   从上一轮的分支和上下文继续做
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
+/pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
 /pisa status                     任务看板（私聊可用 /status）
 ```
+
+撤销：
+
+- `/pisa rewind <任务号>` 只读预览：将关闭的 PR、将删除的本地/远程分支、是否已合并、哪些动作不可撤销
+- `/pisa rewind <任务号> --yes` 执行；已合并的任务用 `revert` 提交回退，不改写历史
+- `gh` 查不到 PR 状态时保留分支、不标记完成，修好后重发
+- 任务执行期间的其它外部调用（API、消息、数据库）不在账本内，无法撤销
 
 误触保护：
 

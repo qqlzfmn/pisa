@@ -143,6 +143,7 @@ export type CommandKind =
   | "continue"
   | "merge"
   | "resume"
+  | "rewind"
   | "confirm";
 
 export interface CommandSpec {
@@ -164,6 +165,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "continue", alias: "继续", description: "接着上一轮分支继续", menu: true },
   { command: "merge", alias: "合并", description: "把已完成任务合入主干", menu: true },
   { command: "resume", alias: "恢复", description: "恢复被中断的任务", menu: true },
+  { command: "rewind", alias: "撤销", description: "预览并撤销任务副作用", menu: true },
   { command: "confirm", alias: "确认", description: "确认被拦下的单英文词任务", menu: false },
 ];
 
@@ -178,8 +180,14 @@ for (const c of COMMANDS) {
   if (c.alias) KIND_BY_WORD[c.alias] = c.command;
 }
 
-/** 带参数的四个命令；其余命令忽略参数（与改造前一致） */
-const TAKES_BODY: Partial<Record<CommandKind, true>> = { cancel: true, continue: true, merge: true, resume: true };
+/** 带参数的命令；其余命令忽略参数（与改造前一致） */
+const TAKES_BODY: Partial<Record<CommandKind, true>> = {
+  cancel: true,
+  continue: true,
+  merge: true,
+  resume: true,
+  rewind: true,
+};
 
 export interface ParsedCommand {
   kind: CommandKind | "task";

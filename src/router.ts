@@ -14,8 +14,11 @@ import {
   postComment,
   postIssueComment,
   postReplyOnce,
+  prNumberFromIssueUrl,
+  prStatus,
   type Runner,
 } from "./github";
+import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
 import { TaskLogger } from "./log";
 
 export interface RouterDeps {
@@ -50,7 +53,7 @@ function preview(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
-const FINISHED_LABEL: Record<string, string> = { succeeded: "成功", failed: "失败", cancelled: "取消" };
+const FINISHED_LABEL: Record<string, string> = { succeeded: "成功", failed: "失败", cancelled: "取消", rewound: "已撤销" };
 
 /** 单英文词任务的待确认正文，10 分钟过期 */
 const PENDING_TTL_MS = 10 * 60 * 1000;
@@ -213,6 +216,7 @@ export class Router {
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
+      else if (t === "/rewind" || t.startsWith("/rewind ")) cmd = { kind: "rewind", body: t.slice(7).trim() };
       else if (t && !t.startsWith("/")) cmd = { kind: "task", body: t };
       else if (t.startsWith("/")) {
         // 未知斜杠命令：只对可能是命令错拼的单词给提示，其余保持忽略
@@ -269,6 +273,7 @@ export class Router {
           `${cfg.trigger} resume <任务号>  恢复被进程重启中断的任务`,
           `${cfg.trigger} continue <任务号> <新要求>  接着上一轮的分支做`,
           `${cfg.trigger} merge <任务号>     合并到主干（自举）`,
+          `${cfg.trigger} rewind <任务号>    预览任务副作用（--yes 执行撤销）`,
           `${cfg.trigger} schedules      查看定时任务（私聊可用 /schedules）`,
           `${cfg.trigger} confirm        确认刚被拦下的单英文词任务`,
           `${cfg.trigger} help           本帮助（私聊可用 /help）`,
@@ -289,6 +294,11 @@ export class Router {
 
     if (cmd.kind === "merge") {
       await this.handleMerge(msg, cmd.body);
+      return;
+    }
+
+    if (cmd.kind === "rewind") {
+      await this.handleRewind(msg, cmd.body);
       return;
     }
 
@@ -516,11 +526,14 @@ export class Router {
       await this.reply(msg.chatId, `主工作区当前不在 ${base}，请先切回再合并。`);
       return;
     }
+    const before = sh(["git", "-C", repo.path, "rev-parse", base]).out;
     const merge = sh(["git", "-C", repo.path, "merge", "--ff-only", task.branch]);
     if (merge.code !== 0) {
       await this.reply(msg.chatId, `合并失败：${(merge.err || merge.out).slice(0, 600)}`);
       return;
     }
+    const after = sh(["git", "-C", repo.path, "rev-parse", base]).out;
+    store.effect(task.id, "merge", base, JSON.stringify({ base, from: before, to: after }));
 
     await this.reply(msg.chatId, `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}`);
 
@@ -530,6 +543,86 @@ export class Router {
     } else {
       await this.reply(msg.chatId, "当前不是看护模式，改动在重启后生效。");
     }
+  }
+
+  /** 探测点：预览与执行都只读这些状态 */
+  private rewindProbes(runner: Runner): RewindProbes {
+    return {
+      branchExists: (repoPath, branch) =>
+        sh(["git", "-C", repoPath, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).code === 0,
+      worktreeExists: (path) => existsSync(path),
+      prState: (repo, n) => prStatus(runner, repo, n),
+    };
+  }
+
+  /**
+   * `/pisa rewind <任务号> [--yes]`：先给预览，带 --yes 才执行。
+   * 已合并的任务用 revert 提交回退；无法确认 PR 状态时不动分支，避免误删已合并成果。
+   */
+  private async handleRewind(msg: IncomingMessage, body: string): Promise<void> {
+    const { cfg, store } = this.deps;
+    const words = body.split(/\s+/).filter(Boolean);
+    const yes = words.includes("--yes");
+    const id = words.find((w) => !w.startsWith("--")) ?? "";
+    if (!id) {
+      await this.reply(msg.chatId, `用法：${cfg.trigger} rewind <任务号> [--yes]`);
+      return;
+    }
+    const task = store.get(id);
+    if (!task) {
+      await this.reply(msg.chatId, `找不到任务 ${id}`);
+      return;
+    }
+    if (task.requester !== msg.userId) {
+      await this.reply(msg.chatId, "只有原请求者可以撤销。");
+      return;
+    }
+    if (task.status === "rewound") {
+      await this.reply(msg.chatId, `任务 ${id} 已撤销。`);
+      return;
+    }
+    if (task.status === "queued" || task.status === "running" || task.status === "paused") {
+      await this.reply(msg.chatId, `任务 ${id} 还没结束（${task.status}），先 ${cfg.trigger} cancel ${id}。`);
+      return;
+    }
+    const repo = repoByAlias(cfg, task.repo);
+    if (!repo) {
+      await this.reply(msg.chatId, `仓库未配置：${task.repo}`);
+      return;
+    }
+
+    const runner = this.deps.ghRunner ?? defaultRunner;
+    const plan = planRewind(task, store.effectsOf(id), {
+      repoPath: repo.path,
+      baseBranch: repo.baseBranch ?? "main",
+      probes: this.rewindProbes(runner),
+    });
+    if (!yes) {
+      await this.reply(msg.chatId, formatRewindPlan(plan, cfg.trigger));
+      return;
+    }
+
+    if (plan.actions.length === 0) {
+      if (plan.merge !== "unknown") store.transition(id, "rewound");
+      const lines = [plan.merge === "unknown" ? `未完成撤销 · ${id}` : `已标记撤销 · ${id}`, "没有需要执行的撤销动作。"];
+      if (plan.irreversible.length > 0) lines.push("", "不可撤销", ...plan.irreversible.map((s) => `- ${s}`));
+      if (plan.notes.length > 0) lines.push("", "保留", ...plan.notes.map((s) => `- ${s}`));
+      await this.reply(msg.chatId, lines.join("\n"));
+      return;
+    }
+
+    const results = applyRewind(plan, {
+      taskId: id,
+      runner,
+      commitName: cfg.delivery.commitName,
+      commitEmail: cfg.delivery.commitEmail,
+    });
+    // 成功的副作用已不存在，从账本删掉；失败的保留以便重试
+    for (const r of results) {
+      if (r.ok && r.effect) store.removeEffect(id, r.effect.kind, r.effect.target);
+    }
+    if (plan.merge !== "unknown" && results.every((r) => r.ok)) store.transition(id, "rewound");
+    await this.reply(msg.chatId, formatRewindResult(plan, results));
   }
 
   private async handleCancel(msg: IncomingMessage, body: string): Promise<void> {
@@ -688,6 +781,7 @@ export class Router {
   ): void {
     const kind = purpose === "pr" ? "PR" : "Issue";
     const res = postReplyOnce(runner, repo, n, purpose, task.id, body);
+    if (res.ok && res.value === "posted") this.deps.store.effect(task.id, "comment", `${repo}#${n}`, `${kind} 回帖`);
     const detail = !res.ok
       ? `回帖失败：${res.error.slice(0, 500)}`
       : res.value === "skipped"
@@ -701,7 +795,15 @@ export class Router {
    * 续跑复用父任务分支时该分支是共享资产，删掉会毁掉上一轮成果与原 PR。
    */
   private cleanupBranch(repoPath: string, task: Task, branch: string): void {
-    if (branch === `pisa/${task.id}`) deleteBranch(repoPath, branch);
+    if (branch !== `pisa/${task.id}`) return;
+    deleteBranch(repoPath, branch);
+    this.deps.store.removeEffect(task.id, "branch", branch);
+  }
+
+  /** 移除工作副本并同步账本；账本只留仍然存在的副作用 */
+  private dropWorktree(repoPath: string, task: Task, workdir: string): void {
+    removeWorktree(repoPath, workdir);
+    this.deps.store.removeEffect(task.id, "worktree", workdir);
   }
 
   private async runTask(task: Task, branch: string): Promise<void> {
@@ -737,6 +839,10 @@ export class Router {
       }
     }
 
+    // 账本：工作副本与分支已落地；共享分支标明，撤销时不删
+    store.effect(task.id, "worktree", workdir);
+    store.effect(task.id, "branch", branch, branch === `pisa/${task.id}` ? null : "shared");
+
     await this.reply(task.chatId, `开始执行 · ${task.id}\n分支 ${branch}`, task.id);
 
     const stopWatch = this.watchProgress(task);
@@ -762,7 +868,7 @@ export class Router {
     }
 
     if (store.isCancelRequested(task.id) || result.error === "任务已取消") {
-      removeWorktree(repo.path, workdir);
+      this.dropWorktree(repo.path, task, workdir);
       this.cleanupBranch(repo.path, task, branch);
       store.transition(task.id, "cancelled", { endedAt: this.now() });
       await this.reply(task.chatId, `已取消 · ${task.id}`);
@@ -771,7 +877,7 @@ export class Router {
 
     if (!result.ok) {
       log.write("failed", result.error ?? "");
-      removeWorktree(repo.path, workdir);
+      this.dropWorktree(repo.path, task, workdir);
       this.cleanupBranch(repo.path, task, branch);
       store.transition(task.id, "failed", { error: result.error ?? "未知错误", endedAt: this.now() });
       await this.reply(task.chatId, `失败 · ${task.id}\n${(result.error ?? "").slice(0, 800)}`, task.id);
@@ -783,12 +889,17 @@ export class Router {
       delivery = await deliverer.deliver({ ...task, branch }, workdir, repo);
     } catch (err) {
       log.write("deliver", (err as Error).message);
-      removeWorktree(repo.path, workdir);
+      this.dropWorktree(repo.path, task, workdir);
       this.cleanupBranch(repo.path, task, branch);
       store.transition(task.id, "failed", { error: (err as Error).message, endedAt: this.now() });
       await this.reply(task.chatId, `失败 · ${task.id}\n${(err as Error).message.slice(0, 800)}`);
       return;
     }
+
+    // 账本：交付后才有的副作用。PR 只在本任务新建时记账，续跑子任务不背父任务的 PR
+    if (delivery.pushed) store.effect(task.id, "push", "origin", branch);
+    const prN = delivery.prUrl ? prNumberFromIssueUrl(delivery.prUrl) : null;
+    if (prN && !task.prUrl) store.effect(task.id, "pr", String(prN), repo.alias);
 
     store.transition(task.id, "succeeded", {
       summary: result.summary,
@@ -796,7 +907,7 @@ export class Router {
       prUrl: delivery.prUrl ?? null,
       endedAt: this.now(),
     });
-    removeWorktree(repo.path, workdir);
+    this.dropWorktree(repo.path, task, workdir);
     log.write("done", `files=${delivery.files.length} pushed=${delivery.pushed}`);
     this.replyToSource(task, result.summary, log);
 

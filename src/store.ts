@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
-import type { Task, TaskStatus } from "./types";
+import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
 const SCHEMA = `
@@ -44,6 +44,15 @@ CREATE TABLE IF NOT EXISTS events (
   event_id TEXT PRIMARY KEY,
   task_id  TEXT NOT NULL,
   seen_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_effects (
+  task_id    TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  target     TEXT NOT NULL,
+  detail     TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, kind, target)
 );
 `;
 
@@ -148,6 +157,26 @@ export class Store {
 
   setSessionId(id: string, sessionId: string): void {
     this.db.run("UPDATE tasks SET session_id = ? WHERE id = ?", [sessionId, id]);
+  }
+
+  /** 记一条副作用；同一任务同类同对象的重复记录合并为最新一条 */
+  effect(taskId: string, kind: EffectKind, target: string, detail: string | null = null): void {
+    this.db.run(
+      "INSERT OR REPLACE INTO task_effects(task_id, kind, target, detail, created_at) VALUES (?, ?, ?, ?, ?)",
+      [taskId, kind, target, detail, Date.now()],
+    );
+  }
+
+  /** 撤销或自然回收后删掉记录，账本只留仍然存在的副作用 */
+  removeEffect(taskId: string, kind: EffectKind, target: string): void {
+    this.db.run("DELETE FROM task_effects WHERE task_id = ? AND kind = ? AND target = ?", [taskId, kind, target]);
+  }
+
+  effectsOf(taskId: string): Effect[] {
+    const rows = this.db
+      .query("SELECT task_id, kind, target, detail, created_at FROM task_effects WHERE task_id = ? ORDER BY created_at, kind, target")
+      .all(taskId) as Array<{ task_id: string; kind: EffectKind; target: string; detail: string | null; created_at: number }>;
+    return rows.map((r) => ({ taskId: r.task_id, kind: r.kind, target: r.target, detail: r.detail, createdAt: r.created_at }));
   }
 
   /** 幂等：同一事件只能登记一次 */
@@ -288,7 +317,7 @@ export class Store {
   /** 终态任务，按创建时间倒序；看板「最近完成」用，先筛后限避免被未完成任务挤掉 */
   recentFinished(limit = 5): Task[] {
     const rows = this.db
-      .query("SELECT * FROM tasks WHERE status IN ('succeeded','failed','cancelled') ORDER BY created_at DESC LIMIT ?")
+      .query("SELECT * FROM tasks WHERE status IN ('succeeded','failed','cancelled','rewound') ORDER BY created_at DESC LIMIT ?")
       .all(limit) as Row[];
     return rows.map(toTask);
   }
@@ -299,7 +328,15 @@ export class Store {
       status: TaskStatus;
       n: number;
     }>;
-    const counts: Record<TaskStatus, number> = { queued: 0, running: 0, paused: 0, succeeded: 0, failed: 0, cancelled: 0 };
+    const counts: Record<TaskStatus, number> = {
+      queued: 0,
+      running: 0,
+      paused: 0,
+      succeeded: 0,
+      failed: 0,
+      cancelled: 0,
+      rewound: 0,
+    };
     for (const r of rows) counts[r.status] = r.n;
     return counts;
   }
