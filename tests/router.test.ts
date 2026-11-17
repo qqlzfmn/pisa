@@ -310,6 +310,26 @@ describe("Router", () => {
     expect(channel.sent.some((s) => s.text.includes("完成"))).toBe(true);
   });
 
+  test("敏感路径被拦时回执点名，任务仍算成功", async () => {
+    const worker: WorkerRunner = {
+      async run(_task, workdir): Promise<WorkerResult> {
+        writeFileSync(join(workdir, "out.txt"), "hi\n");
+        writeFileSync(join(workdir, ".env"), "SECRET=1\n");
+        return { ok: true, summary: "改了 out.txt", exitCode: 0 };
+      },
+    };
+    const router = build(worker);
+    await router.handle(msg("/pisa 新建 out.txt"));
+    await router.drainOnce();
+
+    const task = store.recentTasks()[0]!;
+    expect(task.status).toBe("succeeded");
+    expect(sh(["git", "-C", repo, "show", "--name-only", "--pretty=format:", task.branch!]).out).toBe("out.txt");
+    const text = channel.sent.at(-1)!.text;
+    expect(text).toContain("改动 1 个文件");
+    expect(text).toContain("⚠️ 未提交的敏感路径：.env");
+  });
+
   test("续跑任务失败不删除共享分支", async () => {
     const failWorker: WorkerRunner = {
       async run(): Promise<WorkerResult> {

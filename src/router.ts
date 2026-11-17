@@ -908,13 +908,17 @@ export class Router {
       endedAt: this.now(),
     });
     this.dropWorktree(repo.path, task, workdir);
-    log.write("done", `files=${delivery.files.length} pushed=${delivery.pushed}`);
+    log.write("done", `files=${delivery.files.length} blocked=${delivery.blocked.length} pushed=${delivery.pushed}`);
     this.replyToSource(task, result.summary, log);
 
     const fresh = store.get(task.id);
     const lines = [`✅ ${task.id} 完成`, result.summary.slice(0, 1200)];
     if (delivery.files.length) lines.push(`改动 ${delivery.files.length} 个文件：${delivery.files.slice(0, 8).join(", ")}`);
     else lines.push("没有代码改动。");
+    if (delivery.blocked.length) {
+      const shown = delivery.blocked.slice(0, 8).join(", ");
+      lines.push(`⚠️ 未提交的敏感路径：${shown}${delivery.blocked.length > 8 ? ` 等 ${delivery.blocked.length} 个` : ""}`);
+    }
     if (delivery.branch) lines.push(`分支：${delivery.branch}`);
     if (delivery.prUrl) lines.push(`链接：${delivery.prUrl}`);
     if (fresh?.sessionId) lines.push(`会话：${fresh.sessionId.slice(0, 8)}`);

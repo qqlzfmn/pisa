@@ -366,8 +366,8 @@ specify → plan → tasks → implement → converge
 - 主动发现：群聊关键词 + 定时探针
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
-- 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 89 个全绿；`tsc --noEmit` 无报错
+- 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接；提交前按路径拦下 CI 定义与凭据（`.github/workflows|actions`、`.env*`、`*.pem`、`*.key`、`id_*`、`.npmrc`、`.netrc`、`secrets*`），回执列出未提交的路径（规格见 `docs/specs/014-delivery-guard`）
+- `bun test` 全绿；`bunx tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：

@@ -91,6 +91,8 @@ export interface DeliveryResult {
   prUrl?: string;
   files: string[];
   pushed: boolean;
+  /** 命中敏感规则、未进入本次提交的路径 */
+  blocked: string[];
 }
 
 /** 状态机允许的跃迁，唯一事实源 */

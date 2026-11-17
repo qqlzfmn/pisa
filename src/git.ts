@@ -53,9 +53,44 @@ export function changedFiles(workdir: string): string[] {
     .filter(Boolean);
 }
 
-export function commitAll(workdir: string, message: string, name: string, email: string): ExecResult {
+/** 索引条目（目录已展开）；改名/复制是「旧路径 + 新路径」一条，整体放行或整体拦截 */
+function stagedEntries(workdir: string): string[][] {
+  const p = Bun.spawnSync(["git", "-C", workdir, "diff", "--cached", "--name-status", "-z"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if ((p.exitCode ?? -1) !== 0) return [];
+  const parts = (p.stdout?.toString() ?? "").split("\0");
+  const entries: string[][] = [];
+  for (let i = 0; i < parts.length; ) {
+    const status = parts[i++]!;
+    const paths = status.startsWith("R") || status.startsWith("C") ? 2 : 1;
+    entries.push(parts.slice(i, i + paths));
+    i += paths;
+  }
+  return entries;
+}
+
+/** 全量暂存后按路径分拣：isBlocked 命中的条目从索引移除，不进入本次提交 */
+export function stageAllExcept(
+  workdir: string,
+  isBlocked: (path: string) => boolean,
+): { files: string[]; blocked: string[]; err: string } {
   const add = sh(["git", "-C", workdir, "add", "-A"]);
-  if (add.code !== 0) return add;
+  if (add.code !== 0) return { files: [], blocked: [], err: add.err || add.out };
+
+  const entries = stagedEntries(workdir);
+  const kept = entries.filter((paths) => !paths.some(isBlocked));
+  const blocked = entries.filter((paths) => paths.some(isBlocked)).flat();
+  if (blocked.length > 0) {
+    // :(literal) 避免文件名里的 * ? [ 被当成 pathspec 通配
+    const reset = sh(["git", "-C", workdir, "reset", "-q", "--", ...blocked.map((path) => `:(literal)${path}`)]);
+    if (reset.code !== 0) return { files: [], blocked, err: reset.err || reset.out };
+  }
+  return { files: kept.flat(), blocked, err: "" };
+}
+
+export function commitStaged(workdir: string, message: string, name: string, email: string): ExecResult {
   return sh(["git", "-C", workdir, "-c", `user.name=${name}`, "-c", `user.email=${email}`, "commit", "-m", message]);
 }
 
