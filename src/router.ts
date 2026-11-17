@@ -761,7 +761,7 @@ export class Router {
   }
 
   private async runTask(task: Task, branch: string): Promise<void> {
-    const { cfg, store, channel, worker, deliverer } = this.deps;
+    const { cfg, store, worker, deliverer } = this.deps;
     const repo = repoByAlias(cfg, task.repo);
     if (!repo) {
       store.transition(task.id, "failed", { error: `仓库未配置：${task.repo}`, endedAt: this.now() });
