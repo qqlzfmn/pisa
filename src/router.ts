@@ -20,6 +20,7 @@ import {
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
 import { TaskLogger } from "./log";
+import { clip } from "./text";
 
 export interface RouterDeps {
   cfg: Config;
@@ -363,10 +364,10 @@ export class Router {
       const lines = [
         `任务号：${parent.id}`,
         `上一轮请求：${parent.prompt}`,
-        `上一轮结果：${(parent.summary ?? "(无摘要)").slice(0, 1500)}`,
+        `上一轮结果：${clip(parent.summary ?? "(无摘要)", 1500)}`,
         `上一轮分支：${parent.branch}`,
       ];
-      if (msg.replyPr) lines.push(`PR：#${msg.replyPr}`, `PR 评论：${msg.text.trim().slice(0, 1000)}`);
+      if (msg.replyPr) lines.push(`PR：#${msg.replyPr}`, `PR 评论：${clip(msg.text, 1000)}`);
       context = lines.join("\n");
       prompt = (cmd.kind === "continue" ? words.slice(1).join(" ") : cmd.body).trim();
       if (!prompt) {
@@ -912,7 +913,7 @@ export class Router {
     this.replyToSource(task, result.summary, log);
 
     const fresh = store.get(task.id);
-    const lines = [`✅ ${task.id} 完成`, result.summary.slice(0, 1200)];
+    const lines = [`✅ ${task.id} 完成`, clip(result.summary, 1200)];
     if (delivery.files.length) lines.push(`改动 ${delivery.files.length} 个文件：${delivery.files.slice(0, 8).join(", ")}`);
     else lines.push("没有代码改动。");
     if (delivery.branch) lines.push(`分支：${delivery.branch}`);

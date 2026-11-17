@@ -447,6 +447,22 @@ describe("Router", () => {
     expect(child.prompt).toBe("再改一处");
   });
 
+  test("continue 注入上一轮结果时保留结论", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 第一个任务"));
+    const parent = store.recentTasks()[0]!;
+    store.transition(parent.id, "running", { branch: "pisa/parent", startedAt: Date.now() });
+    store.transition(parent.id, "succeeded", {
+      summary: `开头：改了 out.txt\n${"x".repeat(3000)}\n结论：bun test 130 通过`,
+      endedAt: Date.now(),
+    });
+
+    await router.handle(msg(`/pisa continue ${parent.id} 再改一处`));
+    const child = store.recentTasks()[0]!;
+    expect(child.context).toContain("结论：bun test 130 通过");
+    expect(child.context).toContain("开头：改了 out.txt");
+  });
+
   test("continue 找不到任务时拒绝", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa continue t_missing 再改"));

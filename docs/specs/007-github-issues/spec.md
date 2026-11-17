@@ -48,7 +48,7 @@ Issue 是需求入口，PR 是实现产物，两者需要区分：Issue 评论�
 | FR-004 | 判定为普通 Issue 时投递一条只带 `replyIssue` 的消息：不带 `continueFrom`、不带 `replyPr`，任务从主干开新分支 |
 | FR-005 | 同一条评论（GitHub 评论 id）仍然最多产生一个任务，与类型无关 |
 | FR-006 | 类型判定失败时该条评论本轮不投递，记录日志，并让本轮不推进增量下界 |
-| FR-007 | 任务完成后若 `replyIssue` 非空，用 `gh issue comment <n> --repo <repo> --body <摘要>` 回帖；正文格式与 PR 回帖一致（超过 3000 字截断），末尾追加隐藏标记 `<!-- pisa:reply task=<任务号> on=issue -->` |
+| FR-007 | 任务完成后若 `replyIssue` 非空，用 `gh issue comment <n> --repo <repo> --body <摘要>` 回帖；正文格式与 PR 回帖一致（超过 3000 字截断，保留首尾，结论段不被切掉），末尾追加隐藏标记 `<!-- pisa:reply task=<任务号> on=issue -->` |
 | FR-008 | Issue 回帖失败只记日志，任务状态与回执不变 |
 | FR-009 | 任务来自 Issue（`replyIssue` 非空）且新建 PR 时，PR 正文追加一行 `Closes #<n>`；正文其余部分为空也不得产生残缺格式 |
 | FR-010 | 任务信息持久化 `reply_issue` 列；已有数据库启动时自动补列，历史任务该列为空 |

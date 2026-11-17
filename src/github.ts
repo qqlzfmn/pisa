@@ -1,4 +1,5 @@
 import { sh, type ExecResult } from "./git";
+import { clip } from "./text";
 
 /** 执行一条命令；测试注入假实现，不联网 */
 export type Runner = (args: string[]) => ExecResult;
@@ -54,9 +55,9 @@ export function closePr(runner: Runner, repo: string, n: number): GhResult {
   return { ok: true, value: undefined };
 }
 
-/** 回帖正文：摘要截断到 3000 字 */
+/** 回帖正文：摘要截断到 3000 字，保留首尾使结论不被切掉 */
 export function formatReply(summary: string): string {
-  return `**pisa** 任务完成\n\n${summary.trim().slice(0, 3000)}`;
+  return `**pisa** 任务完成\n\n${clip(summary, 3000)}`;
 }
 
 /** 拉取 since 之后新增或更新的 Issue / PR 评论；逐行解析 `--jq '.[]'` 的输出 */

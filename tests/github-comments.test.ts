@@ -163,9 +163,11 @@ describe("formatReply", () => {
     expect(formatReply(" 改好了 \n")).toBe(`${HEADER}改好了`);
   });
 
-  test("超过 3000 字截断", () => {
-    const body = formatReply("x".repeat(5000));
-    expect(body).toBe(`${HEADER}${"x".repeat(3000)}`);
+  test("超过 3000 字保留首尾，结论可见", () => {
+    const body = formatReply(`开头\n${"x".repeat(5000)}\n结论：全部通过`);
+    expect(body.startsWith(`${HEADER}开头`)).toBe(true);
+    expect(body.endsWith("结论：全部通过")).toBe(true);
+    expect(body.length).toBe(HEADER.length + 3000);
   });
 });
 
