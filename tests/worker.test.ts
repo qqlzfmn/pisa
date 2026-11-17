@@ -56,21 +56,36 @@ describe("workerEnv", () => {
     expect(env.GH_TOKEN).toBeUndefined();
   });
 
-  test("白名单外的键即使存在也不复制，缺省键不产生空值", () => {
+  test("按传入的白名单复制：允许的键取原值，缺省键不产生空值", () => {
     expect(workerEnv(["GH_TOKEN", "LANG"], { GH_TOKEN: "SECRET", LANG: "zh_CN.UTF-8" })).toEqual({
       GH_TOKEN: "SECRET",
       LANG: "zh_CN.UTF-8",
     });
     expect(workerEnv(["NOPE"], {})).toEqual({});
   });
+});
+
+/** 规格 FR-001 的字面清单：这里独立写出，避免用被测常量给自己算期望值 */
+const SPEC_ENV_ALLOW = ["PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR", "SHELL", "USER"];
+
+describe("loadConfig · worker.envAllow", () => {
+  test("默认白名单就是规格里的八个键", () => {
+    expect(DEFAULT_ENV_ALLOW).toEqual(SPEC_ENV_ALLOW);
+    expect(DEFAULT_CONFIG.worker.envAllow).toEqual(SPEC_ENV_ALLOW);
+  });
 
   test("配置文件只改 worker.command 时 envAllow 仍取默认值", () => {
     const dir = tempDir();
     const path = join(dir, "pisa.config.json");
     writeFileSync(path, JSON.stringify({ worker: { command: "omp" } }));
-    const cfg = loadConfig(path);
-    expect(cfg.worker.envAllow).toEqual([...DEFAULT_ENV_ALLOW]);
-    expect(DEFAULT_CONFIG.worker.envAllow).toEqual([...DEFAULT_ENV_ALLOW]);
+    expect(loadConfig(path).worker.envAllow).toEqual(SPEC_ENV_ALLOW);
+  });
+
+  test("配置文件写了 envAllow 时按配置裁剪", () => {
+    const dir = tempDir();
+    const path = join(dir, "pisa.config.json");
+    writeFileSync(path, JSON.stringify({ worker: { envAllow: ["PATH"] } }));
+    expect(loadConfig(path).worker.envAllow).toEqual(["PATH"]);
   });
 });
 
