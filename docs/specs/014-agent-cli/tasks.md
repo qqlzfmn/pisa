@@ -5,7 +5,7 @@
 - [x] `src/status.ts`：看板、`daemonState`、`HEARTBEAT_STALE_MS`、格式化函数
 - [x] `src/store.ts`：`meta` 表、`beat` / `lastBeat`、`taskByEvent`、`insertTaskOnce`、`listTasks`、`tasksByPr`
 - [x] `src/config.ts`：`findConfig` 向上查找；`stateDir` 与仓库路径锚定到配置文件目录
-- [x] `src/router.ts`：改用共享模块；调度循环写心跳
+- [x] `src/router.ts`：改用共享模块；调度循环写心跳；CLI 任务不回执聊天通道
 - [x] `src/cli.ts`：一次性命令、JSON 输出、退出码、`--wait`
 - [x] `package.json`：`bin.pisa`
 - [x] `docs/specs/014-agent-cli/`：spec / plan / tasks

@@ -43,7 +43,11 @@ agent 需要可编程分支，退出码即契约；`--wait` 把轮询封装进 C
 
 ### `--wait --json` 抑制入队输出
 
-否则两个 JSON 对象拼接，任何解析器都会失败。非 JSON 模式仍先打印任务号，方便人看到进度。
+否则两个 JSON 对象拼接，任何解析器都会失败。非 JSON 模式仍先打印任务号，方便人看到进度。抑制对幂等命中同样生效：`--event-id` 重复时只输出最终任务，且等待的是原任务（`enqueue` 返回实际生效的任务号）。
+
+### CLI 任务不向聊天通道回执
+
+CLI 任务没有 chat 上下文。Telegram 对未知 chat 抛错，`runTask` 里的回执失败会中断执行：任务卡在 running、工作副本滞留、Worker 从未启动。`Router.notify` 对 CLI 标记的 `chatId` 直接跳过，结果由调用方用 `wait` / `show` / `logs` 读取。
 
 ## 4. 风险
 

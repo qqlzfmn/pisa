@@ -2,7 +2,7 @@ import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
-import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
+import { CLI_CHAT_ID, type ChannelAdapter, type IncomingMessage, type Task, type WorkerResult } from "./types";
 import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
@@ -407,6 +407,15 @@ export class Router {
     }
   }
 
+  /**
+   * 任务回执。CLI 提交的任务没有对话（`chatId` 是 CLI 标记），通道会对未知 chat 抛错并中断执行；
+   * 这类任务的结果由 `pisa wait` / `pisa show` / `pisa logs` 读取。
+   */
+  private async notify(task: Task, text: string, bindTask = false): Promise<void> {
+    if (task.chatId === CLI_CHAT_ID) return;
+    await this.reply(task.chatId, text, bindTask ? task.id : undefined);
+  }
+
   private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
     const { cfg } = this.deps;
     if (!cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
@@ -668,7 +677,7 @@ export class Router {
       if (text === lastMsg || now - lastSentAt < 6000) return;
       lastMsg = text;
       lastSentAt = now;
-      void this.reply(task.chatId, text, task.id);
+      void this.notify(task, text, true);
     };
 
     const timer = setInterval(() => {
@@ -756,7 +765,7 @@ export class Router {
     const repo = repoByAlias(cfg, task.repo);
     if (!repo) {
       store.transition(task.id, "failed", { error: `仓库未配置：${task.repo}`, endedAt: this.now() });
-      await this.reply(task.chatId, `失败 · ${task.id}：仓库未配置`);
+      await this.notify(task, `失败 · ${task.id}：仓库未配置`);
       return;
     }
 
@@ -779,7 +788,7 @@ export class Router {
         const error = `${reason}：${wt.err || wt.out}`;
         log.write("worktree", error);
         store.transition(task.id, "failed", { error, endedAt: this.now() });
-        await this.reply(task.chatId, `失败 · ${task.id}\n${error.slice(0, 800)}`);
+        await this.notify(task, `失败 · ${task.id}\n${error.slice(0, 800)}`);
         return;
       }
     }
@@ -788,7 +797,7 @@ export class Router {
     store.effect(task.id, "worktree", workdir);
     store.effect(task.id, "branch", branch, branch === `pisa/${task.id}` ? null : "shared");
 
-    await this.reply(task.chatId, `开始执行 · ${task.id}\n分支 ${branch}`, task.id);
+    await this.notify(task, `开始执行 · ${task.id}\n分支 ${branch}`, true);
 
     const stopWatch = this.watchProgress(task);
     let result: WorkerResult;
@@ -816,7 +825,7 @@ export class Router {
       this.dropWorktree(repo.path, task, workdir);
       this.cleanupBranch(repo.path, task, branch);
       store.transition(task.id, "cancelled", { endedAt: this.now() });
-      await this.reply(task.chatId, `已取消 · ${task.id}`);
+      await this.notify(task, `已取消 · ${task.id}`);
       return;
     }
 
@@ -825,7 +834,7 @@ export class Router {
       this.dropWorktree(repo.path, task, workdir);
       this.cleanupBranch(repo.path, task, branch);
       store.transition(task.id, "failed", { error: result.error ?? "未知错误", endedAt: this.now() });
-      await this.reply(task.chatId, `失败 · ${task.id}\n${(result.error ?? "").slice(0, 800)}`, task.id);
+      await this.notify(task, `失败 · ${task.id}\n${(result.error ?? "").slice(0, 800)}`, true);
       return;
     }
 
@@ -837,7 +846,7 @@ export class Router {
       this.dropWorktree(repo.path, task, workdir);
       this.cleanupBranch(repo.path, task, branch);
       store.transition(task.id, "failed", { error: (err as Error).message, endedAt: this.now() });
-      await this.reply(task.chatId, `失败 · ${task.id}\n${(err as Error).message.slice(0, 800)}`);
+      await this.notify(task, `失败 · ${task.id}\n${(err as Error).message.slice(0, 800)}`);
       return;
     }
 
@@ -863,6 +872,6 @@ export class Router {
     if (delivery.branch) lines.push(`分支：${delivery.branch}`);
     if (delivery.prUrl) lines.push(`链接：${delivery.prUrl}`);
     if (fresh?.sessionId) lines.push(`会话：${fresh.sessionId.slice(0, 8)}`);
-    await this.reply(task.chatId, lines.join("\n\n"), task.id);
+    await this.notify(task, lines.join("\n\n"), true);
   }
 }

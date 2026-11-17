@@ -48,7 +48,7 @@
 }
 ```
 
-`--wait --json` 只输出最终任务对象（不再有入队时的第二个 JSON）。`wait --json` 输出同样字段；超时时输出 `{"id","status","timeout":true}`。
+`--wait --json` 只输出最终任务对象（不再有入队时的第二个 JSON）。`--event-id` 重复时等待的是原任务，退出码按原任务状态。`wait --json` 输出同样字段；超时时输出 `{"id","status","timeout":true}`。
 
 `status --json`：
 

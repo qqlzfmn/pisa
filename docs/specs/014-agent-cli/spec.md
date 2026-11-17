@@ -52,6 +52,7 @@ pisa 的入口只有聊天、webhook 与 GitHub 评论，都是为「人」设�
 | FR-013 | 退出码：0 成功、1 任务失败、2 用法/配置、3 找不到、4 不可运行、5 等待超时 |
 | FR-014 | `loadConfig` 把相对 `stateDir` 与仓库路径锚定到配置文件目录，保证不同 cwd 指向同一状态 |
 | FR-015 | `package.json` 暴露 `bin.pisa`；skill 包位于 `skills/pisa/`，只依赖 shell、`pisa`、`gh` |
+| FR-016 | CLI 任务没有对话（`chatId` 为 CLI 标记）：守护进程执行它时不向任何通道发回执，结果由 `wait` / `show` / `logs` 读取 |
 
 ## 5. 验收
 

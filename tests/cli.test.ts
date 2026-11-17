@@ -206,6 +206,19 @@ describe("pisa task", () => {
     expect(parse<TaskJson>(r).error).toBe("编译失败");
   });
 
+  test("同一 --event-id 带 --wait 时等待原任务，只输出一个 JSON", async () => {
+    const first = parse<TaskJson>(await cli(...base("task", "修 CI", "--event-id", "e2", "--json")));
+    const store = new Store(join(stateDir, "pisa.db"));
+    store.claimQueued(first.id, Date.now(), `pisa/${first.id}`);
+    store.transition(first.id, "succeeded", { summary: "改好了", endedAt: Date.now() });
+    store.close();
+
+    const again = await cli(...base("task", "修 CI", "--event-id", "e2", "--wait", "--timeout", "2", "--interval", "20", "--json"));
+    expect(again.code, again.err).toBe(0);
+    // 整个 stdout 必须是单个 JSON：重复入队不能再打印一份入队回执
+    expect(parse<TaskJson>(again)).toMatchObject({ id: first.id, summary: "改好了" });
+  });
+
   test("--wait 超时返回 5，任务仍在排队", async () => {
     const r = await cli(...base("task", "慢任务", "--wait", "--timeout", "0", "--interval", "20", "--json"));
     expect(r.code).toBe(5);

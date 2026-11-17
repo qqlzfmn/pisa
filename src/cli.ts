@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { findConfig, loadConfig, repoByAlias, type Config } from "./config";
 import { Store } from "./store";
 import { isGitRepo } from "./git";
-import type { Task, TaskStatus } from "./types";
+import { CLI_CHAT_ID, type Task, type TaskStatus } from "./types";
 import { newTaskId } from "./ids";
 import { continuationContext } from "./task-context";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot } from "./status";
@@ -146,7 +146,7 @@ function newCliTask(init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "b
     ...init,
     source: "cli",
     channel: "cli",
-    chatId: "cli",
+    chatId: CLI_CHAT_ID,
     status: "queued",
     branch: null,
     sessionId: null,
@@ -162,27 +162,30 @@ function newCliTask(init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "b
   };
 }
 
-function enqueue(io: Io, store: Store, args: ParsedArgs, task: Task): number {
+/**
+ * 入队并返回实际生效的任务号：重复事件返回原任务，调用方必须用这个 id 等待，不能用自己的新 id。
+ * `--wait --json` 只输出最终任务，因此这里的回执要静默。
+ */
+function enqueue(io: Io, store: Store, args: ParsedArgs, task: Task): string {
+  const quiet = Boolean(args.flags.get("wait") && args.flags.get("json"));
   const eventId = flagString(args, "event-id") ?? `cli:${randomUUID()}`;
   const existing = store.taskByEvent(eventId);
   if (existing) {
-    emitTask(io, args, existing, "事件已存在，返回原任务");
-    return EXIT.ok;
+    if (!quiet) emitTask(io, args, existing, "事件已存在，返回原任务");
+    return existing.id;
   }
   if (!store.insertTaskOnce(eventId, task)) {
     // 并发下同一事件被另一个进程抢先写入
     const winner = store.taskByEvent(eventId);
-    if (winner) emitTask(io, args, winner, "事件已存在，返回原任务");
-    return EXIT.ok;
+    if (!winner) throw new UsageError(`事件 ${eventId} 已登记但没有对应任务`);
+    if (!quiet) emitTask(io, args, winner, "事件已存在，返回原任务");
+    return winner.id;
   }
 
   const daemon = daemonState(store);
-  // --wait --json 只输出最终任务，避免两个 JSON 拼在一起无法解析
-  if (!(args.flags.get("wait") && args.flags.get("json"))) {
-    emitTask(io, args, task, daemon.alive ? "已入队" : "已入队，但守护进程心跳已过期；请确认 pisa 正在运行");
-  }
+  if (!quiet) emitTask(io, args, task, daemon.alive ? "已入队" : "已入队，但守护进程心跳已过期；请确认 pisa 正在运行");
   if (!daemon.alive) io.err("警告：没有检测到运行中的 pisa 守护进程，任务会一直排队。");
-  return EXIT.ok;
+  return task.id;
 }
 
 function emitTask(io: Io, args: ParsedArgs, task: Task, message: string): void {
@@ -314,8 +317,8 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
           context: null,
           prUrl: null,
         });
-        const code = enqueue(io, store, args, task);
-        return code === EXIT.ok && args.flags.get("wait") ? await waitTask(io, store, args, task.id) : code;
+        const id = enqueue(io, store, args, task);
+        return args.flags.get("wait") ? await waitTask(io, store, args, id) : EXIT.ok;
       }
 
       case "continue": {
@@ -334,8 +337,8 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
           context: continuationContext(parent),
           prUrl: parent.prUrl,
         });
-        const code = enqueue(io, store, args, task);
-        return code === EXIT.ok && args.flags.get("wait") ? await waitTask(io, store, args, task.id) : code;
+        const id = enqueue(io, store, args, task);
+        return args.flags.get("wait") ? await waitTask(io, store, args, id) : EXIT.ok;
       }
 
       case "wait": {

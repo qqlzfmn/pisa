@@ -6,7 +6,7 @@ import { Store } from "../src/store";
 import { Router, formatDuration } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
 import { parseCommand, taskGuard, type Config } from "../src/config";
-import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
+import { CLI_CHAT_ID, type ChannelAdapter, type IncomingMessage, type Task, type WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh, changedFiles, createWorktree } from "../src/git";
 
@@ -308,6 +308,26 @@ describe("Router", () => {
     expect(existsSync(join(stateDir, "worktrees", task.id))).toBe(false);
     // 回执
     expect(channel.sent.some((s) => s.text.includes("完成"))).toBe(true);
+  });
+
+  test("CLI 提交的任务不回执聊天通道，任务照常执行", async () => {
+    // Telegram 对未知 chat 会抛错；CLI 任务没有对话，回执必须跳过而不是中断执行
+    const boom: ChannelAdapter = {
+      name: "boom",
+      async start(): Promise<void> {},
+      async send(): Promise<never> {
+        throw new Error("Telegram sendMessage: chat not found");
+      },
+      async stop(): Promise<void> {},
+    };
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel: boom });
+    const task = seedTask({ id: "t_cli_notify", source: "cli", channel: "cli", chatId: CLI_CHAT_ID });
+
+    await router.drainOnce();
+
+    const done = store.get(task.id)!;
+    expect(done.status).toBe("succeeded");
+    expect(existsSync(join(stateDir, "worktrees", task.id))).toBe(false);
   });
 
   test("续跑任务失败不删除共享分支", async () => {

@@ -1,5 +1,8 @@
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
+/** CLI 提交的任务没有对话可回执：结果由 `pisa wait` / `pisa show` 读取，守护进程不得向该 chatId 发送消息 */
+export const CLI_CHAT_ID = "cli";
+
 /** 任务对外产生的副作用种类：rewind 的依据 */
 export type EffectKind = "branch" | "push" | "pr" | "comment" | "worktree" | "merge";
 
