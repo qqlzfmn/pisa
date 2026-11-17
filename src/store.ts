@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   status           TEXT NOT NULL,
   branch           TEXT,
   pr_url           TEXT,
+  session_id       TEXT,
+  resume_session_id TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -43,6 +45,8 @@ interface Row {
   status: TaskStatus;
   branch: string | null;
   pr_url: string | null;
+  session_id: string | null;
+  resume_session_id: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -63,6 +67,8 @@ function toTask(r: Row): Task {
     status: r.status,
     branch: r.branch,
     prUrl: r.pr_url,
+    sessionId: r.session_id,
+    resumeSessionId: r.resume_session_id,
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -80,6 +86,18 @@ export class Store {
     this.db = new Database(path, { create: true });
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec(SCHEMA);
+    // 轻量迁移：给已有库补列
+    const cols = this.db.query("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "session_id")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN session_id TEXT");
+    }
+    if (!cols.some((c) => c.name === "resume_session_id")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN resume_session_id TEXT");
+    }
+  }
+
+  setSessionId(id: string, sessionId: string): void {
+    this.db.run("UPDATE tasks SET session_id = ? WHERE id = ?", [sessionId, id]);
   }
 
   /** 幂等：同一事件只能登记一次 */
@@ -94,9 +112,9 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [t.id, t.source, t.channel, t.chatId, t.requester, t.repo, t.prompt, t.status, t.createdAt],
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, created_at, resume_session_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [t.id, t.source, t.channel, t.chatId, t.requester, t.repo, t.prompt, t.status, t.createdAt, t.resumeSessionId],
     );
   }
 
@@ -130,6 +148,8 @@ export class Store {
     const map: Record<string, string> = {
       branch: "branch",
       prUrl: "pr_url",
+      sessionId: "session_id",
+      resumeSessionId: "resume_session_id",
       summary: "summary",
       error: "error",
       startedAt: "started_at",

@@ -17,6 +17,7 @@ export interface Config {
   worker: { command: string; timeoutSec: number; extraArgs: string[]; concurrency: number };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string; proxy?: string } };
+  webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
   stateDir: string;
 }
 
@@ -61,7 +62,7 @@ export function repoByAlias(cfg: Config, alias?: string): RepoConfig | undefined
 }
 
 /** 触发词解析：仅接受以 trigger 开头的文本 */
-export function parseCommand(text: string, trigger: string): { kind: "task" | "cancel" | "help" | "status"; body: string } | null {
+export function parseCommand(text: string, trigger: string): { kind: "task" | "cancel" | "help" | "status" | "continue"; body: string } | null {
   const t = text.trim();
   if (!t.startsWith(trigger)) return null;
   const rest = t.slice(trigger.length).trim();
@@ -70,5 +71,6 @@ export function parseCommand(text: string, trigger: string): { kind: "task" | "c
   if (head === "cancel" || head === "取消") return { kind: "cancel", body: tail.join(" ").trim() };
   if (head === "help" || head === "帮助") return { kind: "help", body: "" };
   if (head === "status" || head === "状态") return { kind: "status", body: "" };
+  if (head === "continue" || head === "继续") return { kind: "continue", body: tail.join(" ").trim() };
   return { kind: "task", body: rest };
 }

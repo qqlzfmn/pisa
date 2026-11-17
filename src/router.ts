@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { Config, RepoConfig } from "./config";
 import { parseCommand, repoByAlias } from "./config";
@@ -92,6 +93,7 @@ export class Router {
           "pisa · 命令",
           `${cfg.trigger} <需求>        接一个任务（私聊可直接说需求）`,
           `${cfg.trigger} cancel [任务号]  取消（私聊可用 /cancel）`,
+          `${cfg.trigger} continue <任务号> <新要求>  接着上一个会话做`,
           `${cfg.trigger} help           本帮助（私聊可用 /help）`,
         ].join("\n"),
       );
@@ -119,6 +121,32 @@ export class Router {
       return;
     }
 
+    let prompt = cmd.body;
+    let resumeSessionId: string | null = null;
+
+    if (cmd.kind === "continue") {
+      const [parentId, ...rest] = prompt.split(/\s+/);
+      const parent = parentId ? store.get(parentId) : null;
+      if (!parent) {
+        await channel.send(msg.chatId, `找不到任务 ${parentId ?? ""}`);
+        return;
+      }
+      if (parent.requester !== msg.userId) {
+        await channel.send(msg.chatId, "只有原请求者可以续跑。");
+        return;
+      }
+      if (!parent.sessionId) {
+        await channel.send(msg.chatId, `任务 ${parent.id} 没有可续跑的会话。`);
+        return;
+      }
+      resumeSessionId = parent.sessionId;
+      prompt = rest.join(" ").trim();
+      if (!prompt) {
+        await channel.send(msg.chatId, `用法：${cfg.trigger} continue <任务号> <新要求>`);
+        return;
+      }
+    }
+
     const taskId = newId(this.now());
     // 去重：同一事件只登记一次；重复投递直接丢弃
     if (!store.claimEvent(msg.eventId, taskId)) return;
@@ -136,7 +164,7 @@ export class Router {
       await channel.send(msg.chatId, `仓库未配置：${msg.repo ?? "(默认)"}`);
       return;
     }
-    if (!cmd.body) {
+    if (!prompt) {
       await channel.send(msg.chatId, `用法：${cfg.trigger} <需求描述>`);
       return;
     }
@@ -148,10 +176,12 @@ export class Router {
       chatId: msg.chatId,
       requester: msg.userId,
       repo: repo.alias,
-      prompt: cmd.body,
+      prompt,
       status: "queued",
       branch: null,
       prUrl: null,
+      sessionId: null,
+      resumeSessionId,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -219,6 +249,52 @@ export class Router {
     return started;
   }
 
+  /** 轮询 pi 扩展写出的进度文件，节流后转发到对话 */
+  private watchProgress(task: Task, channel: ChannelAdapter): () => void {
+    const file = join(resolve(this.deps.cfg.stateDir), "progress", `${task.id}.jsonl`);
+    let size = 0;
+    let lastSentAt = 0;
+    let lastMsg = "";
+
+    const push = (text: string) => {
+      const now = Date.now();
+      if (text === lastMsg || now - lastSentAt < 6000) return;
+      lastMsg = text;
+      lastSentAt = now;
+      void channel.send(task.chatId, text);
+    };
+
+    const timer = setInterval(() => {
+      let chunk = "";
+      try {
+        const buf = readFileSync(file, "utf8");
+        if (buf.length <= size) return;
+        chunk = buf.slice(size);
+        size = buf.length;
+      } catch {
+        return;
+      }
+      for (const line of chunk.split("\n")) {
+        if (!line.trim()) continue;
+        let o: Record<string, any>;
+        try {
+          o = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (o.type === "session" && o.sessionId) this.deps.store.setSessionId(task.id, String(o.sessionId));
+        if (o.type === "blocked") push(`⛔ 拦下一条命令：${String(o.detail ?? "").slice(0, 120)}`);
+        if (o.type !== "tool") continue;
+        const tool = String(o.tool ?? "");
+        const detail = String(o.detail ?? "").slice(0, 120);
+        if (tool === "bash") push(`🛠 ${detail}`);
+        else if (/edit|write|patch|create/i.test(tool)) push(`✏️ ${tool}${detail ? " " + detail : ""}`);
+      }
+    }, 2000);
+
+    return () => clearInterval(timer);
+  }
+
   private async runTask(task: Task, branch: string): Promise<void> {
     const { cfg, store, channel, worker, deliverer } = this.deps;
     const repo = repoByAlias(cfg, task.repo);
@@ -244,6 +320,7 @@ export class Router {
 
     await channel.send(task.chatId, `开始执行 · ${task.id}\n分支 ${branch}`);
 
+    const stopWatch = this.watchProgress(task, channel);
     let result: WorkerResult;
     try {
       result = await worker.run(task, workdir, (line) => log.write("worker", line), () =>
@@ -251,6 +328,8 @@ export class Router {
       );
     } catch (err) {
       result = { ok: false, summary: "", error: (err as Error).message, exitCode: -1 };
+    } finally {
+      stopWatch();
     }
 
     if (store.isCancelRequested(task.id) || result.error === "任务已取消") {
@@ -291,11 +370,13 @@ export class Router {
     removeWorktree(repo.path, workdir);
     log.write("done", `files=${delivery.files.length} pushed=${delivery.pushed}`);
 
+    const fresh = store.get(task.id);
     const lines = [`✅ ${task.id} 完成`, result.summary.slice(0, 1200)];
     if (delivery.files.length) lines.push(`改动 ${delivery.files.length} 个文件：${delivery.files.slice(0, 8).join(", ")}`);
     else lines.push("没有代码改动。");
     if (delivery.branch) lines.push(`分支：${delivery.branch}`);
     if (delivery.prUrl) lines.push(`链接：${delivery.prUrl}`);
+    if (fresh?.sessionId) lines.push(`会话：${fresh.sessionId.slice(0, 8)}`);
     await channel.send(task.chatId, lines.join("\n\n"));
   }
 }

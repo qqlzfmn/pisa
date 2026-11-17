@@ -64,6 +64,10 @@ describe("parseCommand", () => {
   test("普通任务", () => {
     expect(parseCommand("/pisa 修一下登录", "/pisa")).toEqual({ kind: "task", body: "修一下登录" });
   });
+  test("续跑命令", () => {
+    expect(parseCommand("/pisa continue t_1 再改一下", "/pisa")).toEqual({ kind: "continue", body: "t_1 再改一下" });
+  });
+
   test("取消与帮助", () => {
     expect(parseCommand("/pisa cancel t_1", "/pisa")).toEqual({ kind: "cancel", body: "t_1" });
     expect(parseCommand("/pisa", "/pisa")).toEqual({ kind: "help", body: "" });
@@ -223,6 +227,25 @@ describe("Router", () => {
     expect(spans[1]![0]).toBeGreaterThanOrEqual(spans[0]![1] - 5);
   });
 
+  test("continue 继承上一个任务的会话", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 第一个任务"));
+    const parent = store.recent()[0]!;
+    store.setSessionId(parent.id, "sess-12345678");
+
+    await router.handle(msg(`/pisa continue ${parent.id} 再改一处`));
+    const child = store.recent()[0]!;
+    expect(child.resumeSessionId).toBe("sess-12345678");
+    expect(child.prompt).toBe("再改一处");
+  });
+
+  test("continue 找不到任务时拒绝", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa continue t_missing 再改"));
+    expect(store.recent().length).toBe(0);
+    expect(channel.sent[0]?.text).toContain("找不到任务");
+  });
+
   test("status 列出最近任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 做点事"));
@@ -255,6 +278,8 @@ describe("状态机", () => {
       status: "queued" as const,
       branch: null,
       prUrl: null,
+      sessionId: null,
+      resumeSessionId: null,
       summary: null,
       error: null,
       createdAt: Date.now(),

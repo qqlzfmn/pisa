@@ -23,6 +23,9 @@ export interface Task {
   status: TaskStatus;
   branch: string | null;
   prUrl: string | null;
+  sessionId: string | null;
+  /** 续跑时恢复的上一个 pi 会话 */
+  resumeSessionId: string | null;
   summary: string | null;
   error: string | null;
   createdAt: number;

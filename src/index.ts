@@ -37,13 +37,49 @@ async function main(): Promise<void> {
   const router = new Router({
     cfg,
     store,
-    worker: new OmpWorker(cfg.worker),
+    worker: new OmpWorker(cfg.worker, cfg.stateDir),
     deliverer: new GitDeliverer(cfg),
     channel,
   });
 
   await channel.start((m) => router.handle(m));
   router.start();
+
+  // 事件入口：CI / 监控 / 脚本可以把任务推进来
+  if (cfg.webhook?.enabled) {
+    const token = process.env[cfg.webhook.tokenEnv];
+    if (!token) {
+      console.error(`[pisa] webhook 已启用但缺少 ${cfg.webhook.tokenEnv}`);
+    } else {
+      Bun.serve({
+        port: cfg.webhook.port,
+        hostname: "127.0.0.1",
+        async fetch(req) {
+          if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+          if (req.headers.get("x-pisa-token") !== token) return new Response("forbidden", { status: 403 });
+          let body: { prompt?: string; repo?: string; eventId?: string };
+          try {
+            body = (await req.json()) as typeof body;
+          } catch {
+            return new Response("bad json", { status: 400 });
+          }
+          if (!body.prompt) return new Response("prompt required", { status: 400 });
+          const eventId = body.eventId ?? `webhook:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+          await router.handle({
+            eventId,
+            channel: "webhook",
+            chatId: cfg.webhook!.chatId,
+            userId: cfg.webhook!.userId,
+            text: body.prompt,
+            repo: body.repo,
+            isDirect: true,
+          });
+          return Response.json({ ok: true, eventId });
+        },
+      });
+      console.log(`[pisa] webhook listening on 127.0.0.1:${cfg.webhook.port}`);
+    }
+  }
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
   const shutdown = async () => {

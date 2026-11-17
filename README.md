@@ -98,7 +98,8 @@ pisa/
 │   ├── constitution.md    # 项目宪法：不可协商的架构与质量约束
 │   └── specs/             # 每个 feature 一个目录：spec / plan / tasks
 ├── src/                   # Router、任务调度、事件总线
-├── extensions/            # pi 扩展（Worker 接入、可观测性）
+├── extensions/            # pi 扩展：进度上报 + 策略拦截
+├── scripts/supervise.sh   # 崩溃自动重启
 └── tests/
 ```
 
@@ -127,6 +128,19 @@ bun run src/index.ts
 
 私聊里可以直接说需求，不用加 /pisa；群聊仍需触发词。
 /status、/cancel、/help 在私聊可直接用。
+
+/pisa continue <任务号> <新要求>   接着上一个会话继续做
+```
+
+执行时会实时回传进度（`🛠 命令` / `✏️ 文件`），破坏性命令会在 agent 内部被拦下。
+
+外部事件入口：
+
+```bash
+curl -X POST http://127.0.0.1:8799/event \
+  -H "x-pisa-token: $PISA_WEBHOOK_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"跑测试并修掉失败","eventId":"ci:12345"}'
 ```
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
@@ -164,8 +178,11 @@ specify → plan → tasks → implement → converge
 
 - P0：单 Worker 闭环，真实 omp 跑通（改文件 → 提交到 `pisa/<任务号>` → 主分支零改动）
 - P1：并发上限可配（默认 2），任务级隔离，`/pisa status` 查看状态
-- 测试 13 个全绿；`tsc --noEmit` 无报错
-- 待办：Telegram 通道联调（需要 bot token）；P1 的 PR 评论订阅绑定
+- P2：webhook 事件入口（CI/监控可直接投递任务）
+- P3：崩溃自动重启、孤儿任务收口、任务级超时
+- pi 集成：Worker 挂 pisa 扩展，工具级进度上报 + 命令拦截 + 会话续跑
+- 测试 19 个全绿；`tsc --noEmit` 无报错
+- 已接入 Telegram（@lzf_pisa_bot）
 
 ## 致谢
 

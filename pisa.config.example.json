@@ -1,20 +1,22 @@
 {
   "trigger": "/pisa",
+  "dmWithoutTrigger": true,
   "whitelist": {
-    "users": ["7355434308"],
+    "users": ["<telegram user id>"],
     "repos": ["pisa"]
   },
   "repos": [
     {
       "alias": "pisa",
-      "path": "/Volumes/MateMini/OpenClaw/workspace/pisa",
+      "path": "/absolute/path/to/repo",
       "baseBranch": "main"
     }
   ],
   "worker": {
     "command": "omp",
     "timeoutSec": 3600,
-    "extraArgs": []
+    "extraArgs": [],
+    "concurrency": 2
   },
   "delivery": {
     "push": false,
@@ -23,8 +25,19 @@
     "commitEmail": "pisa@localhost"
   },
   "channels": {
-    "cli": true,
-    "telegram": { "enabled": false, "tokenEnv": "PISA_TELEGRAM_TOKEN" }
+    "cli": false,
+    "telegram": {
+      "enabled": true,
+      "tokenEnv": "PISA_TELEGRAM_TOKEN",
+      "proxy": ""
+    }
+  },
+  "webhook": {
+    "enabled": false,
+    "port": 8799,
+    "tokenEnv": "PISA_WEBHOOK_TOKEN",
+    "chatId": "<telegram chat id>",
+    "userId": "<telegram user id>"
   },
   "stateDir": ".pisa"
 }

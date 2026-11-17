@@ -1,3 +1,5 @@
+import { join, resolve } from "node:path";
+import { mkdirSync } from "node:fs";
 import type { Config } from "./config";
 import type { Task, WorkerResult } from "./types";
 import { redact } from "./log";
@@ -43,7 +45,10 @@ function assistantText(obj: JsonEvent): string {
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 
 export class OmpWorker implements WorkerRunner {
-  constructor(private cfg: Config["worker"]) {}
+  constructor(
+    private cfg: Config["worker"],
+    private stateDir = ".pisa",
+  ) {}
 
   async run(
     task: Task,
@@ -51,9 +56,15 @@ export class OmpWorker implements WorkerRunner {
     onLog: (line: string) => void,
     isCancelled: () => boolean,
   ): Promise<WorkerResult> {
+    const extensionPath = join(import.meta.dir, "..", "extensions", "pisa-worker.ts");
+    const progressDir = resolve(this.stateDir, "progress");
+    mkdirSync(progressDir, { recursive: true });
     const args = [
       this.cfg.command,
       ...this.cfg.extraArgs,
+      "-e",
+      extensionPath,
+      ...(task.resumeSessionId ? ["-r", task.resumeSessionId] : []),
       "--mode=json",
       "-p",
       buildPrompt(task),
@@ -61,7 +72,16 @@ export class OmpWorker implements WorkerRunner {
       workdir,
     ];
 
-    const proc = Bun.spawn(args, { cwd: workdir, stdout: "pipe", stderr: "pipe", env: { ...process.env } });
+    const proc = Bun.spawn(args, {
+      cwd: workdir,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        PISA_WORKDIR: workdir,
+        PISA_PROGRESS_FILE: join(progressDir, `${task.id}.jsonl`),
+      },
+    });
 
     let timedOut = false;
     let cancelled = false;
