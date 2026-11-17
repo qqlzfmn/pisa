@@ -238,7 +238,8 @@ export class Store {
     if (!cur) return false;
     if (!canTransition(cur.status, to)) return false;
 
-    const sets: string[] = ["status = ?"];
+    // 进入新状态即无待处理的取消请求：终态保留标志会让看板把已取消任务显示成「取消中」
+    const sets: string[] = ["status = ?", "cancel_requested = 0"];
     const vals: Array<string | number | null> = [to];
     const map: Record<string, string> = {
       branch: "branch",
@@ -268,11 +269,6 @@ export class Store {
   requestCancel(id: string): boolean {
     const res = this.db.run("UPDATE tasks SET cancel_requested = 1 WHERE id = ? AND status IN ('queued','running')", [id]);
     return res.changes > 0;
-  }
-
-  /** 恢复中断任务前清掉取消标记：上一轮取消未落库时，残留的 1 会让 Worker 立刻自杀 */
-  clearCancel(id: string): void {
-    this.db.run("UPDATE tasks SET cancel_requested = 0 WHERE id = ?", [id]);
   }
 
   isCancelRequested(id: string): boolean {

@@ -136,18 +136,26 @@ export class Worker implements WorkerRunner {
       if (buf.trim()) rawTail.push(buf.trim());
     };
 
-    const [exitCode] = await Promise.all([
-      proc.exited,
-      pump(proc.stdout as ReadableStream<Uint8Array>, "out"),
-      pump(proc.stderr as ReadableStream<Uint8Array>, "err"),
-    ]);
+    let exitCode: number;
+    try {
+      [exitCode] = await Promise.all([
+        proc.exited,
+        pump(proc.stdout as ReadableStream<Uint8Array>, "out"),
+        pump(proc.stderr as ReadableStream<Uint8Array>, "err"),
+      ]);
+    } catch (err) {
+      // 日志管线抛错时进程还在跑：先杀组再上抛，否则失败收尾删副本时它仍在往目录里写
+      killTree("SIGKILL");
+      throw err;
+    } finally {
+      clearTimeout(killTimer);
+      clearInterval(cancelPoll);
+      clearTimeout(hardKill);
+      liveGroups.delete(proc.pid);
+    }
 
-    clearTimeout(killTimer);
-    clearInterval(cancelPoll);
-    clearTimeout(hardKill);
     // 主动终止后补刀：忽略 SIGTERM 的子孙仍留在组里，组空时 kill 返回 ESRCH
     if (cancelled || timedOut) killTree("SIGKILL");
-    liveGroups.delete(proc.pid);
 
     if (cancelled) return { ok: false, summary: "", error: "任务已取消", exitCode };
     if (timedOut) return { ok: false, summary: "", error: `执行超时（${this.cfg.timeoutSec}s）`, exitCode };

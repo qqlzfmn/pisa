@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Task } from "../src/types";
@@ -81,5 +81,35 @@ describe("Worker 取消", () => {
     const result = await running;
     expect(result.ok).toBe(false);
     expect(Date.now() - startedAt).toBeLessThan(6000);
+  }, 15_000);
+
+  test("日志写入抛错时终止进程组，孤儿不会继续写目录", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pisa-worker-"));
+    const marker = join(dir, "late.txt");
+    const worker = new Worker(
+      {
+        adapter: "omp",
+        command: "bash",
+        timeoutSec: 60,
+        extraArgs: ["-c", `echo hi; sleep 0.6; echo late > ${marker}`],
+        concurrency: 1,
+      },
+      join(dir, "state"),
+    );
+
+    await expect(
+      worker.run(
+        task(),
+        dir,
+        () => {
+          throw new Error("磁盘满");
+        },
+        () => false,
+      ),
+    ).rejects.toThrow("磁盘满");
+
+    // 真实子进程是否被杀只能等它原本要写文件的那一刻；假定时器驱动不了进程组信号
+    await Bun.sleep(1200);
+    expect(existsSync(marker)).toBe(false);
   }, 15_000);
 });

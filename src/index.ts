@@ -144,8 +144,13 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     await router.stop(3000);
-    // Worker 是独立进程组，不随本进程退出：显式终止，免得孤儿继续改工作副本
+    // Worker 是独立进程组，不随本进程退出：先 SIGTERM 让它们收尾，再 SIGKILL 清掉不响应信号的子孙，
+    // 否则孤儿会继续写工作副本，重启后 resume 与它同抢一份目录
     killRunningWorkers();
+    const grace = Promise.withResolvers<void>();
+    setTimeout(grace.resolve, 2000);
+    await grace.promise;
+    killRunningWorkers("SIGKILL");
     proactive.stop();
     githubWatcher.stop();
     scheduler.stop();

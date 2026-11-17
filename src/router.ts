@@ -530,7 +530,7 @@ export class Router {
 
   /** 取消任务：排队/中断直接取消，运行中标记取消请求；返回结果文本，IM 与网页共用 */
   cancelTask(msg: IncomingMessage, body: string): CommandOutcome {
-    const { store } = this.deps;
+    const { cfg, store } = this.deps;
     let id = body.trim();
     if (!id) {
       const mine = store.recentTasks(20).find(
@@ -545,6 +545,14 @@ export class Router {
     if (!msg.admin && task.requester !== msg.userId) return { ok: false, text: "只有原请求者可以取消。" };
     if (task.status === "queued" || task.status === "paused") {
       store.transition(id, "cancelled", { endedAt: this.now() });
+      // 中断任务的副本与分支已落在磁盘上，且没有别的入口会回收：取消时一并清掉
+      if (task.status === "paused") {
+        const repo = repoByAlias(cfg, task.repo);
+        if (repo) {
+          removeWorktree(repo.path, resolve(cfg.stateDir, "worktrees", id));
+          if (task.branch) this.cleanupBranch(repo.path, task, task.branch);
+        }
+      }
       return { ok: true, text: `已取消 · ${id}` };
     }
     if (task.status !== "running") return { ok: false, text: `任务 ${id} 已结束（${task.status}）` };
@@ -580,7 +588,7 @@ export class Router {
     }
 
     const startedAt = this.now();
-    store.clearCancel(id);
+    // transition 会清掉残留的取消标记：上一轮取消未落库时，它会让恢复后的任务立刻自杀
     if (!store.transition(id, "running", { startedAt, error: null })) {
       await this.reply(msg.chatId, `恢复失败 · ${id}`);
       return;

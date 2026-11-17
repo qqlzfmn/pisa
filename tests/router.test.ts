@@ -636,15 +636,31 @@ describe("Router", () => {
     expect(channel.sent.at(-1)?.text).toContain("工作副本");
   });
 
-  test("paused 的任务可以取消", async () => {
+  test("paused 的任务可以取消，副本与分支一并回收", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 待办"));
     const task = store.recentTasks()[0]!;
-    expect(store.claimQueued(task.id, Date.now(), `pisa/${task.id}`)).toBe(true);
+    const branch = `pisa/${task.id}`;
+    const workdir = join(stateDir, "worktrees", task.id);
+    expect(store.claimQueued(task.id, Date.now(), branch)).toBe(true);
+    expect(createWorktree(repo, workdir, branch).code).toBe(0);
     expect(store.transition(task.id, "paused")).toBe(true);
 
     await router.handle(msg(`/pisa cancel ${task.id}`));
     expect(store.get(task.id)?.status).toBe("cancelled");
+    expect(existsSync(workdir)).toBe(false);
+    expect(sh(["git", "-C", repo, "rev-parse", "--verify", branch]).code).not.toBe(0);
+  });
+
+  test("进入终态时清掉取消标记", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 待办"));
+    const task = store.recentTasks()[0]!;
+    expect(store.claimQueued(task.id, Date.now(), `pisa/${task.id}`)).toBe(true);
+    expect(store.requestCancel(task.id)).toBe(true);
+
+    expect(store.transition(task.id, "cancelled", { endedAt: Date.now() })).toBe(true);
+    expect(store.isCancelRequested(task.id)).toBe(false);
   });
 
   test("关停中 Worker 完成后任务保持 running，工作副本与分支保留", async () => {
