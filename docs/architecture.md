@@ -60,7 +60,7 @@ CLI / Telegram / Webhook / GitHub 评论 / cron / 关键词 / 探针
 6. **鉴权**：用户白名单、仓库白名单、仓库路径是否为 git 仓库。拒绝原因回一条消息，同一用户 24 小时内只提醒一次。
 7. **落任务**：状态 `queued`，回执 `已接单 · <任务号>`。
 8. **领取**：`fill()` 按 `worker.concurrency` 领取最早的 queued 任务，原子改成 `running`。
-9. **工作副本**：新任务创建 `pisa/<任务号>` 分支；续跑任务复用父任务分支。
+9. **工作副本**：`fill()` 在没有预设分支时把 `pisa/<任务号>` 写进任务。IM 续跑以父任务分支为 `baseRef` 新建自己的分支，不移动父任务分支；只有 PR 评论续跑预先带父任务分支，直接复用。
 10. **执行**：Worker 适配器拼参数，子进程在 worktree 内运行；Router 每 2 秒读进度文件并转发。
 11. **交付**：收集改动，提交；按配置推送；按配置创建 PR。
 12. **收尾**：写副作用台账，状态改 `succeeded`，删除 worktree，回执摘要。
@@ -99,14 +99,16 @@ SQLite 默认在 `<stateDir>/pisa.db`，开启 WAL。核心表：
 .pisa/
 ├── pisa.db
 ├── worktrees/<任务号>/
-└── progress/<任务号>.jsonl
+├── progress/<任务号>.jsonl
+├── logs/<任务号>.log
+└── verify/<任务号>/          # merge 验证副本，结束后删除
 ```
 
 worktree 和进度文件是执行期产物，不参与去重或状态判断；删除 worktree 会让 `paused` 任务无法恢复。备份与清理命令见[部署与排障](./deployment.md)。
 
 ## 进程生命周期
 
-启动顺序：加载配置 → 选通道 → 创建 Store 与 Router → 恢复中断任务 → 启动主动发现、GitHub 轮询、定时器 → 启动通道 → 启动调度定时器 → 可选启动 webhook → 打印：
+启动顺序：加载配置 → 创建 Store → 选通道 → 创建 Router（Worker 与交付器在这里装配）→ 恢复中断任务 → 启动通道 → 启动调度定时器 → 启动主动发现、GitHub 轮询、定时器 → 可选启动 webhook → 打印：
 
 ```
 [pisa] ready · channel=<通道> · repos=<别名列表> · concurrency=<并发数>
@@ -120,8 +122,8 @@ worktree 和进度文件是执行期产物，不参与去重或状态判断；�
 - **状态单写者**：只有 `store.transition` 改任务状态，并且必须符合 `ALLOWED`。
 - **一任务一 worktree**：Worker 的工作目录就是 worktree，提示词要求不越界。
 - **交付只在成功后**：任务失败或取消不提交、不推送、不建 PR。
-- **PR 绑定稳定**：续跑已有 PR 的任务会复用 `pr_url`，只推送更新，不新建 PR。
-- **合并只做快进**：`merge` 要求主工作区当前在 `baseBranch`（默认 `main`），并且 `git merge --ff-only`。
+- **PR 绑定稳定**：带 `pr_url` 的任务（PR 评论续跑）交付时只推送更新，不新建 PR；IM 续跑不继承父任务的 PR。
+- **合并先验证再快进**：`merge` 在 `<stateDir>/verify/<任务号>` 建临时 worktree，目录里有 `tests/` 或 `test/` 就跑 `bun test`；通过后要求主工作区当前在 `baseBranch`（默认 `main`），最后 `git merge --ff-only`。
 - **台账只记仍存在的东西**：`rewind` 只处理台账里仍能验证的副作用；PR 状态未知时保留分支。
 - **配置只在启动时读**：改 `pisa.config.json` 后必须重启进程。
 - **同一 stateDir 只跑一个实例**：任务领取依赖进程内调度加 SQLite 原子迁移，没有实例间协调。

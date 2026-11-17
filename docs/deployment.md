@@ -116,7 +116,7 @@ curl -X POST http://127.0.0.1:8799/event \
   -d '{"prompt":"跑测试并修掉失败","eventId":"ci:12345"}'
 ```
 
-只接受 `POST /event`；token 不匹配返回 403，JSON 非法或缺少 `prompt` 返回 400。`eventId` 建议由调用方提供；不提供时服务端生成一次性 id。
+只按方法判断：非 `POST` 返回 405，路径不参与匹配（示例统一用 `/event`）。token 不匹配返回 403，JSON 非法或缺少 `prompt` 返回 400。`eventId` 建议由调用方提供；不提供时服务端生成一次性 id。
 
 ### GitHub 评论
 
@@ -228,7 +228,9 @@ rm "$HOME/Library/LaunchAgents/ai.pisa.supervisor.plist"
 ├── pisa.db-wal
 ├── pisa.db-shm
 ├── worktrees/<任务号>/
-└── progress/<任务号>.jsonl
+├── progress/<任务号>.jsonl
+├── logs/<任务号>.log
+└── verify/<任务号>/          # merge 验证副本，结束后删除
 ```
 
 常用检查：
@@ -324,6 +326,7 @@ Worker 子进程的退出码不会成为主进程退出码；它会让对应任�
 | GitHub 评论不触发任务 | `jq '.github' pisa.config.json`、`gh auth status` | 未启用、未配置 `repos[].chatId/userId`、或轮询间隔未到。轮询只处理启动后的新评论。 |
 | 任务完成但 GitHub 没回帖 | `jq '.github.enabled' pisa.config.json` | 回帖只在 GitHub 启用时进行；同一个任务同一条回复有 markdown 标记，不会重复发。 |
 | 进程重启后任务 `paused` | `sqlite3 .pisa/pisa.db "select id,status,session_id from tasks where status='paused';"` | 有会话和 worktree 才会暂停。发 `resume <任务号>`；缺 worktree 会失败。 |
+| `merge` 回 `未合并 · 测试失败` | 回执末尾的失败输出；`git -C <repo> branch --list 'pisa/*'` | 合并前会在临时副本里跑 `bun test`，没过就不合入。按回执输出修完再执行一次 `merge`。 |
 | `merge` 回 `主工作区当前不在 main` | `git -C <repo> branch --show-current` | 先切回 `baseBranch` 再合并。合并只做 `--ff-only`。 |
 | `rewind` 保留分支或提示 PR 状态未知 | `gh pr view <n> --json state` | PR 状态查不到、分支与他人共享、或副作用已不可撤销。按预览里的提示人工处理。 |
 | launchd 服务没起来 | `launchctl print "gui/$(id -u)/ai.pisa.supervisor"`、`tail -n 100 "$HOME/Library/Logs/pisa.launchd.log"` | 看护脚本缺少 token、plist 路径过期、代理不可用。修复后重跑安装脚本。 |
