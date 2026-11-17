@@ -33,6 +33,8 @@ cat > "$plist" <<PLIST
     <string>1</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.bun/bin</string>
+    <key>HTTPS_PROXY</key>
+    <string>http://127.0.0.1:7897</string>
   </dict>
   <key>StandardOutPath</key>
   <string>$HOME/Library/Logs/pisa.launchd.log</string>
