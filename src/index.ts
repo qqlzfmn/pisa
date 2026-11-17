@@ -25,7 +25,7 @@ async function main(): Promise<void> {
       console.error(`[pisa] 缺少环境变量 ${cfg.channels.telegram.tokenEnv}`);
       process.exit(1);
     }
-    channel = new TelegramChannel(token);
+    channel = new TelegramChannel(token, process.env.PISA_TELEGRAM_PROXY ?? cfg.channels.telegram.proxy);
   } else if (cfg.channels.cli) {
     channel = new CliChannel();
   } else {

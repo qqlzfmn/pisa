@@ -24,7 +24,10 @@ export class TelegramChannel implements ChannelAdapter {
   private offset = 0;
   private stopped = false;
 
-  constructor(private token: string) {}
+  constructor(
+    private token: string,
+    private proxy?: string,
+  ) {}
 
   async start(onMessage: Handler): Promise<void> {
     void this.poll(onMessage);
@@ -77,7 +80,8 @@ export class TelegramChannel implements ChannelAdapter {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
+      ...(this.proxy ? { proxy: this.proxy } : {}),
+    } as RequestInit);
     const json = (await res.json()) as { ok: boolean; result?: T; description?: string };
     if (!json.ok) throw new Error(`Telegram ${method}: ${json.description ?? res.status}`);
     return json;
