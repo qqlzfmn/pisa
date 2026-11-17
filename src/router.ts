@@ -71,7 +71,16 @@ export class Router {
   /** 处理一条入口消息；幂等、鉴权、建任务都在这里 */
   async handle(msg: IncomingMessage): Promise<void> {
     const { cfg, store, channel } = this.deps;
-    const cmd = parseCommand(msg.text, cfg.trigger);
+    let cmd = parseCommand(msg.text, cfg.trigger);
+
+    // 专用 bot 的私聊：不需要触发词，直接说话就是任务
+    if (!cmd && msg.isDirect && cfg.dmWithoutTrigger) {
+      const t = msg.text.trim();
+      if (t === "/start" || t === "/help" || t === "帮助") cmd = { kind: "help", body: "" };
+      else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
+      else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
+      else if (t && !t.startsWith("/")) cmd = { kind: "task", body: t };
+    }
     if (!cmd) return;
 
     const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
@@ -81,9 +90,9 @@ export class Router {
         msg.chatId,
         [
           "pisa · 命令",
-          `${cfg.trigger} <需求>        接一个任务`,
-          `${cfg.trigger} cancel [任务号]  取消`,
-          `${cfg.trigger} help           本帮助`,
+          `${cfg.trigger} <需求>        接一个任务（私聊可直接说需求）`,
+          `${cfg.trigger} cancel [任务号]  取消（私聊可用 /cancel）`,
+          `${cfg.trigger} help           本帮助（私聊可用 /help）`,
         ].join("\n"),
       );
       return;

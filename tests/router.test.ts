@@ -32,6 +32,7 @@ function makeRepo(): string {
 function makeCfg(repoPath: string, stateDir: string): Config {
   return {
     trigger: "/pisa",
+    dmWithoutTrigger: true,
     whitelist: { users: ["u1"], repos: ["demo"] },
     repos: [{ alias: "demo", path: repoPath, baseBranch: "main" }],
     worker: { command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1 },
@@ -96,6 +97,25 @@ describe("Router", () => {
   function build(worker: WorkerRunner) {
     return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel });
   }
+
+  test("私聊不带触发词也能建任务", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("把登录超时改成 30 分钟", { isDirect: true }));
+    expect(store.recent()[0]?.prompt).toBe("把登录超时改成 30 分钟");
+  });
+
+  test("群聊仍然需要触发词", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("把登录超时改成 30 分钟", { isDirect: false }));
+    expect(store.recent().length).toBe(0);
+  });
+
+  test("私聊 /status 不走任务", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/status", { isDirect: true }));
+    expect(store.recent().length).toBe(0);
+    expect(channel.sent.some((s) => s.text.includes("还没有任务"))).toBe(true);
+  });
 
   test("非白名单用户被拒，且不建任务", async () => {
     const router = build(okWorker);

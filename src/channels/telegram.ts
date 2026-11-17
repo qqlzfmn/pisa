@@ -53,6 +53,7 @@ export class TelegramChannel implements ChannelAdapter {
             chatId: String(m.chat.id),
             userId: String(m.from?.id ?? m.chat.id),
             text: m.text,
+            isDirect: m.chat.type === "private",
             receivedAt: (m.date ?? 0) * 1000,
           });
         }

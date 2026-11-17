@@ -10,6 +10,8 @@ export interface RepoConfig {
 
 export interface Config {
   trigger: string;
+  /** 私聊里不带触发词也当成任务 */
+  dmWithoutTrigger: boolean;
   whitelist: { users: string[]; repos: string[] };
   repos: RepoConfig[];
   worker: { command: string; timeoutSec: number; extraArgs: string[]; concurrency: number };
@@ -20,6 +22,7 @@ export interface Config {
 
 export const DEFAULT_CONFIG: Config = {
   trigger: "/pisa",
+  dmWithoutTrigger: true,
   whitelist: { users: [], repos: [] },
   repos: [],
   worker: { command: "omp", timeoutSec: 3600, extraArgs: [], concurrency: 2 },

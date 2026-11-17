@@ -7,6 +7,8 @@ export interface IncomingMessage {
   userId: string;
   text: string;
   repo?: string;
+  /** 私聊（一对一）消息 */
+  isDirect?: boolean;
   receivedAt?: number;
 }
 

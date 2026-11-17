@@ -124,6 +124,9 @@ bun run src/index.ts
 /pisa <需求>            接一个任务
 /pisa cancel [任务号]   取消
 /pisa help              帮助
+
+私聊里可以直接说需求，不用加 /pisa；群聊仍需触发词。
+/status、/cancel、/help 在私聊可直接用。
 ```
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。

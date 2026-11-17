@@ -25,6 +25,7 @@ export class CliChannel implements ChannelAdapter {
           chatId: "local",
           userId: this.userId,
           text,
+          isDirect: true,
           receivedAt: Date.now(),
         });
       }
