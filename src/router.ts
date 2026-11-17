@@ -19,6 +19,7 @@ import {
   type Runner,
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import { deriveStage } from "./stage";
 import { TaskLogger } from "./log";
 
 export interface RouterDeps {
@@ -117,7 +118,7 @@ export class Router {
     return result;
   }
 
-  /** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
+  /** 任务看板：运行中 / 排队 / 最近完成，末尾汇总；每行带派生阶段，回答「现在在等谁」 */
   private statusBoard(): string {
     const { store } = this.deps;
     const now = this.now();
@@ -131,24 +132,46 @@ export class Router {
     if (running.length === 0) lines.push("(无)");
     for (const t of running) {
       const elapsed = formatDuration(now - (t.startedAt ?? t.createdAt));
-      lines.push(`${t.id} · ${t.repo} · 已运行 ${elapsed} · ${preview(t.prompt, 40)}`);
+      lines.push(`${t.id} · ${deriveStage(t)} · ${t.repo} · 已运行 ${elapsed} · ${preview(t.prompt, 40)}`);
     }
 
     lines.push("", `排队（${queued.length}）`);
     if (queued.length === 0) lines.push("(无)");
-    for (const t of queued.slice(0, 5)) lines.push(`${t.id} · ${t.repo} · ${preview(t.prompt, 40)}`);
+    for (const t of queued.slice(0, 5)) {
+      lines.push(`${t.id} · ${deriveStage(t)} · ${t.repo} · ${preview(t.prompt, 40)}`);
+    }
 
     lines.push("", "最近完成");
     if (finished.length === 0) lines.push("(无)");
     for (const t of finished) {
       const spent = formatDuration((t.endedAt ?? t.createdAt) - (t.startedAt ?? t.createdAt));
-      const parts = [FINISHED_LABEL[t.status] ?? t.status, spent, t.repo, preview(t.prompt, 30)];
+      const parts = [FINISHED_LABEL[t.status] ?? t.status, deriveStage(t), spent, t.repo, preview(t.prompt, 30)];
       if (t.prUrl) parts.push(t.prUrl);
       lines.push(parts.join(" · "));
     }
 
     lines.push("", `汇总：${total} 个任务 · 成功 ${counts.succeeded} · 失败 ${counts.failed} · 暂停 ${counts.paused}`);
     return lines.join("\n");
+  }
+
+  /** 机器可读状态：全部未终态任务 + 最近完成，逐条带派生阶段；供外部脚本与监控消费 */
+  private stateView(): string {
+    const { store } = this.deps;
+    const tasks = [...store.activeTasks(), ...store.recentFinished(5)];
+    return JSON.stringify({
+      now: this.now(),
+      tasks: tasks.map((t) => ({
+        id: t.id,
+        status: t.status,
+        stage: deriveStage(t),
+        repo: t.repo,
+        prompt: preview(t.prompt, 60),
+        prUrl: t.prUrl,
+        createdAt: t.createdAt,
+        startedAt: t.startedAt,
+        endedAt: t.endedAt,
+      })),
+    });
   }
 
   /** 立即执行一个已进入 running 的任务；不等待完成 */
@@ -212,6 +235,7 @@ export class Router {
       const t = msg.text.trim();
       if (t === "/start" || t === "/help" || t === "帮助") cmd = { kind: "help", body: "" };
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
+      else if (t === "/state") cmd = { kind: "state", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
@@ -324,6 +348,11 @@ export class Router {
 
     if (cmd.kind === "status") {
       await this.reply(msg.chatId, this.statusBoard());
+      return;
+    }
+
+    if (cmd.kind === "state") {
+      await this.reply(msg.chatId, this.stateView());
       return;
     }
 

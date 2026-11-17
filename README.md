@@ -134,6 +134,7 @@ bun run src/index.ts
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
 /pisa status                     任务看板（私聊可用 /status）
+/pisa state                      任务状态 JSON，含派生阶段（私聊可用 /state）
 ```
 
 撤销：
@@ -153,11 +154,22 @@ Telegram 启动时用 `setMyCommands` 注册命令菜单（私聊可直接点选
 
 `/pisa status` 分三段：
 
-- **运行中**：每行 `任务号 · 仓库 · 已运行 3m12s · 需求前 40 字`
-- **排队**：数量 + 最多 5 条 `任务号 · 仓库 · 需求前 40 字`
-- **最近完成**：最多 5 条 `状态 · 耗时 · 仓库 · 需求前 30 字 · PR 链接`
+- **运行中**：每行 `任务号 · 阶段 · 仓库 · 已运行 3m12s · 需求前 40 字`
+- **排队**：数量 + 最多 5 条 `任务号 · 阶段 · 仓库 · 需求前 40 字`
+- **最近完成**：最多 5 条 `状态 · 阶段 · 耗时 · 仓库 · 需求前 30 字 · PR 链接`
 
 末尾一行汇总 `总数 / 成功 / 失败 / 暂停`；某段为空时显示 `(无)`。
+
+阶段是从 `status` 与 PR 派生的投影，回答「现在在等谁」，不改写 `status`：
+
+| 阶段 | 何时 | 等谁 |
+| --- | --- | --- |
+| `person/answer` | `paused`（进程重启中断） | 请求者决定 `resume` 还是 `cancel` |
+| `person/review` | `succeeded` 且有 PR | 人评审与 `merge` |
+| `working/queued` | `queued` / `running` | 工作进程（等槽位或执行中） |
+| `idle` | 成功但无 PR、`failed`、`cancelled`、`rewound` | 无人 |
+
+`/pisa state` 返回一行 JSON：`{"now":<毫秒>,"tasks":[{"id","status","stage","repo","prompt","prUrl","createdAt","startedAt","endedAt"}]}`，覆盖全部未终态任务（含看板不单列的 `paused`）加最近 5 条终态任务。
 
 进程重启后，工作副本与会话都还在的 `running` 任务进入 `paused`，可用 `resume` 拉回执行；缺任一条的标记 `failed`。
 

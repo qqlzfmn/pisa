@@ -139,6 +139,7 @@ export type CommandKind =
   | "cancel"
   | "help"
   | "status"
+  | "state"
   | "schedules"
   | "continue"
   | "merge"
@@ -161,6 +162,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "cancel", alias: "取消", description: "取消任务", menu: true },
   { command: "help", alias: "帮助", description: "查看命令帮助", menu: true },
   { command: "status", alias: "状态", description: "查看任务看板", menu: true },
+  // 机器可读状态：不进菜单、不参与错拼建议（与 status 太近，会抢走 /pisa stat 的提示）
+  { command: "state", description: "任务状态 JSON（含阶段）" },
   { command: "schedules", alias: "定时", description: "查看定时任务", menu: true },
   { command: "continue", alias: "继续", description: "接着上一轮分支继续", menu: true },
   { command: "merge", alias: "合并", description: "把已完成任务合入主干", menu: true },

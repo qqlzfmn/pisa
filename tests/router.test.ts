@@ -86,11 +86,16 @@ describe("parseCommand", () => {
   test("确认命令", () => {
     expect(parseCommand("/pisa confirm", "/pisa")).toEqual({ kind: "confirm", body: "" });
   });
+
+  test("状态视图命令", () => {
+    expect(parseCommand("/pisa state", "/pisa")).toEqual({ kind: "state", body: "" });
+  });
 });
 
 describe("taskGuard", () => {
   test("命令错拼给出建议", () => {
     expect(taskGuard("stats")).toEqual({ kind: "suggest", command: "status" });
+    expect(taskGuard("stat")).toEqual({ kind: "suggest", command: "status" });
     expect(taskGuard("cancell")).toEqual({ kind: "suggest", command: "cancel" });
   });
 
@@ -529,13 +534,48 @@ describe("Router", () => {
     await router.handle(msg("/pisa status"));
 
     const text = channel.sent.at(-1)!.text;
-    expect(text).toContain("t_running · demo · 已运行 3m12s");
+    expect(text).toContain("t_running · working/queued · demo · 已运行 3m12s");
     expect(text).toContain(longPrompt.slice(0, 40));
     expect(text).not.toContain(longPrompt);
     expect(text).toContain("排队（1）");
-    expect(text).toContain("t_queued · demo · 排队中的事");
-    expect(text).toContain("成功 · 4m0s · demo · 加一条校验 · https://github.com/o/r/pull/12");
+    expect(text).toContain("t_queued · working/queued · demo · 排队中的事");
+    expect(text).toContain("成功 · person/review · 4m0s · demo · 加一条校验 · https://github.com/o/r/pull/12");
     expect(text).toContain("汇总：3 个任务 · 成功 1 · 失败 0 · 暂停 0");
+  });
+
+  test("state 视图：JSON 含阶段，覆盖中断任务", async () => {
+    const now = 1_700_000_000_000;
+    seedTask({ id: "t_paused", prompt: "中断的任务", status: "running", createdAt: now - 900_000 });
+    expect(store.transition("t_paused", "paused")).toBe(true);
+    seedTask({ id: "t_run", prompt: "跑着的任务", createdAt: now - 800_000 });
+    expect(store.claimQueued("t_run", now - 790_000, "pisa/t_run")).toBe(true);
+    seedTask({ id: "t_review", prompt: "待评审", createdAt: now - 700_000 });
+    expect(store.claimQueued("t_review", now - 690_000, "pisa/t_review")).toBe(true);
+    expect(
+      store.transition("t_review", "succeeded", { endedAt: now - 600_000, prUrl: "https://github.com/o/r/pull/3" }),
+    ).toBe(true);
+
+    const router = build(okWorker, () => now);
+    await router.handle(msg("/pisa state"));
+
+    const body = JSON.parse(channel.sent.at(-1)!.text) as {
+      now: number;
+      tasks: Array<{ id: string; status: string; stage: string }>;
+    };
+    expect(body.now).toBe(now);
+    const byId = new Map(body.tasks.map((t) => [t.id, t]));
+    expect(byId.get("t_paused")).toMatchObject({ status: "paused", stage: "person/answer" });
+    expect(byId.get("t_run")).toMatchObject({ status: "running", stage: "working/queued" });
+    expect(byId.get("t_review")).toMatchObject({ status: "succeeded", stage: "person/review" });
+    expect(store.recentTasks().length).toBe(3);
+  });
+
+  test("私聊 /state 不走任务", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/state", { isDirect: true }));
+
+    expect(store.recentTasks().length).toBe(0);
+    expect(JSON.parse(channel.sent.at(-1)!.text)).toEqual({ now: expect.any(Number), tasks: [] });
   });
 
   test("recentTasks 限制数量并按创建时间倒序", () => {
