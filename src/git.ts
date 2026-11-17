@@ -13,6 +13,39 @@ export function sh(args: string[], cwd?: string): ExecResult {
   };
 }
 
+export interface LimitedResult extends ExecResult {
+  timedOut: boolean;
+}
+
+/**
+ * 受限环境 + 超时执行不可信命令。
+ * 超时直接 SIGKILL：被测代码不可信，不能指望它响应 SIGTERM；验证进程一次性，无需优雅收尾。
+ */
+export async function runWithLimit(
+  args: string[],
+  opts: { cwd: string; env: Record<string, string>; timeoutSec: number },
+): Promise<LimitedResult> {
+  const proc = Bun.spawn(args, {
+    cwd: opts.cwd,
+    env: opts.env,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    proc.kill(9);
+  }, Math.max(1, opts.timeoutSec) * 1000);
+  const [code, out, err] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  clearTimeout(timer);
+  return { code: timedOut ? -1 : (code ?? -1), out: out.trim(), err: err.trim(), timedOut };
+}
+
 export function isGitRepo(path: string): boolean {
   return sh(["git", "-C", path, "rev-parse", "--git-dir"]).code === 0;
 }

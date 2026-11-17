@@ -32,7 +32,7 @@ const input = {
   workdir: "/tmp/wt",
   extensionPath: "/tmp/ext.ts",
   progressFile: "/tmp/p.jsonl",
-  cfg: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1 },
+  cfg: { adapter: "omp", command: "omp", timeoutSec: 60, verifyTimeoutSec: 600, extraArgs: [], concurrency: 1 },
 };
 
 describe("WorkerAdapter", () => {

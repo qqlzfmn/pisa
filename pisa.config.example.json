@@ -16,6 +16,7 @@
     "adapter": "omp",
     "command": "omp",
     "timeoutSec": 3600,
+    "verifyTimeoutSec": 600,
     "extraArgs": [],
     "concurrency": 2
   },

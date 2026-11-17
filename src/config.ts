@@ -43,7 +43,15 @@ export interface Config {
   dmWithoutTrigger: boolean;
   whitelist: { users: string[]; repos: string[] };
   repos: RepoConfig[];
-  worker: { adapter: string; command: string; timeoutSec: number; extraArgs: string[]; concurrency: number };
+  worker: {
+    adapter: string;
+    command: string;
+    timeoutSec: number;
+    /** /pisa merge 验证命令的超时（秒）；默认 600 */
+    verifyTimeoutSec: number;
+    extraArgs: string[];
+    concurrency: number;
+  };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string; proxy?: string } };
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
@@ -73,7 +81,7 @@ export const DEFAULT_CONFIG: Config = {
   dmWithoutTrigger: true,
   whitelist: { users: [], repos: [] },
   repos: [],
-  worker: { adapter: "omp", command: "omp", timeoutSec: 3600, extraArgs: [], concurrency: 2 },
+  worker: { adapter: "omp", command: "omp", timeoutSec: 3600, verifyTimeoutSec: 600, extraArgs: [], concurrency: 2 },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
   stateDir: ".pisa",

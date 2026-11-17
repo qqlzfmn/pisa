@@ -290,6 +290,9 @@ pisa 可以改自己：
 
 1. 给机器人发需求（或从 webhook 投递），Worker 在 `pisa/<任务号>` 分支上改代码
 2. `/pisa merge <任务号>`：在临时副本跑 `bun test`，通过后 `--ff-only` 合入 `main`
+   - 验证命令只拿到 `PATH`、`HOME`、临时目录与语言区域等基础变量，看不到 `GH_TOKEN`、`PISA_TELEGRAM_TOKEN`
+   - 超时默认 600 秒（`worker.verifyTimeoutSec` 可配）：超时杀掉验证进程，回「未合并 · 验证超时」，主干不变
+   - 测试失败输出经脱敏后进回执
 3. 看护模式（`PISA_SUPERVISED=1`）下进程退出，`scripts/supervise.sh` 拉起新代码
 
 这条链路已经实测：任务改 README → merge → 进程 PID 变化 → 新内容生效。

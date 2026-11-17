@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store";
@@ -38,7 +38,7 @@ function makeCfg(repoPath: string, stateDir: string): Config {
     dmWithoutTrigger: true,
     whitelist: { users: ["u1"], repos: ["demo"] },
     repos: [{ alias: "demo", path: repoPath, baseBranch: "main" }],
-    worker: { adapter: "omp", command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1 },
+    worker: { adapter: "omp", command: "noop", timeoutSec: 5, verifyTimeoutSec: 600, extraArgs: [], concurrency: 1 },
     delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
     channels: { cli: true },
     stateDir,
@@ -54,6 +54,17 @@ function msg(text: string, over: Partial<IncomingMessage> = {}): IncomingMessage
     text,
     ...over,
   };
+}
+
+/** 看护模式下合并成功会自行退出进程；跑测试时不能带上，否则杀掉测试进程 */
+async function withoutSupervisor<T>(fn: () => Promise<T>): Promise<T> {
+  const supervised = process.env.PISA_SUPERVISED;
+  delete process.env.PISA_SUPERVISED;
+  try {
+    return await fn();
+  } finally {
+    if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+  }
 }
 
 const okWorker: WorkerRunner = {
@@ -455,10 +466,7 @@ describe("Router", () => {
   });
 
   test("merge 把任务分支合入主干", async () => {
-    // 看护模式下合并成功会自行退出进程；跑测试时不能带上，否则杀掉测试进程
-    const supervised = process.env.PISA_SUPERVISED;
-    delete process.env.PISA_SUPERVISED;
-    try {
+    await withoutSupervisor(async () => {
       const router = build(okWorker);
       await router.handle(msg("/pisa 新建 out.txt"));
       await router.drainOnce();
@@ -467,8 +475,88 @@ describe("Router", () => {
       await router.handle(msg(`/pisa merge ${id}`));
       expect(channel.sent.some((s) => s.text.includes("已合并"))).toBe(true);
       expect(sh(["git", "-C", repo, "cat-file", "-e", "main:out.txt"]).code).toBe(0);
+    });
+  });
+
+  /** 在任务分支上写一个测试文件并等到任务成功，返回任务号 */
+  async function taskWithTest(file: string, source: string): Promise<string> {
+    const worker: WorkerRunner = {
+      async run(_task, workdir): Promise<WorkerResult> {
+        mkdirSync(join(workdir, "tests"), { recursive: true });
+        writeFileSync(join(workdir, "tests", file), source);
+        return { ok: true, summary: `加了 tests/${file}`, exitCode: 0 };
+      },
+    };
+    const router = build(worker);
+    await router.handle(msg("/pisa 加一个测试"));
+    await router.drainOnce();
+    return store.recentTasks()[0]!.id;
+  }
+
+  test("merge 验证超时：未合并且主干不变", async () => {
+    await withoutSupervisor(async () => {
+      cfg.worker.verifyTimeoutSec = 2;
+      // 真实 30 秒测试是断言语义本身：超时要作用在 bun test 子进程的墙钟上，
+      // 假时钟驱动不了独立子进程，这里必须用真实计时器。
+      const id = await taskWithTest(
+        "slow.test.ts",
+        [
+          `import { expect, test } from "bun:test";`,
+          `test("慢测试", async () => {`,
+          `  await new Promise((r) => setTimeout(r, 30_000));`,
+          `  expect(1).toBe(1);`,
+          `});`,
+          ``,
+        ].join("\n"),
+      );
+      const before = sh(["git", "-C", repo, "rev-parse", "main"]).out;
+
+      const t0 = Date.now();
+      await build(okWorker).handle(msg(`/pisa merge ${id}`));
+      const elapsed = Date.now() - t0;
+
+      expect(elapsed).toBeLessThan(5000);
+      const text = channel.sent.at(-1)!.text;
+      expect(text).toContain("未合并");
+      expect(text).toContain("验证超时");
+      expect(sh(["git", "-C", repo, "rev-parse", "main"]).out).toBe(before);
+      expect(sh(["git", "-C", repo, "cat-file", "-e", "main:tests/slow.test.ts"]).code).not.toBe(0);
+    });
+  });
+
+  // 凭据是否真的不传由 tests/env.test.ts 直接断言；这里验证合并回执不出现明文（脱敏兜底）
+  test("merge 验证的输出不把 token 带进回执", async () => {
+    const previous = process.env.GH_TOKEN;
+    const secret = `ghp_${"A".repeat(24)}`;
+    const planted = `ghp_${"B".repeat(24)}`;
+    process.env.GH_TOKEN = secret;
+    try {
+      await withoutSupervisor(async () => {
+        const id = await taskWithTest(
+          "env.test.ts",
+          [
+            `import { test } from "bun:test";`,
+            `test("环境", () => {`,
+            `  const present = process.env.GH_TOKEN !== undefined;`,
+            `  throw new Error("ENV_PRESENT=" + present + " LEAK=" + String(process.env.GH_TOKEN) + " PLANTED=${planted}");`,
+            `});`,
+            ``,
+          ].join("\n"),
+        );
+        const before = sh(["git", "-C", repo, "rev-parse", "main"]).out;
+
+        await build(okWorker).handle(msg(`/pisa merge ${id}`));
+
+        const text = channel.sent.at(-1)!.text;
+        expect(text).toContain("测试失败");
+        expect(text).toContain("ENV_PRESENT=false");
+        expect(text).not.toContain(secret);
+        expect(text).not.toContain(planted);
+        expect(sh(["git", "-C", repo, "rev-parse", "main"]).out).toBe(before);
+      });
     } finally {
-      if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+      if (previous === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = previous;
     }
   });
 

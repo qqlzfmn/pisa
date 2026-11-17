@@ -100,7 +100,7 @@ function makeCfg(repoPath: string, stateDir: string, github?: Config["github"]):
     dmWithoutTrigger: true,
     whitelist: { users: ["u1"], repos: ["demo"] },
     repos: [{ alias: "demo", path: repoPath, baseBranch: "main" }],
-    worker: { adapter: "omp", command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1 },
+    worker: { adapter: "omp", command: "noop", timeoutSec: 5, verifyTimeoutSec: 600, extraArgs: [], concurrency: 1 },
     delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
     channels: { cli: true },
     github,

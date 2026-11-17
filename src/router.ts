@@ -7,7 +7,8 @@ import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./type
 import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
-import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
+import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, runWithLimit, sh } from "./git";
+import { workerEnv } from "./env";
 import {
   defaultRunner,
   formatReply,
@@ -19,7 +20,7 @@ import {
   type Runner,
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
-import { TaskLogger } from "./log";
+import { redact, TaskLogger } from "./log";
 
 export interface RouterDeps {
   cfg: Config;
@@ -507,14 +508,24 @@ export class Router {
     try {
       const hasTests = existsSync(join(verifyDir, "tests")) || existsSync(join(verifyDir, "test"));
       if (hasTests) {
-        const test = sh(["bun", "test"], verifyDir);
-        ok = test.code === 0;
-        detail = ok ? "测试通过" : `测试失败：\n${(test.err || test.out).slice(-600)}`;
+        const timeoutSec = cfg.worker.verifyTimeoutSec || 600;
+        const test = await runWithLimit(["bun", "test"], {
+          cwd: verifyDir,
+          env: workerEnv(),
+          timeoutSec,
+        });
+        ok = test.code === 0 && !test.timedOut;
+        detail = test.timedOut
+          ? `验证超时（${timeoutSec}s）`
+          : ok
+            ? "测试通过"
+            : `测试失败：\n${(test.err || test.out).slice(-600)}`;
       }
     } finally {
       removeWorktree(repo.path, verifyDir);
       deleteBranch(repo.path, verifyBranch);
     }
+    detail = redact(detail);
 
     if (!ok) {
       await this.reply(msg.chatId, `未合并 · ${task.id}\n${detail}`);
