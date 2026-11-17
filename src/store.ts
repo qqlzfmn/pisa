@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   context          TEXT,
   reply_pr         INTEGER,
   reply_issue      INTEGER,
+  reply_repo       TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -62,6 +63,7 @@ interface Row {
   context: string | null;
   reply_pr: number | null;
   reply_issue: number | null;
+  reply_repo: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -87,6 +89,7 @@ function toTask(r: Row): Task {
     context: r.context,
     replyPr: r.reply_pr,
     replyIssue: r.reply_issue,
+    replyRepo: r.reply_repo,
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -120,6 +123,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_issue")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_issue INTEGER");
+    }
+    if (!cols.some((c) => c.name === "reply_repo")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
     }
   }
 
@@ -156,8 +162,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -174,6 +180,7 @@ export class Store {
         t.context,
         t.replyPr,
         t.replyIssue,
+        t.replyRepo,
       ],
     );
   }
@@ -192,12 +199,24 @@ export class Store {
     return res.changes > 0;
   }
 
-  /** 该 PR 下最近一次成功的任务；pr_url 形如 .../pull/<n> */
-  taskByPr(pr: number): Task | null {
+  /**
+   * 该 PR 下最近一次成功的任务；pr_url 形如 .../pull/<n>。
+   * 带 repo 时只认 github.com/<repo>/pull/<n>，避免不同仓库的同号 PR 串任务。
+   */
+  taskByPr(pr: number, repo?: string): Task | null {
     const rows = this.db
       .query("SELECT * FROM tasks WHERE status = 'succeeded' AND pr_url LIKE ? ORDER BY created_at DESC")
       .all(`%/pull/${pr}%`) as Row[];
-    return rows.map(toTask).find((t) => t.prUrl && prNumberFromIssueUrl(t.prUrl) === pr) ?? null;
+    return (
+      rows
+        .map(toTask)
+        .find(
+          (t) =>
+            t.prUrl &&
+            prNumberFromIssueUrl(t.prUrl) === pr &&
+            (!repo || t.prUrl.includes(`github.com/${repo}/pull/${pr}`)),
+        ) ?? null
+    );
   }
 
   nextQueued(): Task | null {
@@ -221,6 +240,7 @@ export class Store {
       context: "context",
       replyPr: "reply_pr",
       replyIssue: "reply_issue",
+      replyRepo: "reply_repo",
       summary: "summary",
       error: "error",
       startedAt: "started_at",

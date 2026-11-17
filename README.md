@@ -241,27 +241,32 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 {
   "github": {
     "enabled": true,
-    "repo": "owner/pisa",
     "intervalSec": 120,
     "tokenEnv": "GH_TOKEN",
-    "chatId": "<telegram chat id>",
-    "userId": "<telegram user id>"
+    "repos": [
+      { "repo": "owner/pisa", "chatId": "<telegram chat id>", "userId": "<telegram user id>" },
+      { "repo": "owner/site", "chatId": "<telegram chat id>", "userId": "<telegram user id>" }
+    ]
   }
 }
 ```
 
+- `repos` 里的每个仓库独立轮询、独立增量下界；`intervalSec` 与 `tokenEnv` 仍是全局配置
+- 旧的单仓库写法 `repo` + `chatId` + `userId` 继续可用；`repos` 非空时优先，旧字段被忽略
+- 某个仓库拉取或类型判定失败只影响它自己：本轮不推进它的下界，其它仓库照常
 - 轮询仓库的 Issue 评论（PR 评论走同一个 API），默认 120 秒一轮
 - 只认正文（去首尾空白）以 `/pisa ` 开头的评论，其余一律忽略
 - 启动时刻作为下界，不回放历史评论；拉取失败不推进下界，下一轮继续
-- 同一条评论按 GitHub 评论 id 去重，重启、轮询重叠都只建一个任务
-- 编号先判定类型（`gh api repos/<repo>/issues/<n>` 看有没有 `pull_request`）：失败就不投递，本轮也不推进下界
-- PR 上已有成功任务时直接在该任务的分支上继续并更新原 PR（不新开分支、不新建 PR）；上下文带 PR 号与原评论；没有就按普通任务处理，正文是去掉触发词的部分
+- 同一条评论按「仓库 + 评论 id」去重（事件 id `github:comment:<repo>:<id>`），重启、轮询重叠都只建一个任务
+- 编号先判定类型（`gh api repos/<repo>/issues/<n>` 看有没有 `pull_request`）：失败就不投递，该仓库本轮也不推进下界
+- PR 上已有成功任务时直接在该任务的分支上继续并更新原 PR（不新开分支、不新建 PR）；任务按仓库匹配，`o/a#7` 与 `o/b#7` 互不干扰。上下文带 PR 号与原评论；没有就按普通任务处理，正文是去掉触发词的部分
 - Issue 评论产生的任务从主干开新分支，不继承任何父分支；完成后把摘要回帖到该 Issue
 - Issue 来源的任务新建 PR 时，正文追加一行 `Closes #<n>`，合并 PR 后自动关闭 Issue
 - 复用分支的任务失败或取消时保留共享分支；任务自己新建的 `pisa/<任务号>` 才会被清理
-- 任务成功后把摘要（限 3000 字）回帖到来源 PR / Issue；回帖失败只写日志，任务状态不变
+- 任务成功后把摘要（限 3000 字）回帖到评论所在的仓库；旧任务或没有仓库记录时回退到配置里的单仓库；回帖失败只写日志，任务状态不变
+- GitHub 评论产生的任务仍落在本地默认仓库：配置里没有 GitHub 仓库到本地别名的映射
 
-`gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由配置的 `chatId` / `userId` 决定。
+`gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
 
 ## 自举
 
@@ -341,7 +346,7 @@ specify → plan → tasks → implement → converge
 - pi 集成：Worker 挂 pisa 扩展，工具级进度上报 + 命令拦截 + 分支续跑
 - 自举：`/pisa merge` 验证后合入主干，看护进程拉起新代码
 - 订阅绑定：回复任务消息即续跑（消息 → 任务映射落库）
-- GitHub 评论：`/pisa` 触发轮询；PR 上已有任务则接续分支，普通 Issue 从主干开新分支；完成后回帖到来源 PR / Issue，Issue 来源的 PR 带 `Closes #<n>`
+- GitHub 评论：`/pisa` 触发多仓库轮询（`github.repos`，旧的单仓库写法兼容），按仓库隔离增量下界、去重与回帖；PR 上已有任务则接续分支，普通 Issue 从主干开新分支；完成后回帖到评论所在仓库，Issue 来源的 PR 带 `Closes #<n>`
 - 主动发现：群聊关键词 + 定时探针
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现

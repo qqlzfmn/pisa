@@ -17,6 +17,8 @@ export interface IncomingMessage {
   replyPr?: number;
   /** 任务完成后回帖到该 Issue（与 replyPr 互斥） */
   replyIssue?: number;
+  /** 回帖目标仓库（owner/repo）；缺省时用 github 配置的单仓库 */
+  replyRepo?: string;
   receivedAt?: number;
 }
 
@@ -40,6 +42,8 @@ export interface Task {
   replyPr: number | null;
   /** 任务完成后回帖到该 Issue；null 表示不回帖 */
   replyIssue: number | null;
+  /** 回帖目标仓库；null 表示回退到 github 配置的单仓库 */
+  replyRepo: string | null;
   summary: string | null;
   error: string | null;
   createdAt: number;

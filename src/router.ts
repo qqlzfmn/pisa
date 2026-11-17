@@ -2,7 +2,7 @@ import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { Config, RepoConfig } from "./config";
-import { parseCommand, repoByAlias, splitRepoAlias } from "./config";
+import { githubRepos, parseCommand, repoByAlias, splitRepoAlias } from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
 import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
@@ -343,6 +343,7 @@ export class Router {
       context,
       replyPr: msg.replyPr ?? null,
       replyIssue: msg.replyIssue ?? null,
+      replyRepo: msg.replyRepo ?? null,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -577,15 +578,17 @@ export class Router {
   /** 回帖到来源 PR / Issue；失败只记日志，不改任务状态 */
   private replyToSource(task: Task, summary: string, log: TaskLogger): void {
     const gh = this.deps.cfg.github;
-    if (!gh?.enabled) return;
+    // 多仓库：任务记住评论所在仓库；旧任务与 IM 触发的回帖退回配置里的单仓库
+    const repo = task.replyRepo ?? githubRepos(gh)[0]?.repo;
+    if (!gh?.enabled || !repo) return;
     const runner = this.deps.ghRunner ?? defaultRunner;
     const body = formatReply(summary);
     if (task.replyPr) {
-      const res = postComment(runner, gh.repo, task.replyPr, body);
+      const res = postComment(runner, repo, task.replyPr, body);
       log.write("reply-pr", res.ok ? `PR #${task.replyPr} 已回帖` : `PR #${task.replyPr} 回帖失败：${res.error.slice(0, 500)}`);
     }
     if (task.replyIssue) {
-      const res = postIssueComment(runner, gh.repo, task.replyIssue, body);
+      const res = postIssueComment(runner, repo, task.replyIssue, body);
       log.write(
         "reply-issue",
         res.ok ? `Issue #${task.replyIssue} 已回帖` : `Issue #${task.replyIssue} 回帖失败：${res.error.slice(0, 500)}`,

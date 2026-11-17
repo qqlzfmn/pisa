@@ -123,6 +123,7 @@ const baseTask: Task = {
   context: null,
   replyPr: null,
   replyIssue: null,
+  replyRepo: null,
   summary: null,
   error: null,
   createdAt: 0,
@@ -281,7 +282,7 @@ describe("GitHub 评论 → 任务", () => {
     expect(tasks[0]!.channel).toBe("github");
     expect(tasks[0]!.chatId).toBe("c1");
     expect(tasks[0]!.requester).toBe("u1");
-    expect(tasks[0]!.source).toBe("github:comment:1");
+    expect(tasks[0]!.source).toBe("github:comment:o/r:1");
     // 启动时刻即下界
     expect(listCall(calls)[2]).toContain("since=2023-11-14T22%3A13%3A20.000Z");
     // 类型判定按编号单独查询
@@ -565,6 +566,203 @@ describe("GitHub 评论 → 任务", () => {
 
     expect(store.recentTasks()[0]!.status).toBe("succeeded");
     expect(calls).toEqual([]);
+  });
+});
+
+describe("GitHub 多仓库轮询", () => {
+  type Comment = { id: number; body: string; issue_url: string };
+
+  /**
+   * 按仓库分派的假 gh：评论、编号类型都按 URL 里的 owner/repo 隔离，
+   * failing 集合里的仓库一拉取就报错。
+   */
+  function multiRepoGh(comments: Record<string, Comment[]>, prs: Record<string, number[]> = {}) {
+    const calls: string[][] = [];
+    const failing = new Set<string>();
+    const runner: Runner = (args) => {
+      calls.push(args);
+      const path = args[2] ?? "";
+      const list = path.match(/^repos\/([^/]+\/[^/]+)\/issues\/comments/);
+      if (list) {
+        const repo = list[1]!;
+        if (failing.has(repo)) return reply(1, "", `gh: ${repo} unavailable`);
+        return apiReply(comments[repo] ?? []);
+      }
+      const type = path.match(/^repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/);
+      if (type) {
+        const repo = type[1]!;
+        if (failing.has(repo)) return reply(1, "", `gh: ${repo} unavailable`);
+        return reply(0, (prs[repo] ?? []).includes(Number(type[2])) ? '{"pull_request":{"url":"x"}}' : "");
+      }
+      return reply(1, "", `unexpected: ${args.join(" ")}`);
+    };
+    return { runner, calls, failing };
+  }
+
+  function listCallFor(calls: string[][], repo: string): string[] {
+    return calls.find((c) => (c[2] ?? "").startsWith(`repos/${repo}/issues/comments`))!;
+  }
+
+  let repo: string;
+  let stateDir: string;
+  let store: Store;
+  let channel: FakeChannel;
+
+  beforeEach(() => {
+    repo = makeRepo();
+    stateDir = mkdtempSync(join(tmpdir(), "pisa-gh-multi-"));
+    store = new Store(":memory:");
+    channel = new FakeChannel();
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  function setup(gh: Config["github"], runner: Runner, clock: () => number) {
+    const cfg = makeCfg(repo, stateDir, gh);
+    cfg.whitelist.users = ["u1", "ua", "ub"];
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    const w = new GithubWatcher({ cfg, store, runner, now: clock, enqueue: (m: IncomingMessage) => router.handle(m) });
+    return { cfg, router, w };
+  }
+
+  test("两个仓库各自建任务，事件 id 与回帖仓库按仓库隔离，重复轮询不重投", async () => {
+    const { runner } = multiRepoGh({
+      "o/a": [{ id: 1, body: "/pisa 改A", issue_url: "https://api.github.com/repos/o/a/issues/20" }],
+      "o/b": [{ id: 1, body: "/pisa 改B", issue_url: "https://api.github.com/repos/o/b/issues/20" }],
+    });
+    const { w } = setup(
+      {
+        enabled: true,
+        repos: [
+          { repo: "o/a", chatId: "ca", userId: "ua" },
+          { repo: "o/b", chatId: "cb", userId: "ub" },
+        ],
+      },
+      runner,
+      () => 1_700_000_000_000,
+    );
+
+    await w.poll();
+    await w.poll();
+
+    const tasks = store.recentTasks();
+    expect(tasks.length).toBe(2);
+    const a = tasks.find((t) => t.prompt === "改A")!;
+    const b = tasks.find((t) => t.prompt === "改B")!;
+    expect(a.source).toBe("github:comment:o/a:1");
+    expect(a.replyRepo).toBe("o/a");
+    expect(a.chatId).toBe("ca");
+    expect(a.requester).toBe("ua");
+    expect(a.replyIssue).toBe(20);
+    expect(b.source).toBe("github:comment:o/b:1");
+    expect(b.replyRepo).toBe("o/b");
+    expect(b.chatId).toBe("cb");
+    expect(b.requester).toBe("ub");
+    expect(b.replyIssue).toBe(20);
+  });
+
+  test("一个仓库失败不推进自己的下界，也不影响另一个仓库", async () => {
+    const comment: Comment = { id: 1, body: "/pisa 改A", issue_url: "https://api.github.com/repos/o/a/issues/20" };
+    const { runner, calls, failing } = multiRepoGh({
+      "o/a": [comment],
+      "o/b": [{ id: 2, body: "/pisa 改B", issue_url: "https://api.github.com/repos/o/b/issues/20" }],
+    });
+    failing.add("o/a");
+    let clock = 1_700_000_000_000;
+    const { w } = setup(
+      {
+        enabled: true,
+        repos: [
+          { repo: "o/a", chatId: "ca", userId: "ua" },
+          { repo: "o/b", chatId: "cb", userId: "ub" },
+        ],
+      },
+      runner,
+      () => clock,
+    );
+
+    await w.poll();
+    // 失败仓库不产任务，另一个照常
+    expect(store.recentTasks().map((t) => t.prompt)).toEqual(["改B"]);
+    const firstA = listCallFor(calls, "o/a")[2]!;
+
+    // 再失败一轮：下界仍不推进
+    clock += 60_000;
+    await w.poll();
+    expect(store.recentTasks().map((t) => t.prompt)).toEqual(["改B"]);
+
+    failing.delete("o/a");
+    clock += 60_000;
+    await w.poll();
+
+    const tasks = store.recentTasks();
+    expect(tasks.map((t) => t.prompt).sort()).toEqual(["改A", "改B"]);
+    // o/a 失败两轮没推进：恢复后仍用启动时刻作为下界
+    const aCalls = calls.filter((c) => (c[2] ?? "").startsWith("repos/o/a/issues/comments"));
+    expect(aCalls[2]![2]).toBe(firstA);
+    // o/b 每轮成功后推进，最后一轮的下界晚于第一轮
+    const bCalls = calls.filter((c) => (c[2] ?? "").startsWith("repos/o/b/issues/comments"));
+    expect(bCalls[2]![2]).not.toBe(bCalls[0]![2]);
+  });
+
+  test("taskByPr 按仓库区分同名 PR 号", () => {
+    const succeed = (id: string, prUrl: string) => {
+      store.insertTask({ ...baseTask, id, prompt: id });
+      store.claimQueued(id, Date.now(), `pisa/${id}`);
+      store.transition(id, "succeeded", { prUrl, endedAt: Date.now() });
+    };
+    succeed("t_a", "https://github.com/o/a/pull/7");
+    succeed("t_b", "https://github.com/o/b/pull/7");
+
+    expect(store.taskByPr(7, "o/a")!.id).toBe("t_a");
+    expect(store.taskByPr(7, "o/b")!.id).toBe("t_b");
+    expect(store.taskByPr(7, "o/c")).toBeNull();
+    // 不带仓库保持旧行为：任意仓库该编号的最新成功任务
+    expect(store.taskByPr(7)!.id).toBe("t_b");
+  });
+
+  test("回帖使用任务记录的仓库", async () => {
+    const cfg = makeCfg(repo, stateDir, {
+      enabled: true,
+      repos: [
+        { repo: "o/a", chatId: "ca", userId: "u1" },
+        { repo: "o/b", chatId: "cb", userId: "u1" },
+      ],
+    });
+    const { runner: ghRunner, calls } = scripted(reply(0));
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner });
+
+    await router.handle({
+      eventId: "github:comment:o/b:42",
+      channel: "github",
+      chatId: "cb",
+      userId: "u1",
+      text: "/pisa 修一下登录",
+      replyPr: 12,
+      replyRepo: "o/b",
+    });
+    await router.drainOnce();
+
+    expect(store.recentTasks()[0]!.replyRepo).toBe("o/b");
+    expect(calls).toEqual([["gh", "pr", "comment", "12", "--repo", "o/b", "--body", `${HEADER}改好了`]]);
+  });
+
+  test("旧配置仍按单仓库轮询与回帖", async () => {
+    const { runner, calls } = multiRepoGh({
+      "o/r": [{ id: 3, body: "/pisa 修一下", issue_url: "https://api.github.com/repos/o/r/issues/21" }],
+    });
+    const { w } = setup({ enabled: true, repo: "o/r", chatId: "c1", userId: "u1" }, runner, () => 1_700_000_000_000);
+    await w.poll();
+
+    const task = store.recentTasks()[0]!;
+    expect(task.source).toBe("github:comment:o/r:3");
+    expect(task.replyRepo).toBe("o/r");
+    expect(task.chatId).toBe("c1");
+    expect(listCallFor(calls, "o/r")[2]).toContain("since=2023-11-14T22%3A13%3A20.000Z");
   });
 });
 

@@ -42,11 +42,20 @@
   },
   "github": {
     "enabled": false,
-    "repo": "owner/pisa",
     "intervalSec": 120,
     "tokenEnv": "GH_TOKEN",
-    "chatId": "<telegram chat id>",
-    "userId": "<telegram user id>"
+    "repos": [
+      {
+        "repo": "owner/pisa",
+        "chatId": "<telegram chat id>",
+        "userId": "<telegram user id>"
+      },
+      {
+        "repo": "owner/site",
+        "chatId": "<telegram chat id>",
+        "userId": "<telegram user id>"
+      }
+    ]
   },
   "scheduler": {
     "chatId": "<telegram chat id>",

@@ -17,6 +17,26 @@ export interface ScheduleJob {
   enabled?: boolean;
 }
 
+/** 一个被监听的 GitHub 仓库；chatId / userId 决定评论产生的任务归属 */
+export interface GithubRepoConfig {
+  repo: string;
+  chatId: string;
+  userId: string;
+}
+
+export interface GithubConfig {
+  enabled: boolean;
+  /** 单仓库旧写法；repos 非空时被忽略 */
+  repo?: string;
+  intervalSec?: number;
+  tokenEnv?: string;
+  /** 单仓库旧写法：任务归属 */
+  chatId?: string;
+  userId?: string;
+  /** 多仓库写法，优先于旧字段 */
+  repos?: GithubRepoConfig[];
+}
+
 export interface Config {
   trigger: string;
   /** 私聊里不带触发词也当成任务 */
@@ -27,8 +47,8 @@ export interface Config {
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string; proxy?: string } };
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
-  /** PR 评论 → 任务 → 回帖；repo 形如 owner/repo */
-  github?: { enabled: boolean; repo: string; intervalSec?: number; tokenEnv?: string; chatId: string; userId: string };
+  /** 评论 → 任务 → 回帖；repo 形如 owner/repo */
+  github?: GithubConfig;
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
   scheduler?: { chatId: string; userId: string };
   schedules?: ScheduleJob[];
@@ -86,6 +106,19 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
 export function repoByAlias(cfg: Config, alias?: string): RepoConfig | undefined {
   if (!alias) return cfg.repos[0];
   return cfg.repos.find((r) => r.alias === alias);
+}
+
+/**
+ * 被监听的 GitHub 仓库清单：repos 优先，否则旧的 repo/chatId/userId 组成单元素数组。
+ * 缺少归属身份的条目直接丢弃，避免投递出没有 chat 的任务。
+ */
+export function githubRepos(gh?: GithubConfig): GithubRepoConfig[] {
+  if (!gh) return [];
+  if (gh.repos && gh.repos.length > 0) {
+    return gh.repos.filter((r) => Boolean(r.repo && r.chatId && r.userId));
+  }
+  if (gh.repo && gh.chatId && gh.userId) return [{ repo: gh.repo, chatId: gh.chatId, userId: gh.userId }];
+  return [];
 }
 
 const REPO_ALIAS_PREFIX = /^@([A-Za-z0-9_-]+)\s+([\s\S]+)$/;
