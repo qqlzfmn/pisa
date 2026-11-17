@@ -1,8 +1,8 @@
 import { join } from "node:path";
-import { BOT_COMMANDS, githubRepos, loadConfig } from "./config";
+import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, githubRepos, loadConfig } from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
-import { Worker } from "./worker";
+import { Worker, workerEnv } from "./worker";
 import { GitDeliverer } from "./deliver";
 import { Proactive } from "./proactive";
 import { GithubWatcher } from "./github-watcher";
@@ -116,6 +116,8 @@ async function main(): Promise<void> {
       console.log(`[pisa] webhook listening on 127.0.0.1:${cfg.webhook.port}`);
     }
   }
+  const allowedEnv = Object.keys(workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env));
+  console.log(`[pisa] Worker 环境白名单 · ${allowedEnv.join(",") || "(空)"}`);
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
   // 关停：先停调度（最多等 3 秒让执行中的任务收尾），再停通道与数据库，
