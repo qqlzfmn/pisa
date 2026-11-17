@@ -20,6 +20,7 @@
 - [架构](#架构)
 - [与 pi 的关系](#与-pi-的关系)
 - [目录结构](#目录结构)
+- [Web 控制台](#web-控制台)
 - [常驻（launchd）](#常驻launchd)
 - [开发方式](#开发方式)
 - [路线图](#路线图)
@@ -167,6 +168,35 @@ curl -X POST http://127.0.0.1:8799/event \
 ```
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
+
+## Web 控制台
+
+```bash
+bun run web              # 只起控制台，不连 Telegram
+bun run src/index.ts     # 有 IM 通道时一起起；web.enabled 默认 true
+```
+
+启动后日志会打印地址，形如 `http://127.0.0.1:8798/ui?token=…`：
+
+```
+[pisa] web console http://127.0.0.1:8798/ui?token=…
+[pisa] ready · channel=web · repos=pisa · concurrency=1
+```
+
+- **token**：先取 `PISA_WEB_TOKEN`，没有就读 `.pisa/web_token`，再没有就生成一份（0600）。重启后书签仍可用。
+- **页面**：运行中 / 排队 / 最近完成 三段看板，按仓库筛选；点任务看需求、状态、耗时、分支、PR 和日志尾部；可以派活、取消、合并到主干（二次确认，合并前在临时副本跑测试）、复制任务号。每 3 秒自动刷新。
+- **接口**：与页面同一套鉴权。
+
+| 方法与路径 | 作用 |
+| --- | --- |
+| `GET /ui` | 单页控制台 |
+| `GET /api/tasks?repo=<别名>` | 看板数据（分组、计数、仓库清单） |
+| `GET /api/tasks/<任务号>` | 任务详情 + 日志尾部（最近 200 行） |
+| `POST /api/tasks` | 派活，body `{"prompt":"…","repo":"<别名>"}` |
+| `POST /api/tasks/<任务号>/cancel` | 取消 |
+| `POST /api/tasks/<任务号>/merge` | 合并到主干 |
+
+只监听 `127.0.0.1`；要从其它机器访问请自己开 SSH 隧道。网页写操作按管理员处理，可以取消、合并任何人的任务；IM 侧仍只允许原请求者。
 
 ## 多仓库
 
@@ -359,7 +389,8 @@ specify → plan → tasks → implement → converge
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 89 个全绿；`tsc --noEmit` 无报错
+- Web 控制台：`/ui` 看板 + 派活 + 取消/合并，token 鉴权，单机监听；取消会连 Worker 进程组一起终止
+- 测试 142 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：

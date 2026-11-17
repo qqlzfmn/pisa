@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { BOT_COMMANDS, githubRepos, loadConfig } from "./config";
+import { BOT_COMMANDS, githubRepos, loadConfig, webConfig } from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker } from "./worker";
@@ -9,30 +9,38 @@ import { GithubWatcher } from "./github-watcher";
 import { Scheduler } from "./scheduler";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
+import { WebChannel, startWebServer, type WebServer } from "./web";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
+  /** `--web`：只用网页交互，不起任何 IM 通道 */
+  const webOnly = process.argv.includes("--web");
+  const web = webConfig(cfg);
 
   const store = new Store(join(cfg.stateDir, "pisa.db"));
 
-  let channel: ChannelAdapter;
-  if (wantCli) {
-    channel = new CliChannel();
-  } else if (cfg.channels.telegram?.enabled) {
-    const token = process.env[cfg.channels.telegram.tokenEnv];
-    if (!token) {
-      console.error(`[pisa] 缺少环境变量 ${cfg.channels.telegram.tokenEnv}`);
+  let inner: ChannelAdapter | undefined;
+  if (!webOnly) {
+    if (wantCli) {
+      inner = new CliChannel();
+    } else if (cfg.channels.telegram?.enabled) {
+      const token = process.env[cfg.channels.telegram.tokenEnv];
+      if (!token) {
+        console.error(`[pisa] 缺少环境变量 ${cfg.channels.telegram.tokenEnv}`);
+        process.exit(1);
+      }
+      inner = new TelegramChannel(token, process.env.PISA_TELEGRAM_PROXY ?? cfg.channels.telegram.proxy);
+    } else if (cfg.channels.cli) {
+      inner = new CliChannel();
+    } else if (!web.enabled) {
+      console.error("[pisa] 没有启用的通道");
       process.exit(1);
     }
-    channel = new TelegramChannel(token, process.env.PISA_TELEGRAM_PROXY ?? cfg.channels.telegram.proxy);
-  } else if (cfg.channels.cli) {
-    channel = new CliChannel();
-  } else {
-    console.error("[pisa] 没有启用的通道");
-    process.exit(1);
   }
+  // 网页回执留在内存，不投递给 IM
+  const channel = new WebChannel(inner);
   const activeChannel = channel;
 
   // Telegram 命令菜单：失败只告警，不阻断启动
@@ -79,6 +87,17 @@ async function main(): Promise<void> {
   if (gh?.enabled) {
     const watched = githubRepos(gh).map((r) => r.repo);
     console.log(`[pisa] GitHub 评论轮询已启用 · ${watched.join(", ") || "(无仓库)"}`);
+  }
+
+  // 网页控制台：只绑本机；端口占用只告警，不影响调度与已有任务
+  let webServer: WebServer | null = null;
+  if (webOnly || web.enabled) {
+    try {
+      webServer = startWebServer({ cfg, store, router, channel });
+      console.log(`[pisa] web console ${webServer.url}`);
+    } catch (err) {
+      console.warn(`[pisa] 控制台启动失败：${(err as Error).message}`);
+    }
   }
 
   // 事件入口：CI / 监控 / 脚本可以把任务推进来
@@ -128,6 +147,7 @@ async function main(): Promise<void> {
     proactive.stop();
     githubWatcher.stop();
     scheduler.stop();
+    webServer?.stop();
     await activeChannel.stop();
     store.close();
     process.exit(75);

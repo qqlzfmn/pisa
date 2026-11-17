@@ -37,6 +37,17 @@ export interface GithubConfig {
   repos?: GithubRepoConfig[];
 }
 
+/** 网页控制台：只绑本机回环地址 */
+export interface WebConfig {
+  /** daemon 启动时是否内置控制台 */
+  enabled: boolean;
+  port: number;
+  /** 鉴权 token 的环境变量名；为空时读 stateDir/web_token */
+  tokenEnv: string;
+  /** 网页写操作的身份；缺省取白名单第一个用户 */
+  userId?: string;
+}
+
 export interface Config {
   trigger: string;
   /** 私聊里不带触发词也当成任务 */
@@ -47,6 +58,8 @@ export interface Config {
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string; proxy?: string } };
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
+  /** 网页控制台；缺省开启，端口 8798 */
+  web?: Partial<WebConfig>;
   /** 评论 → 任务 → 回帖；repo 形如 owner/repo */
   github?: GithubConfig;
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
@@ -78,6 +91,13 @@ export const DEFAULT_CONFIG: Config = {
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
   stateDir: ".pisa",
 };
+
+const DEFAULT_WEB: WebConfig = { enabled: true, port: 8798, tokenEnv: "PISA_WEB_TOKEN" };
+
+/** web 段补默认值；Config 里缺省时视为默认开启 */
+export function webConfig(cfg: Config): WebConfig {
+  return { ...DEFAULT_WEB, ...(cfg.web ?? {}) };
+}
 
 function merge(base: Config, patch: Partial<Config>): Config {
   return {

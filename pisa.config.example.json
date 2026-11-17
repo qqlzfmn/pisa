@@ -40,6 +40,12 @@
     "chatId": "<telegram chat id>",
     "userId": "<telegram user id>"
   },
+  "web": {
+    "enabled": true,
+    "port": 8798,
+    "tokenEnv": "PISA_WEB_TOKEN",
+    "userId": "<telegram user id>"
+  },
   "github": {
     "enabled": false,
     "intervalSec": 120,

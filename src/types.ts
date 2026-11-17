@@ -19,6 +19,8 @@ export interface IncomingMessage {
   replyIssue?: number;
   /** 回帖目标仓库（owner/repo）；缺省时用 github 配置的单仓库 */
   replyRepo?: string;
+  /** 控制台等受信入口：跳过「只有原请求者」校验 */
+  admin?: boolean;
   receivedAt?: number;
 }
 

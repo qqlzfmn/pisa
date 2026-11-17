@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pisa 控制台</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --line: #262b35;
+    --text: #e6e9ef;
+    --dim: #8b93a3;
+    --accent: #5b9dff;
+    --ok: #34c77b;
+    --warn: #e0a33e;
+    --bad: #e05d5d;
+  }
+  * { box-sizing: border-box; }
+  /* 作者样式的 display 会盖掉浏览器对 [hidden] 的默认处理 */
+  [hidden] { display: none !important; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, "PingFang SC", "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 2;
+    flex-wrap: wrap;
+  }
+  h1 { font-size: 16px; margin: 0; letter-spacing: .5px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .chip b { color: var(--text); font-weight: 600; }
+  .spacer { flex: 1; }
+  select, textarea, button {
+    font: inherit;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  main {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    padding: 12px 16px 40px;
+    align-items: start;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  #dispatch {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  #dispatch textarea { flex: 1; resize: vertical; min-height: 42px; }
+  .col h2 {
+    font-size: 13px;
+    margin: 0 0 8px;
+    color: var(--dim);
+    font-weight: 600;
+  }
+  .list { display: flex; flex-direction: column; gap: 8px; }
+  .card {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 10px;
+  }
+  .card:hover { border-color: var(--accent); }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .id { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--accent); }
+  .badge {
+    margin-left: auto;
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--dim);
+  }
+  .badge.running { color: var(--accent); border-color: var(--accent); }
+  .badge.queued { color: var(--warn); border-color: var(--warn); }
+  .badge.paused { color: var(--warn); border-color: var(--warn); }
+  .badge.succeeded { color: var(--ok); border-color: var(--ok); }
+  .badge.failed { color: var(--bad); border-color: var(--bad); }
+  .badge.cancelled { color: var(--dim); }
+  .meta { font-size: 12px; color: var(--dim); margin-top: 2px; }
+  .prompt {
+    font-size: 13px;
+    margin-top: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .empty { color: var(--dim); font-size: 13px; padding: 6px 2px; }
+  #detail {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: min(620px, 100vw);
+    height: 100vh;
+    background: var(--panel);
+    border-left: 1px solid var(--line);
+    padding: 16px;
+    overflow-y: auto;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  #detail h3 { margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 14px; }
+  #detail .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  dl { display: grid; grid-template-columns: 88px 1fr; gap: 4px 10px; margin: 0; font-size: 13px; }
+  dt { color: var(--dim); }
+  dd { margin: 0; word-break: break-word; }
+  dd a { color: var(--accent); }
+  .block { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  .block > span { color: var(--dim); font-size: 12px; }
+  .body {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 220px;
+    overflow: auto;
+  }
+  #log {
+    background: #0b0d11;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin: 0;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 46vh;
+    overflow: auto;
+  }
+  #toast {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%);
+    background: #232833;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    max-width: 80vw;
+    white-space: pre-wrap;
+    z-index: 4;
+  }
+  #toast.bad { border-color: var(--bad); color: #ffb9b9; }
+</style>
+</head>
+<body>
+<header>
+  <h1>pisa</h1>
+  <div class="chips" id="counts"></div>
+  <div class="spacer"></div>
+  <select id="repoFilter" title="按仓库筛选"></select>
+  <button type="button" id="refresh">刷新</button>
+</header>
+
+<main>
+  <form id="dispatch">
+    <textarea id="prompt" rows="2" placeholder="需求…（Ctrl/⌘+Enter 提交）" required></textarea>
+    <select id="repo" title="目标仓库"></select>
+    <button type="submit" id="send">派活</button>
+  </form>
+
+  <section class="col">
+    <h2>运行中 <span class="n" id="n-running"></span></h2>
+    <div class="list" id="list-running"></div>
+  </section>
+  <section class="col">
+    <h2>排队 <span class="n" id="n-queued"></span></h2>
+    <div class="list" id="list-queued"></div>
+  </section>
+  <section class="col">
+    <h2>最近完成 <span class="n" id="n-finished"></span></h2>
+    <div class="list" id="list-finished"></div>
+  </section>
+</main>
+
+<aside id="detail" hidden>
+  <div class="row">
+    <h3 id="d-id"></h3>
+    <span class="badge" id="d-status"></span>
+    <span class="spacer"></span>
+    <button type="button" id="d-close">关闭</button>
+  </div>
+  <div class="actions" id="d-actions"></div>
+  <dl id="d-meta"></dl>
+  <div class="block">
+    <span>需求</span>
+    <div class="body" id="d-prompt"></div>
+  </div>
+  <div class="block" id="d-summary-block" hidden>
+    <span>结果</span>
+    <div class="body" id="d-summary"></div>
+  </div>
+  <div class="block" id="d-error-block" hidden>
+    <span>错误</span>
+    <div class="body" id="d-error"></div>
+  </div>
+  <div class="block">
+    <span>日志尾部</span>
+    <pre id="log"></pre>
+  </div>
+</aside>
+
+<div id="toast" hidden></div>
+
+<script>
+const TOKEN = __PISA_TOKEN__;
+const STATUS = {
+  queued: "排队",
+  running: "运行中",
+  paused: "中断",
+  succeeded: "成功",
+  failed: "失败",
+  cancelled: "取消",
+};
+const POLL_MS = 3000;
+
+const state = { repo: "", detail: null, renderedLog: [], detailSig: "" };
+const els = {
+  counts: document.getElementById("counts"),
+  repoFilter: document.getElementById("repoFilter"),
+  repo: document.getElementById("repo"),
+  prompt: document.getElementById("prompt"),
+  send: document.getElementById("send"),
+  detail: document.getElementById("detail"),
+  log: document.getElementById("log"),
+};
+
+function toast(text, bad) {
+  const el = document.getElementById("toast");
+  el.textContent = text;
+  el.className = bad ? "bad" : "";
+  el.hidden = false;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { el.hidden = true; }, bad ? 6000 : 3000);
+}
+
+async function api(path, options) {
+  const res = await fetch(path, {
+    ...options,
+    headers: { "content-type": "application/json", "x-pisa-token": TOKEN, ...(options && options.headers) },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || body.message || "HTTP " + res.status);
+  return body;
+}
+
+function fmtTime(ms) {
+  return new Date(ms).toLocaleString("zh-CN", { hour12: false });
+}
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function card(task) {
+  const box = el("button", "card");
+  box.type = "button";
+  box.dataset.id = task.id;
+
+  const row = el("div", "row");
+  row.append(el("span", "id", task.id), el("span", "badge " + task.status, STATUS[task.status] || task.status));
+  box.append(row);
+
+  const meta = [task.repo, task.duration || "未开始"];
+  if (task.prUrl) meta.push("PR");
+  if (task.cancelRequested) meta.push("取消中");
+  box.append(el("div", "meta", meta.join(" · ")));
+  box.append(el("div", "prompt", task.prompt));
+
+  box.addEventListener("click", () => openDetail(task.id));
+  return box;
+}
+
+function fillList(id, tasks, emptyText) {
+  const list = document.getElementById(id);
+  list.replaceChildren();
+  if (tasks.length === 0) {
+    list.append(el("div", "empty", emptyText));
+    return;
+  }
+  for (const task of tasks) list.append(card(task));
+}
+
+function fillRepoSelect(select, aliases, withDefault) {
+  // 别名不变就不重建，避免轮询打断下拉选择
+  const key = aliases.join(",");
+  if (select.dataset.key === key) return;
+  select.dataset.key = key;
+  select.replaceChildren();
+  if (withDefault) select.append(new Option("默认仓库", ""));
+  for (const alias of aliases) select.append(new Option(alias, alias));
+}
+
+function paintCounts(data) {
+  els.counts.replaceChildren();
+  for (const key of ["running", "queued", "paused", "succeeded", "failed", "cancelled"]) {
+    const chip = el("span", "chip", STATUS[key] + " ");
+    chip.append(el("b", "", String(data.counts[key] || 0)));
+    els.counts.append(chip);
+  }
+}
+
+async function refreshBoard() {
+  const query = state.repo ? "?repo=" + encodeURIComponent(state.repo) : "";
+  const data = await api("/api/tasks" + query);
+  paintCounts(data);
+  fillRepoSelect(els.repoFilter, data.repos, true);
+  fillRepoSelect(els.repo, data.repos, true);
+  els.repoFilter.value = state.repo;
+  document.getElementById("n-running").textContent = data.running.length;
+  document.getElementById("n-queued").textContent = data.queued.length;
+  document.getElementById("n-finished").textContent = data.finished.length;
+  fillList("list-running", data.running, "没有运行中的任务");
+  fillList("list-queued", data.queued, "队列为空");
+  fillList("list-finished", data.finished, "没有已完成的任务");
+}
+
+function link(href) {
+  const a = el("a", "", href);
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noreferrer";
+  return a;
+}
+
+function paintHead(task) {
+  document.getElementById("d-id").textContent = task.id;
+  const badge = document.getElementById("d-status");
+  badge.className = "badge " + task.status;
+  badge.textContent = STATUS[task.status] || task.status;
+
+  const meta = document.getElementById("d-meta");
+  meta.replaceChildren();
+  const rows = [
+    ["仓库", task.repo],
+    ["耗时", task.duration || "未开始"],
+    ["请求者", task.requester],
+    ["分支", task.branch || "—"],
+    ["创建", fmtTime(task.createdAt)],
+    ["开始", task.startedAt ? fmtTime(task.startedAt) : "—"],
+    ["结束", task.endedAt ? fmtTime(task.endedAt) : "—"],
+  ];
+  for (const [key, value] of rows) {
+    meta.append(el("dt", "", key), el("dd", "", String(value)));
+  }
+  if (task.prUrl && /^https?:\/\//i.test(task.prUrl)) {
+    const dd = el("dd", "");
+    dd.append(link(task.prUrl));
+    meta.append(el("dt", "", "PR"), dd);
+  }
+
+  document.getElementById("d-prompt").textContent = task.prompt;
+
+  const summaryBlock = document.getElementById("d-summary-block");
+  summaryBlock.hidden = !task.summary;
+  document.getElementById("d-summary").textContent = task.summary || "";
+
+  const errorBlock = document.getElementById("d-error-block");
+  errorBlock.hidden = !task.error;
+  document.getElementById("d-error").textContent = task.error || "";
+
+  const actions = document.getElementById("d-actions");
+  actions.replaceChildren();
+
+  const copy = el("button", "", "复制任务号");
+  copy.type = "button";
+  copy.addEventListener("click", () => copyId(task.id));
+  actions.append(copy);
+
+  if (task.status === "queued" || task.status === "running" || task.status === "paused") {
+    const cancel = el("button", "", "取消任务");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => cancelTask(task.id));
+    actions.append(cancel);
+  }
+  if (task.status === "succeeded" && task.branch) {
+    const merge = el("button", "", "合并到主干");
+    merge.type = "button";
+    merge.addEventListener("click", () => mergeTask(task.id));
+    actions.append(merge);
+  }
+}
+
+function paintLog(log) {
+  const lines = log.map((line) =>
+    line.ts ? fmtTime(line.ts) + " " + (line.stage ? "[" + line.stage + "] " : "") + line.msg : line.msg,
+  );
+  const pre = els.log;
+  const prev = state.renderedLog;
+  const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+  const grew = lines.length >= prev.length && prev.every((line, i) => line === lines[i]);
+  if (lines.length === 0) {
+    pre.textContent = "（暂无日志）";
+  } else if (!grew || prev.length === 0) {
+    pre.textContent = lines.join("\n");
+  } else if (lines.length > prev.length) {
+    pre.append(document.createTextNode("\n" + lines.slice(prev.length).join("\n")));
+  }
+  state.renderedLog = lines;
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+}
+
+async function refreshDetail() {
+  if (!state.detail) return;
+  const data = await api("/api/tasks/" + encodeURIComponent(state.detail));
+  if (state.detail !== data.task.id) return;
+  const task = data.task;
+  const sig = [task.status, task.summary, task.error, task.branch, task.prUrl, task.endedAt].join("|");
+  if (sig !== state.detailSig) {
+    state.detailSig = sig;
+    paintHead(task);
+  }
+  paintLog(data.log);
+}
+
+function openDetail(id) {
+  state.detail = id;
+  state.detailSig = "";
+  state.renderedLog = [];
+  els.log.textContent = "";
+  els.detail.hidden = false;
+  refreshDetail().catch((err) => toast(err.message, true));
+}
+
+function closeDetail() {
+  state.detail = null;
+  els.detail.hidden = true;
+}
+
+async function copyId(id) {
+  try {
+    await navigator.clipboard.writeText(id);
+    toast("已复制 " + id);
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = id;
+    document.body.append(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+    toast("已复制 " + id);
+  }
+}
+
+async function cancelTask(id) {
+  if (!confirm("确认取消 " + id + "？")) return;
+  try {
+    const out = await api("/api/tasks/" + encodeURIComponent(id) + "/cancel", { method: "POST", body: "{}" });
+    toast(out.message, !out.ok);
+    await refreshBoard();
+    await refreshDetail();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function mergeTask(id) {
+  if (!confirm("确认把 " + id + " 合并到主干？合并前会在临时副本跑测试。")) return;
+  try {
+    const out = await api("/api/tasks/" + encodeURIComponent(id) + "/merge", { method: "POST", body: "{}" });
+    toast(out.message + (out.followUp ? "\n" + out.followUp : ""), !out.ok);
+    await refreshBoard();
+    await refreshDetail();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function send(ev) {
+  ev.preventDefault();
+  const prompt = els.prompt.value.trim();
+  if (!prompt) return;
+  els.send.disabled = true;
+  try {
+    const out = await api("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({ prompt, repo: els.repo.value || undefined }),
+    });
+    toast("已接单 · " + out.task.id);
+    els.prompt.value = "";
+    await refreshBoard();
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    els.send.disabled = false;
+  }
+}
+
+document.getElementById("dispatch").addEventListener("submit", send);
+document.getElementById("refresh").addEventListener("click", () => {
+  refreshBoard().catch((err) => toast(err.message, true));
+  refreshDetail().catch((err) => toast(err.message, true));
+});
+els.repoFilter.addEventListener("change", () => {
+  state.repo = els.repoFilter.value;
+  refreshBoard().catch((err) => toast(err.message, true));
+});
+document.getElementById("d-close").addEventListener("click", closeDetail);
+els.prompt.addEventListener("keydown", (ev) => {
+  if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") send(ev);
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && state.detail) closeDetail();
+});
+
+refreshBoard().catch((err) => toast(err.message, true));
+setInterval(() => {
+  refreshBoard().catch(() => {});
+  refreshDetail().catch(() => {});
+}, POLL_MS);
+</script>
+</body>
+</html>

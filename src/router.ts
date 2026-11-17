@@ -18,6 +18,14 @@ import {
 } from "./github";
 import { TaskLogger } from "./log";
 
+/** 写命令的结果：IM 把 text 发出去，网页把它当响应体 */
+export interface CommandOutcome {
+  ok: boolean;
+  text: string;
+  /** 需要紧接着再发一条的补充说明（如未看护模式） */
+  followUp?: string;
+}
+
 export interface RouterDeps {
   cfg: Config;
   store: Store;
@@ -278,7 +286,8 @@ export class Router {
     }
 
     if (cmd.kind === "cancel") {
-      await this.handleCancel(msg, cmd.body);
+      const out = this.cancelTask(msg, cmd.body);
+      await this.reply(msg.chatId, out.text);
       return;
     }
 
@@ -288,7 +297,9 @@ export class Router {
     }
 
     if (cmd.kind === "merge") {
-      await this.handleMerge(msg, cmd.body);
+      const out = this.mergeTask(msg, cmd.body);
+      await this.reply(msg.chatId, out.text);
+      if (out.followUp) await this.reply(msg.chatId, out.followUp);
       return;
     }
 
@@ -461,36 +472,24 @@ export class Router {
     return null;
   }
 
-  /** 自举：把已完成任务的分支验证后合入主干 */
-  private async handleMerge(msg: IncomingMessage, body: string): Promise<void> {
-    const { cfg, store, channel } = this.deps;
+  /** 自举：把已完成任务的分支验证后合入主干；返回结果文本，IM 与网页共用 */
+  mergeTask(msg: IncomingMessage, body: string): CommandOutcome {
+    const { cfg, store } = this.deps;
+    const fail = (text: string): CommandOutcome => ({ ok: false, text });
     const id = body.trim();
     const task = id ? store.get(id) : null;
-    if (!task) {
-      await this.reply(msg.chatId, `找不到任务 ${id || ""}`);
-      return;
-    }
-    if (task.requester !== msg.userId) {
-      await this.reply(msg.chatId, "只有原请求者可以合并。");
-      return;
-    }
+    if (!task) return fail(`找不到任务 ${id || ""}`);
+    if (!msg.admin && task.requester !== msg.userId) return fail("只有原请求者可以合并。");
     if (task.status !== "succeeded" || !task.branch) {
-      await this.reply(msg.chatId, `任务 ${task.id} 没有可合并的分支（${task.status}）。`);
-      return;
+      return fail(`任务 ${task.id} 没有可合并的分支（${task.status}）。`);
     }
     const repo = repoByAlias(cfg, task.repo);
-    if (!repo) {
-      await this.reply(msg.chatId, `仓库未配置：${task.repo}`);
-      return;
-    }
+    if (!repo) return fail(`仓库未配置：${task.repo}`);
 
     const verifyBranch = `verify/${task.id}`;
     const verifyDir = resolve(cfg.stateDir, "verify", task.id);
     const wt = createWorktree(repo.path, verifyDir, verifyBranch, task.branch);
-    if (wt.code !== 0) {
-      await this.reply(msg.chatId, `验证副本创建失败：${wt.err.slice(0, 300)}`);
-      return;
-    }
+    if (wt.code !== 0) return fail(`验证副本创建失败：${wt.err.slice(0, 300)}`);
 
     let ok = true;
     let detail = "没有测试目录，跳过测试";
@@ -506,66 +505,47 @@ export class Router {
       deleteBranch(repo.path, verifyBranch);
     }
 
-    if (!ok) {
-      await this.reply(msg.chatId, `未合并 · ${task.id}\n${detail}`);
-      return;
-    }
+    if (!ok) return fail(`未合并 · ${task.id}\n${detail}`);
 
     const base = repo.baseBranch ?? "main";
-    if (currentBranch(repo.path) !== base) {
-      await this.reply(msg.chatId, `主工作区当前不在 ${base}，请先切回再合并。`);
-      return;
-    }
+    if (currentBranch(repo.path) !== base) return fail(`主工作区当前不在 ${base}，请先切回再合并。`);
     const merge = sh(["git", "-C", repo.path, "merge", "--ff-only", task.branch]);
-    if (merge.code !== 0) {
-      await this.reply(msg.chatId, `合并失败：${(merge.err || merge.out).slice(0, 600)}`);
-      return;
-    }
-
-    await this.reply(msg.chatId, `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}`);
+    if (merge.code !== 0) return fail(`合并失败：${(merge.err || merge.out).slice(0, 600)}`);
 
     // 自举：由看护进程拉起新代码
     if (process.env.PISA_SUPERVISED === "1") {
       setTimeout(() => process.exit(1), 800);
-    } else {
-      await this.reply(msg.chatId, "当前不是看护模式，改动在重启后生效。");
+      return { ok: true, text: `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}` };
     }
+    return {
+      ok: true,
+      text: `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}`,
+      followUp: "当前不是看护模式，改动在重启后生效。",
+    };
   }
 
-  private async handleCancel(msg: IncomingMessage, body: string): Promise<void> {
-    const { store, channel } = this.deps;
+  /** 取消任务：排队/中断直接取消，运行中标记取消请求；返回结果文本，IM 与网页共用 */
+  cancelTask(msg: IncomingMessage, body: string): CommandOutcome {
+    const { store } = this.deps;
     let id = body.trim();
     if (!id) {
       const mine = store.recentTasks(20).find(
         (t) =>
           t.chatId === msg.chatId && (t.status === "running" || t.status === "queued" || t.status === "paused"),
       );
-      if (!mine) {
-        await this.reply(msg.chatId, "没有可取消的任务。");
-        return;
-      }
+      if (!mine) return { ok: false, text: "没有可取消的任务。" };
       id = mine.id;
     }
     const task = store.get(id);
-    if (!task) {
-      await this.reply(msg.chatId, `找不到任务 ${id}`);
-      return;
-    }
-    if (task.requester !== msg.userId) {
-      await this.reply(msg.chatId, "只有原请求者可以取消。");
-      return;
-    }
+    if (!task) return { ok: false, text: `找不到任务 ${id}` };
+    if (!msg.admin && task.requester !== msg.userId) return { ok: false, text: "只有原请求者可以取消。" };
     if (task.status === "queued" || task.status === "paused") {
       store.transition(id, "cancelled", { endedAt: this.now() });
-      await this.reply(msg.chatId, `已取消 · ${id}`);
-      return;
+      return { ok: true, text: `已取消 · ${id}` };
     }
-    if (task.status !== "running") {
-      await this.reply(msg.chatId, `任务 ${id} 已结束（${task.status}）`);
-      return;
-    }
+    if (task.status !== "running") return { ok: false, text: `任务 ${id} 已结束（${task.status}）` };
     store.requestCancel(id);
-    await this.reply(msg.chatId, `取消中 · ${id}`);
+    return { ok: true, text: `取消中 · ${id}` };
   }
 
   /** 恢复被进程重启中断的任务：复用原工作副本与会话再次执行 */

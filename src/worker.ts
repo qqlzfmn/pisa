@@ -50,21 +50,36 @@ export class Worker implements WorkerRunner {
       stdout: "pipe",
       stderr: "pipe",
       env: { ...process.env, ...this.adapter.buildEnv(input) },
+      // 独立进程组：取消/超时要连子孙一起杀，否则子进程占着输出管道会让 run() 永远不返回
+      detached: true,
     });
+
+    // 杀掉整个进程组；组不存在时（子进程已退出）退回单个进程
+    const killTree = (signal: "SIGTERM" | "SIGKILL") => {
+      try {
+        process.kill(-proc.pid, signal);
+      } catch {
+        try {
+          proc.kill(signal);
+        } catch {
+          // 进程已退出
+        }
+      }
+    };
 
     let timedOut = false;
     let cancelled = false;
     const killTimer = setTimeout(() => {
       timedOut = true;
-      proc.kill("SIGTERM");
-      setTimeout(() => proc.kill("SIGKILL"), 10_000);
+      killTree("SIGTERM");
+      setTimeout(() => killTree("SIGKILL"), 10_000);
     }, Math.max(1, this.cfg.timeoutSec) * 1000);
 
     const cancelPoll = setInterval(() => {
       if (isCancelled() && !cancelled) {
         cancelled = true;
-        proc.kill("SIGTERM");
-        setTimeout(() => proc.kill("SIGKILL"), 5_000);
+        killTree("SIGTERM");
+        setTimeout(() => killTree("SIGKILL"), 5_000);
       }
     }, 2000);
 
