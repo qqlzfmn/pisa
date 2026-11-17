@@ -64,23 +64,31 @@ function acceptedKeys(body: string): string[] {
   return accepted.map((key) => String(key));
 }
 
-/** 投递收集器：用投递回调唤醒等待，不用固定 sleep */
+/** 投递收集器：只记录，等待交给 untilWrite 的轮询 */
 class Collector {
   readonly got: IncomingMessage[] = [];
-  private waiters: Array<() => void> = [];
+  readonly deliver = (m: IncomingMessage): void => void this.got.push(m);
+}
 
-  readonly deliver = (m: IncomingMessage): void => {
-    this.got.push(m);
-    for (const wake of this.waiters.splice(0)) wake();
-  };
-
-  async until(count: number): Promise<void> {
-    while (this.got.length < count) {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      this.waiters.push(resolve);
-      await promise;
-    }
+/**
+ * `fs.watch` 的事件可能在监听注册完成前丢失（见 spec §4：漏一次会在下一次写入重新触发），
+ * 所以重写同一内容直到命中目标消息。这里必须用真实时间轮询：`fs.watch` 的事件与去抖都由
+ * 平台时钟驱动，fake timer 推进不了操作系统的投递。
+ */
+async function untilWrite(
+  collector: Collector,
+  file: string,
+  content: string,
+  match: (m: IncomingMessage) => boolean,
+): Promise<IncomingMessage> {
+  const deadline = Date.now() + 4000;
+  while (Date.now() < deadline) {
+    const hit = collector.got.find(match);
+    if (hit) return hit;
+    writeFileSync(file, content);
+    await Bun.sleep(50);
   }
+  throw new Error(`等待 ${file} 的事件超时：监听可能未注册或事件未投递`);
 }
 
 // ---------- GitHub Actions ----------
@@ -422,17 +430,14 @@ describe("文件监听", () => {
     return { collector, source };
   }
 
-  test("目录内写入文件后投递一条消息", async () => {
+  test("目录内写入文件后投递事件", async () => {
     const { collector, source } = startSource();
     try {
-      writeFileSync(join(dir, "a.txt"), "alpha\n");
-      await collector.until(1);
-      const [message] = collector.got;
-      expect(collector.got).toHaveLength(1);
-      expect(message!.channel).toBe("files");
-      expect(message!.text).toContain("/pisa ");
-      expect(message!.text).toContain(join(dir, "a.txt"));
-      expect(message!.eventId.startsWith("files:")).toBe(true);
+      const file = join(dir, "a.txt");
+      const message = await untilWrite(collector, file, "alpha\n", (m) => m.text.includes(file));
+      expect(message.channel).toBe("files");
+      expect(message.text).toContain("/pisa ");
+      expect(message.eventId.startsWith("files:")).toBe(true);
     } finally {
       source.stop();
     }
@@ -441,17 +446,13 @@ describe("文件监听", () => {
   test("同一内容重写去重键不变，内容变化后键改变", async () => {
     const { collector, source } = startSource();
     try {
-      writeFileSync(join(dir, "a.txt"), "alpha\n");
-      await collector.until(1);
-      const first = collector.got[0]!.eventId;
+      const file = join(dir, "a.txt");
+      const first = await untilWrite(collector, file, "alpha\n", () => true);
+      const repeat = await untilWrite(collector, file, "alpha\n", (m) => m !== first);
+      expect(repeat.eventId).toBe(first.eventId);
 
-      writeFileSync(join(dir, "a.txt"), "alpha\n");
-      await collector.until(2);
-      expect(collector.got[1]!.eventId).toBe(first);
-
-      writeFileSync(join(dir, "a.txt"), "beta\n");
-      await collector.until(3);
-      expect(collector.got[2]!.eventId).not.toBe(first);
+      const changed = await untilWrite(collector, file, "beta\n", (m) => m.eventId !== first.eventId);
+      expect(changed.eventId).not.toBe(first.eventId);
     } finally {
       source.stop();
     }
@@ -467,14 +468,10 @@ describe("文件监听", () => {
     writeFileSync(target, "one\n");
     const { collector, source } = startSource({ paths: [target] });
     try {
-      // 去抖窗口内写两个文件：只有目标文件进入消息
+      // 同目录的非目标文件不进消息
       writeFileSync(join(dir, "other.txt"), "noise\n");
-      writeFileSync(target, "two\n");
-      await collector.until(1);
-      const [message] = collector.got;
-      expect(collector.got).toHaveLength(1);
-      expect(message!.text).toContain(target);
-      expect(message!.text).not.toContain("other.txt");
+      const message = await untilWrite(collector, target, "two\n", (m) => m.text.includes(target));
+      expect(message.text).not.toContain("other.txt");
     } finally {
       source.stop();
     }
