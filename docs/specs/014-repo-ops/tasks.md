@@ -13,7 +13,7 @@
 
 ## 评审结论（2026-11-18）
 
-**通过**。逐条对照验收 1–6：
+**判定：通过**。无必修项，运行时代码零改动。逐条对照验收 1–6：
 
 | 标准 | 判定 | 依据 |
 | --- | --- | --- |
@@ -40,4 +40,13 @@ for (const p of [".github/ISSUE_TEMPLATE/bug_report.yml",".github/ISSUE_TEMPLATE
   console.log("OK", p);
 }'
 ```
+
+本轮复核（2026-11-18）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `bun test` | 128 pass / 0 fail，7 个文件，6.54s |
+| `bunx tsc --noEmit` | 无错误 |
+| 上面的 YAML 校验脚本 | 四个文件全部 OK；必填项与 spec 一致：bug `steps,expected,actual,env,area`，feature `problem,solution,area` |
+| `bun --version` | 1.4.4，与 `.github/workflows/ci.yml` 的 `bun-version` 相同 |
 

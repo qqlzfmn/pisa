@@ -1,6 +1,6 @@
 # 014 · 仓库工程化外观
 
-- 状态：implemented
+- 状态：implemented；评审结论见 `tasks.md`「评审结论」
 - 关联：SDD.md（规格流程）、AGENTS.md（提交规范与质量要求）
 - 依赖：无
 
