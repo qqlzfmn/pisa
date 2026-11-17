@@ -7,6 +7,7 @@ import { GitDeliverer } from "./deliver";
 import { Proactive } from "./proactive";
 import { GithubWatcher } from "./github-watcher";
 import { Scheduler } from "./scheduler";
+import { startWebConsole } from "./web/server";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import type { ChannelAdapter } from "./types";
@@ -116,6 +117,10 @@ async function main(): Promise<void> {
       console.log(`[pisa] webhook listening on 127.0.0.1:${cfg.webhook.port}`);
     }
   }
+  if (cfg.web?.enabled) {
+    startWebConsole({ cfg, store, configPath: process.env.PISA_CONFIG ?? "pisa.config.json" });
+  }
+
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
   // 关停：先停调度（最多等 3 秒让执行中的任务收尾），再停通道与数据库，

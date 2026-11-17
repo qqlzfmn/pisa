@@ -49,6 +49,8 @@ export interface Config {
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
   /** 评论 → 任务 → 回帖；repo 形如 owner/repo */
   github?: GithubConfig;
+  /** 本机 web 控制台；只监听 127.0.0.1 */
+  web?: { enabled: boolean; port: number };
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
   scheduler?: { chatId: string; userId: string };
   schedules?: ScheduleJob[];
@@ -76,10 +78,11 @@ export const DEFAULT_CONFIG: Config = {
   worker: { adapter: "omp", command: "omp", timeoutSec: 3600, extraArgs: [], concurrency: 2 },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
+  web: { enabled: false, port: 8788 },
   stateDir: ".pisa",
 };
 
-function merge(base: Config, patch: Partial<Config>): Config {
+export function mergeConfig(base: Config, patch: Partial<Config>): Config {
   return {
     ...base,
     ...patch,
@@ -94,7 +97,7 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
   const abs = resolve(path);
   let cfg = DEFAULT_CONFIG;
   if (existsSync(abs)) {
-    cfg = merge(DEFAULT_CONFIG, JSON.parse(readFileSync(abs, "utf8")) as Partial<Config>);
+    cfg = mergeConfig(DEFAULT_CONFIG, JSON.parse(readFileSync(abs, "utf8")) as Partial<Config>);
   }
   // 环境变量覆盖，便于容器与测试
   if (process.env.PISA_TRIGGER) cfg.trigger = process.env.PISA_TRIGGER;

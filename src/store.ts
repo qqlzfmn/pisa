@@ -54,6 +54,17 @@ CREATE TABLE IF NOT EXISTS task_effects (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (task_id, kind, target)
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  at     INTEGER NOT NULL,
+  actor  TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target TEXT NOT NULL,
+  detail TEXT,
+  ok     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at DESC);
 `;
 
 interface Row {
@@ -106,6 +117,16 @@ function toTask(r: Row): Task {
     endedAt: r.ended_at,
     cancelRequested: r.cancel_requested === 1,
   };
+}
+
+export interface AuditEntry {
+  id: number;
+  at: number;
+  actor: string;
+  action: string;
+  target: string;
+  detail: string | null;
+  ok: boolean;
 }
 
 export class Store {
@@ -314,6 +335,15 @@ export class Store {
     return rows.map(toTask);
   }
 
+  /** 创建时间不早于 since 的任务；指标分桶用 */
+  /** 窗口内创建或结束的任务：跨天完成的任务也要算进完成日指标 */
+  tasksTouchedSince(since: number): Task[] {
+    const rows = this.db
+      .query("SELECT * FROM tasks WHERE created_at >= ? OR (ended_at IS NOT NULL AND ended_at >= ?) ORDER BY created_at")
+      .all(since, since) as Row[];
+    return rows.map(toTask);
+  }
+
   /** 终态任务，按创建时间倒序；看板「最近完成」用，先筛后限避免被未完成任务挤掉 */
   recentFinished(limit = 5): Task[] {
     const rows = this.db
@@ -339,6 +369,25 @@ export class Store {
     };
     for (const r of rows) counts[r.status] = r.n;
     return counts;
+  }
+
+  /** 写操作的审计记录；detail 存 JSON 文本，便于回看具体改动 */
+  audit(entry: { actor: string; action: string; target: string; detail?: string | null; ok: boolean; at?: number }): void {
+    this.db.run("INSERT INTO audit_log(at, actor, action, target, detail, ok) VALUES (?, ?, ?, ?, ?, ?)", [
+      entry.at ?? Date.now(),
+      entry.actor,
+      entry.action,
+      entry.target,
+      entry.detail ?? null,
+      entry.ok ? 1 : 0,
+    ]);
+  }
+
+  auditLog(limit = 50): AuditEntry[] {
+    const rows = this.db
+      .query("SELECT id, at, actor, action, target, detail, ok FROM audit_log ORDER BY id DESC LIMIT ?")
+      .all(limit) as Array<Omit<AuditEntry, "ok"> & { ok: number }>;
+    return rows.map((r) => ({ ...r, ok: r.ok === 1 }));
   }
 
   close(): void {

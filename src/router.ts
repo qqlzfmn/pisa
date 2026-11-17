@@ -15,11 +15,12 @@ import {
   postIssueComment,
   postReplyOnce,
   prNumberFromIssueUrl,
-  prStatus,
   type Runner,
 } from "./github";
-import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import { applyRewind, formatRewindPlan, formatRewindResult, planRewind } from "./rewind";
+import { rewindProbes } from "./rewind-probes";
 import { TaskLogger } from "./log";
+import { formatDuration } from "./format";
 
 export interface RouterDeps {
   cfg: Config;
@@ -37,14 +38,6 @@ function newId(now = Date.now()): string {
   const d = new Date(now);
   const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
   return `t_${ymd}_${randomBytes(3).toString("hex")}`;
-}
-
-/** 毫秒 → 人类可读时长：不足 1 分钟给秒，不足 1 小时给 XmYs，其余 XhYm */
-export function formatDuration(ms: number): string {
-  const sec = Math.max(0, Math.floor(ms / 1000));
-  if (sec < 60) return `${sec}s`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m${sec % 60}s`;
-  return `${Math.floor(sec / 3600)}h${Math.floor((sec % 3600) / 60)}m`;
 }
 
 /** 需求单行预览：折叠换行与连续空白，超长截断并补省略号 */
@@ -545,16 +538,6 @@ export class Router {
     }
   }
 
-  /** 探测点：预览与执行都只读这些状态 */
-  private rewindProbes(runner: Runner): RewindProbes {
-    return {
-      branchExists: (repoPath, branch) =>
-        sh(["git", "-C", repoPath, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).code === 0,
-      worktreeExists: (path) => existsSync(path),
-      prState: (repo, n) => prStatus(runner, repo, n),
-    };
-  }
-
   /**
    * `/pisa rewind <任务号> [--yes]`：先给预览，带 --yes 才执行。
    * 已合并的任务用 revert 提交回退；无法确认 PR 状态时不动分支，避免误删已合并成果。
@@ -595,7 +578,7 @@ export class Router {
     const plan = planRewind(task, store.effectsOf(id), {
       repoPath: repo.path,
       baseBranch: repo.baseBranch ?? "main",
-      probes: this.rewindProbes(runner),
+      probes: rewindProbes(runner),
     });
     if (!yes) {
       await this.reply(msg.chatId, formatRewindPlan(plan, cfg.trigger));
