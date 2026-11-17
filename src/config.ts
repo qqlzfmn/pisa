@@ -140,6 +140,7 @@ export type CommandKind =
   | "help"
   | "status"
   | "schedules"
+  | "prompts"
   | "continue"
   | "merge"
   | "resume"
@@ -162,6 +163,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "help", alias: "帮助", description: "查看命令帮助", menu: true },
   { command: "status", alias: "状态", description: "查看任务看板", menu: true },
   { command: "schedules", alias: "定时", description: "查看定时任务", menu: true },
+  { command: "prompts", alias: "提示词", description: "查看提示词分层与差异", menu: true },
   { command: "continue", alias: "继续", description: "接着上一轮分支继续", menu: true },
   { command: "merge", alias: "合并", description: "把已完成任务合入主干", menu: true },
   { command: "resume", alias: "恢复", description: "恢复被中断的任务", menu: true },
@@ -187,6 +189,7 @@ const TAKES_BODY: Partial<Record<CommandKind, true>> = {
   merge: true,
   resume: true,
   rewind: true,
+  prompts: true,
 };
 
 export interface ParsedCommand {

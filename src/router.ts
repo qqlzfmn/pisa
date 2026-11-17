@@ -5,6 +5,8 @@ import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
 import type { Store } from "./store";
+import type { PromptSet } from "./prompts";
+import { formatPromptDiff, formatPromptSummary } from "./prompts";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
 import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
@@ -27,6 +29,8 @@ export interface RouterDeps {
   worker: WorkerRunner;
   deliverer: Deliverer;
   channel: ChannelAdapter;
+  /** 启动时装载的提示词分层，供 `/pisa prompts` 查看与 diff */
+  prompts: PromptSet;
   /** 回帖用的 gh 执行器；默认走真实命令，测试注入假实现 */
   ghRunner?: Runner;
   /** 注入以便测试 */
@@ -213,6 +217,8 @@ export class Router {
       if (t === "/start" || t === "/help" || t === "帮助") cmd = { kind: "help", body: "" };
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
+      else if (t === "/prompts" || t.startsWith("/prompts ")) cmd = { kind: "prompts", body: t.slice(8).trim() };
+      else if (t === "提示词") cmd = { kind: "prompts", body: "" };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
@@ -275,6 +281,7 @@ export class Router {
           `${cfg.trigger} merge <任务号>     合并到主干（自举）`,
           `${cfg.trigger} rewind <任务号>    预览任务副作用（--yes 执行撤销）`,
           `${cfg.trigger} schedules      查看定时任务（私聊可用 /schedules）`,
+          `${cfg.trigger} prompts [diff] 查看提示词分层与覆盖差异`,
           `${cfg.trigger} confirm        确认刚被拦下的单英文词任务`,
           `${cfg.trigger} help           本帮助（私聊可用 /help）`,
         ].join("\n"),
@@ -319,6 +326,15 @@ export class Router {
         (j) => `${j.id} · ${j.cron} · ${j.repo ?? "默认仓库"} · ${j.enabled === false ? "停用" : "启用"}`,
       );
       await this.reply(msg.chatId, `定时任务（${jobs.length}）\n${lines.join("\n")}`);
+      return;
+    }
+
+    if (cmd.kind === "prompts") {
+      const arg = cmd.body.trim();
+      const set = this.deps.prompts;
+      if (arg === "") await this.reply(msg.chatId, formatPromptSummary(set, cfg.trigger));
+      else if (arg === "diff") await this.reply(msg.chatId, formatPromptDiff(set));
+      else await this.reply(msg.chatId, `用法：${cfg.trigger} prompts 查看分层，${cfg.trigger} prompts diff 查看覆盖差异。`);
       return;
     }
 

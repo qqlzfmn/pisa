@@ -1,4 +1,5 @@
 import type { Config } from "../config";
+import type { PromptSet } from "../prompts";
 import type { Task } from "../types";
 
 export interface AdapterInput {
@@ -7,6 +8,8 @@ export interface AdapterInput {
   extensionPath: string;
   progressFile: string;
   cfg: Config["worker"];
+  /** 启动时装载的提示词分层 */
+  prompts: PromptSet;
   /** 恢复中断任务时的原会话 id；新任务为 null */
   resumeSessionId?: string | null;
 }

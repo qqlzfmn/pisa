@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { getAdapter } from "../src/adapters";
+import { loadPrompts } from "../src/prompts";
 import type { Task } from "../src/types";
 
 const task: Task = {
@@ -33,6 +35,7 @@ const input = {
   extensionPath: "/tmp/ext.ts",
   progressFile: "/tmp/p.jsonl",
   cfg: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1 },
+  prompts: loadPrompts(join(import.meta.dir, "..", "prompts")),
 };
 
 describe("WorkerAdapter", () => {
@@ -58,6 +61,16 @@ describe("WorkerAdapter", () => {
     const args = getAdapter("omp").buildArgs(input);
     expect(args).not.toContain("-r");
     expect(args[args.indexOf("-p") + 1]).not.toContain("上一次执行被中断");
+  });
+
+  test("提示词来自注入的 PromptSet，可通过覆盖段落改内容", () => {
+    const custom = {
+      ...input.prompts,
+      segments: { ...input.prompts.segments, intro: "团队开场：任务 {{id}}" },
+    };
+    const args = getAdapter("omp").buildArgs({ ...input, prompts: custom });
+    expect(args[args.indexOf("-p") + 1]).toContain("团队开场：任务 t_1");
+    expect(args[args.indexOf("-p") + 1]).toContain("修一下登录");
   });
 
   test("只取 assistant 的 message_end", () => {

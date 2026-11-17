@@ -18,6 +18,7 @@ import { Store } from "../src/store";
 import { Router } from "../src/router";
 import { GitDeliverer, prBody } from "../src/deliver";
 import { createWorktree, sh, type ExecResult } from "../src/git";
+import { PROMPTS } from "./fixtures";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
@@ -335,7 +336,7 @@ describe("GitHub 评论 → 任务", () => {
   });
 
   function watcher(runner: Runner, now = () => 1_700_000_000_000) {
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    const router = new Router({ cfg, store, prompts: PROMPTS, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
     const w = new GithubWatcher({ cfg, store, runner, now, enqueue: (m: IncomingMessage) => router.handle(m) });
     return { router, w };
   }
@@ -449,7 +450,7 @@ describe("GitHub 评论 → 任务", () => {
         return { ok: true, summary: "再改一处", exitCode: 0 };
       },
     };
-    const router = new Router({ cfg, store, worker: editingWorker, deliverer: new GitDeliverer(cfg), channel });
+    const router = new Router({ cfg, store, prompts: PROMPTS, worker: editingWorker, deliverer: new GitDeliverer(cfg), channel });
     await router.handle({
       eventId: "github:comment:20",
       channel: "github",
@@ -520,6 +521,7 @@ describe("GitHub 评论 → 任务", () => {
     const router = new Router({
       cfg,
       store,
+      prompts: PROMPTS,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
       channel,
@@ -551,7 +553,7 @@ describe("GitHub 评论 → 任务", () => {
       if (args[1] === "api") return threadBodies([`上一轮回帖\n\n${replyMarker(store.recentTasks()[0]!.id, "pr")}`]);
       return reply(0);
     };
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner });
+    const router = new Router({ cfg, store, prompts: PROMPTS, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner });
     await router.handle({
       eventId: "github:comment:13",
       channel: "github",
@@ -575,6 +577,7 @@ describe("GitHub 评论 → 任务", () => {
     const router = new Router({
       cfg,
       store,
+      prompts: PROMPTS,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
       channel,
@@ -603,6 +606,7 @@ describe("GitHub 评论 → 任务", () => {
     const router = new Router({
       cfg,
       store,
+      prompts: PROMPTS,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
       channel,
@@ -635,6 +639,7 @@ describe("GitHub 评论 → 任务", () => {
     const router = new Router({
       cfg,
       store,
+      prompts: PROMPTS,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
       channel,
@@ -664,6 +669,7 @@ describe("GitHub 评论 → 任务", () => {
     const router = new Router({
       cfg,
       store,
+      prompts: PROMPTS,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
       channel,
@@ -739,7 +745,7 @@ describe("GitHub 多仓库轮询", () => {
   function setup(gh: Config["github"], runner: Runner, clock: () => number) {
     const cfg = makeCfg(repo, stateDir, gh);
     cfg.whitelist.users = ["u1", "ua", "ub"];
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    const router = new Router({ cfg, store, prompts: PROMPTS, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
     const w = new GithubWatcher({ cfg, store, runner, now: clock, enqueue: (m: IncomingMessage) => router.handle(m) });
     return { cfg, router, w };
   }
@@ -849,7 +855,7 @@ describe("GitHub 多仓库轮询", () => {
       ],
     });
     const { runner: ghRunner, calls } = scripted(reply(0));
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner });
+    const router = new Router({ cfg, store, prompts: PROMPTS, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner });
 
     await router.handle({
       eventId: "github:comment:o/b:42",

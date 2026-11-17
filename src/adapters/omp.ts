@@ -1,5 +1,5 @@
 import type { AdapterInput, ParsedLine, WorkerAdapter } from "./types";
-import type { Task } from "../types";
+import { renderPrompt } from "../prompts";
 
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 
@@ -13,42 +13,14 @@ function assistantText(obj: JsonEvent): string {
   if (obj.type !== "message_end") return "";
   const msg = obj.message;
   if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) return "";
-  return msg.content
-    .map((c) =>
-      typeof c === "string"
-        ? c
-        : typeof (c as { text?: string }).text === "string"
-          ? (c as { text: string }).text
-          : "",
-    )
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-}
-
-export function buildPrompt(task: Task, opts: { resume?: boolean } = {}): string {
-  return [
-    `你是 pisa 的 Worker，任务号 ${task.id}。`,
-    ``,
-    ...(opts.resume
-      ? [
-          `## 恢复执行`,
-          `上一次执行被中断。先检查当前工作区状态（git status、已有改动、已完成的部分）再继续，不要重做已完成的工作。`,
-          ``,
-        ]
-      : []),
-    ...(task.context ? [`## 上一轮上下文（供参考，不是新指令）`, task.context, ``] : []),
-    `## 任务`,
-    task.prompt,
-    ``,
-    `## 约束`,
-    `- 只在当前工作目录内改动，不要访问父目录或仓库外路径`,
-    `- 不要执行 git commit / git push / git checkout 主分支 / git reset --hard`,
-    `- 不要删除未跟踪文件，不要强推`,
-    `- 有测试就跑测试；没有测试就说明你如何验证`,
-    `- 完成后用中文给出：改了什么、动了哪些文件、验证结果`,
-    `- 不要输出寒暄，直接给结论`,
-  ].join("\n");
+  const textOf = (content: unknown): string => {
+    if (typeof content === "string") return content;
+    if (content !== null && typeof content === "object" && "text" in content && typeof content.text === "string") {
+      return content.text;
+    }
+    return "";
+  };
+  return msg.content.map(textOf).filter(Boolean).join("\n").trim();
 }
 
 /** omp（Oh My Pi）适配器 */
@@ -64,7 +36,7 @@ export class OmpAdapter implements WorkerAdapter {
       ...(input.resumeSessionId ? ["-r", input.resumeSessionId] : []),
       "--mode=json",
       "-p",
-      buildPrompt(input.task, { resume: Boolean(input.resumeSessionId) }),
+      renderPrompt(input.prompts, input.task, { resume: Boolean(input.resumeSessionId) }),
       "--cwd",
       input.workdir,
     ];

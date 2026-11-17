@@ -9,6 +9,7 @@ import { parseCommand, taskGuard, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh, changedFiles, createWorktree } from "../src/git";
+import { PROMPTS } from "./fixtures";
 
 class FakeChannel implements ChannelAdapter {
   name = "fake";
@@ -144,7 +145,7 @@ describe("Router", () => {
   });
 
   function build(worker: WorkerRunner, now?: () => number) {
-    return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel, now });
+    return new Router({ cfg, store, prompts: PROMPTS, worker, deliverer: new GitDeliverer(cfg), channel, now });
   }
 
   /** 直接落一条任务，用于构造续跑/占用场景 */
@@ -249,6 +250,49 @@ describe("Router", () => {
       expect(task.repo).toBe("family");
       expect(task.baseRef).toBe("pisa/parent");
       expect(task.prompt).toBe("再改一处");
+    });
+  });
+
+  describe("提示词命令", () => {
+    test("查看分层与每段来源", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa prompts"));
+      const text = channel.sent.at(-1)!.text;
+      expect(text).toContain(`内置 v${PROMPTS.builtin.version}`);
+      expect(text).toContain("段落（生效来源）");
+      expect(text).toContain("- constraints · 内置");
+      expect(text).toContain("/pisa prompts diff");
+    });
+
+    test("prompts diff 展示覆盖段落的差异", async () => {
+      const overridden = {
+        ...PROMPTS,
+        segments: { ...PROMPTS.segments, task: "任务：{{prompt}}" },
+        sources: { ...PROMPTS.sources, task: "team" as const },
+        team: { version: PROMPTS.builtin.version + 1, segments: { task: "任务：{{prompt}}" } },
+      };
+      const router = new Router({
+        cfg,
+        store,
+        prompts: overridden,
+        worker: okWorker,
+        deliverer: new GitDeliverer(cfg),
+        channel,
+      });
+      await router.handle(msg("/pisa prompts diff"));
+      const text = channel.sent.at(-1)!.text;
+      expect(text).toContain("## task");
+      expect(text).toContain("-## 任务");
+      expect(text).toContain("+任务：{{prompt}}");
+    });
+
+    test("私聊直接 /prompts，非法参数回用法", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/prompts", { isDirect: true }));
+      expect(channel.sent.at(-1)!.text).toContain("段落（生效来源）");
+
+      await router.handle(msg("/prompts nope", { isDirect: true }));
+      expect(channel.sent.at(-1)!.text).toContain("/pisa prompts 查看分层");
     });
   });
 
@@ -498,6 +542,7 @@ describe("Router", () => {
     const router2 = new Router({
       cfg: cfg2,
       store,
+      prompts: PROMPTS,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg2),
       channel,

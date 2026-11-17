@@ -10,6 +10,7 @@ import type { ChannelAdapter, EffectKind, IncomingMessage, Task, WorkerResult } 
 import type { Runner } from "../src/github";
 import type { WorkerRunner } from "../src/worker";
 import { sh } from "../src/git";
+import { PROMPTS } from "./fixtures";
 
 class FakeChannel implements ChannelAdapter {
   name = "fake";
@@ -136,6 +137,7 @@ describe("Router.rewind", () => {
     return new Router({
       cfg,
       store,
+      prompts: PROMPTS,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
       channel,
@@ -296,6 +298,7 @@ describe("Router.rewind", () => {
     const router = new Router({
       cfg,
       store,
+      prompts: PROMPTS,
       worker: okWorker,
       deliverer: new GitDeliverer(cfg),
       channel,

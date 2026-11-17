@@ -99,6 +99,7 @@ pisa/
 │   ├── constitution.md    # 项目宪法：不可协商的架构与质量约束
 │   └── specs/             # 每个 feature 一个目录：spec / plan / tasks
 ├── src/                   # Router、任务调度、事件总线
+├── prompts/               # 提示词分层：内置段落 + 可选团队覆盖
 ├── extensions/            # pi 扩展：进度上报 + 策略拦截
 ├── scripts/supervise.sh   # 崩溃自动重启
 └── tests/
@@ -134,6 +135,7 @@ bun run src/index.ts
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
 /pisa status                     任务看板（私聊可用 /status）
+/pisa prompts [diff]             查看提示词分层与覆盖差异（私聊可用 /prompts）
 ```
 
 撤销：
@@ -175,6 +177,23 @@ curl -X POST http://127.0.0.1:8799/event \
 ```
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
+
+## 提示词分层
+
+Worker 提示词不写在代码里，改措辞只需要改 `prompts/` 下的 JSON，不用发版。
+
+```
+prompts/
+├── builtin.json   # 内置段落，带 version，必须完整
+└── team.json      # 可选：只写要改的段落，未写的回退内置
+```
+
+- 段落固定为 `intro`、`resume`、`context`、`task`、`constraints`，拼接顺序固定：角色在最前、约束在最后
+- `resume` 只在恢复中断任务时出现，`context` 只在上轮上下文非空时出现
+- 占位符只有 `{{id}}`、`{{prompt}}`、`{{context}}`
+- 每层都有 `version`；启动时读两个文件，非法配置直接报错并以退出码 1 结束，不会带病运行：未知顶层键、未知段落、缺段落、空段落、未知占位符、version 不是正整数、JSON 语法错
+- `/pisa prompts` 看分层与每段来源，`/pisa prompts diff` 看被覆盖段落的行级差异
+- 生效的提示词集合在启动时装载一次，注入 Router 与 Worker；改完文件重启生效
 
 ## 多仓库
 

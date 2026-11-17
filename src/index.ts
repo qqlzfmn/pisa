@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { BOT_COMMANDS, githubRepos, loadConfig } from "./config";
+import { loadConfig, BOT_COMMANDS, githubRepos } from "./config";
+import { loadPrompts, type PromptSet } from "./prompts";
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker } from "./worker";
@@ -13,6 +14,16 @@ import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
+
+  // 提示词分层：启动期严格校验，坏配置直接退出，避免半套提示词带病运行
+  let prompts: PromptSet;
+  try {
+    prompts = loadPrompts();
+  } catch (err) {
+    console.error(`[pisa] 提示词加载失败：${(err as Error).message}`);
+    process.exit(1);
+  }
+
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
 
   const store = new Store(join(cfg.stateDir, "pisa.db"));
@@ -53,9 +64,10 @@ async function main(): Promise<void> {
   const router = new Router({
     cfg,
     store,
-    worker: new Worker(cfg.worker, cfg.stateDir),
+    worker: new Worker(cfg.worker, prompts, cfg.stateDir),
     deliverer: new GitDeliverer(cfg),
     channel,
+    prompts,
   });
 
   const recovered = router.recoverInterrupted();

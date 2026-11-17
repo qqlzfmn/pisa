@@ -1,6 +1,7 @@
 import { join, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 import type { Config } from "./config";
+import type { PromptSet } from "./prompts";
 import type { Task, WorkerResult } from "./types";
 import { redact } from "./log";
 import { getAdapter, type WorkerAdapter } from "./adapters";
@@ -21,6 +22,7 @@ export class Worker implements WorkerRunner {
 
   constructor(
     private cfg: Config["worker"],
+    private prompts: PromptSet,
     private stateDir = ".pisa",
   ) {
     this.adapter = getAdapter(cfg.adapter ?? "omp");
@@ -43,6 +45,7 @@ export class Worker implements WorkerRunner {
       extensionPath,
       progressFile: join(progressDir, `${task.id}.jsonl`),
       cfg: this.cfg,
+      prompts: this.prompts,
       resumeSessionId: resume ? task.sessionId : null,
     };
     const proc = Bun.spawn(this.adapter.buildArgs(input), {

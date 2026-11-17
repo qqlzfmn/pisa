@@ -12,4 +12,3 @@ export function getAdapter(name = "omp"): WorkerAdapter {
 }
 
 export type { AdapterInput, ParsedLine, WorkerAdapter } from "./types";
-export { buildPrompt } from "./omp";
