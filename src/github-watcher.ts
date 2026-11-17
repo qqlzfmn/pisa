@@ -1,7 +1,7 @@
 import type { Config } from "./config";
 import type { Store } from "./store";
 import type { IncomingMessage } from "./types";
-import { defaultRunner, listComments, prNumberFromIssueUrl, type Runner } from "./github";
+import { defaultRunner, isPullRequest, listComments, prNumberFromIssueUrl, type Runner } from "./github";
 
 type Enqueue = (m: IncomingMessage) => Promise<void> | void;
 
@@ -15,8 +15,9 @@ export interface GithubWatcherDeps {
 }
 
 /**
- * PR 评论 → 任务：定时拉增量评论，把带触发词的投给 Router。
+ * Issue / PR 评论 → 任务：定时拉增量评论，把带触发词的投给 Router。
  * 去重靠投递时的稳定 eventId（`github:comment:<id>`），由 Router 的 claimEvent 落库。
+ * 编号是 PR 时接续该 PR 的任务并回帖到 PR；是普通 Issue 时从主干开新分支、回帖到 Issue。
  */
 export class GithubWatcher {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -56,24 +57,36 @@ export class GithubWatcher {
         console.warn(`[pisa] GitHub 评论拉取失败：${res.error.slice(0, 300)}`);
         return;
       }
-      this.since = new Date(startedAt).toISOString();
 
       const prefix = `${this.deps.cfg.trigger} `;
+      // 类型判定失败不推进下界：下一轮重试，已投递的评论由 eventId 去重
+      let complete = true;
       for (const comment of res.value) {
         const text = comment.body.trim();
         if (!text.startsWith(prefix)) continue;
-        const pr = prNumberFromIssueUrl(comment.issueUrl);
-        if (!pr) continue;
-        await this.deps.enqueue({
+        const n = prNumberFromIssueUrl(comment.issueUrl);
+        if (!n) continue;
+        const isPr = isPullRequest(this.runner, gh.repo, n);
+        if (!isPr.ok) {
+          console.warn(`[pisa] GitHub 评论类型判定失败 · #${n}：${isPr.error.slice(0, 300)}`);
+          complete = false;
+          continue;
+        }
+        const base = {
           eventId: `github:comment:${comment.id}`,
           channel: "github",
           chatId: gh.chatId,
           userId: gh.userId,
           text,
-          continueFrom: this.deps.store.taskByPr(pr)?.id,
-          replyPr: pr,
-        });
+        };
+        if (isPr.value) {
+          await this.deps.enqueue({ ...base, continueFrom: this.deps.store.taskByPr(n)?.id, replyPr: n });
+        } else {
+          // Issue 没有父分支：从主干开新分支，完成后回帖到 Issue
+          await this.deps.enqueue({ ...base, replyIssue: n });
+        }
       }
+      if (complete) this.since = new Date(startedAt).toISOString();
     } finally {
       this.polling = false;
     }

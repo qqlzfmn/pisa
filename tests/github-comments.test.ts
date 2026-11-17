@@ -4,15 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   formatReply,
+  isPullRequest,
   listComments,
   postComment,
+  postIssueComment,
   prNumberFromIssueUrl,
   type Runner,
 } from "../src/github";
 import { GithubWatcher } from "../src/github-watcher";
 import { Store } from "../src/store";
 import { Router } from "../src/router";
-import { GitDeliverer } from "../src/deliver";
+import { GitDeliverer, prBody } from "../src/deliver";
 import { createWorktree, sh, type ExecResult } from "../src/git";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
@@ -36,6 +38,33 @@ function scripted(...replies: ExecResult[]) {
 
 function apiReply(comments: Array<{ id: number; body: string; issue_url: string }>): ExecResult {
   return reply(0, comments.map((c) => JSON.stringify({ ...c, user: { login: "alice" } })).join("\n"));
+}
+
+/**
+ * 评论轮询与编号类型判定共用的假 gh：按参数分派，记录全部调用。
+ * prs 里的编号判定为 PR（输出非空），其余判定为普通 Issue（输出为空）。
+ */
+function ghRouter(
+  comments: Array<{ id: number; body: string; issue_url: string }>,
+  opts: { prs?: number[]; commentError?: string; typeError?: string } = {},
+) {
+  const calls: string[][] = [];
+  const prs = new Set(opts.prs ?? []);
+  const runner: Runner = (args) => {
+    calls.push(args);
+    const path = args[2] ?? "";
+    if (path.includes("/issues/comments")) return opts.commentError ? reply(1, "", opts.commentError) : apiReply(comments);
+    const m = path.match(/\/issues\/(\d+)$/);
+    if (!m) return reply(1, "", `unexpected: ${args.join(" ")}`);
+    if (opts.typeError) return reply(1, "", opts.typeError);
+    return reply(0, prs.has(Number(m[1])) ? '{"pull_request":{"url":"https://api.github.com/repos/o/r/pulls/12"}}' : "");
+  };
+  return { runner, calls };
+}
+
+/** 评论列表那次调用的参数 */
+function listCall(calls: string[][]): string[] {
+  return calls.find((c) => (c[2] ?? "").includes("/issues/comments"))!;
 }
 
 class FakeChannel implements ChannelAdapter {
@@ -93,6 +122,7 @@ const baseTask: Task = {
   baseRef: null,
   context: null,
   replyPr: null,
+  replyIssue: null,
   summary: null,
   error: null,
   createdAt: 0,
@@ -173,6 +203,34 @@ describe("listComments / postComment", () => {
     const failed = postComment(scripted(reply(1, "", "no token")).runner, "o/r", 12, "正文");
     expect(failed).toEqual({ ok: false, error: "no token" });
   });
+
+  test("Issue 回帖参数", () => {
+    const { runner, calls } = scripted(reply(0));
+    expect(postIssueComment(runner, "o/r", 20, "正文")).toEqual({ ok: true, value: undefined });
+    expect(calls[0]).toEqual(["gh", "issue", "comment", "20", "--repo", "o/r", "--body", "正文"]);
+
+    const failed = postIssueComment(scripted(reply(1, "", "no token")).runner, "o/r", 20, "正文");
+    expect(failed).toEqual({ ok: false, error: "no token" });
+  });
+});
+
+describe("isPullRequest", () => {
+  test("输出非空即 PR，为空即普通 Issue", () => {
+    const pr = scripted(reply(0, '{"url":"https://api.github.com/repos/o/r/pulls/12"}\n'));
+    expect(isPullRequest(pr.runner, "o/r", 12)).toEqual({ ok: true, value: true });
+    expect(pr.calls[0]).toEqual(["gh", "api", "repos/o/r/issues/12", "--jq", ".pull_request // empty"]);
+
+    const issue = scripted(reply(0, "  \n"));
+    expect(isPullRequest(issue.runner, "o/r", 20)).toEqual({ ok: true, value: false });
+  });
+
+  test("命令失败返回错误，不抛出", () => {
+    expect(isPullRequest(scripted(reply(1, "", "gh: Not Found")).runner, "o/r", 20)).toEqual({
+      ok: false,
+      error: "gh: Not Found",
+    });
+    expect(isPullRequest(scripted(reply(1)).runner, "o/r", 20)).toEqual({ ok: false, error: "gh 退出码 1" });
+  });
 });
 
 describe("GitHub 评论 → 任务", () => {
@@ -202,37 +260,65 @@ describe("GitHub 评论 → 任务", () => {
     return { router, w };
   }
 
-  test("只处理触发词开头的评论，并按 PR 号投递", async () => {
-    const { runner, calls } = scripted(
-      apiReply([
-        { id: 1, body: "/pisa 修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/12" },
-        { id: 2, body: "修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/12" },
-        { id: 3, body: "/pisax 不改", issue_url: "https://api.github.com/repos/o/r/issues/12" },
-        { id: 4, body: "/pisa", issue_url: "https://api.github.com/repos/o/r/issues/12" },
-      ]),
-    );
+  test("Issue 评论建任务并绑定 Issue", async () => {
+    const { runner, calls } = ghRouter([
+      { id: 1, body: "/pisa 修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/20" },
+      { id: 2, body: "修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/20" },
+      { id: 3, body: "/pisax 不改", issue_url: "https://api.github.com/repos/o/r/issues/20" },
+      { id: 4, body: "/pisa", issue_url: "https://api.github.com/repos/o/r/issues/20" },
+    ]);
     const { w } = watcher(runner);
     await w.poll();
 
     const tasks = store.recent();
     expect(tasks.length).toBe(1);
     expect(tasks[0]!.prompt).toBe("修一下登录");
-    expect(tasks[0]!.replyPr).toBe(12);
+    expect(tasks[0]!.replyIssue).toBe(20);
+    expect(tasks[0]!.replyPr).toBeNull();
+    // Issue 没有父分支：从主干开新分支
+    expect(tasks[0]!.baseRef).toBeNull();
+    expect(tasks[0]!.branch).toBeNull();
     expect(tasks[0]!.channel).toBe("github");
     expect(tasks[0]!.chatId).toBe("c1");
     expect(tasks[0]!.requester).toBe("u1");
     expect(tasks[0]!.source).toBe("github:comment:1");
     // 启动时刻即下界
-    expect(calls[0]![2]).toContain("since=2023-11-14T22%3A13%3A20.000Z");
+    expect(listCall(calls)[2]).toContain("since=2023-11-14T22%3A13%3A20.000Z");
+    // 类型判定按编号单独查询
+    expect(calls[1]).toEqual(["gh", "api", "repos/o/r/issues/20", "--jq", ".pull_request // empty"]);
   });
 
   test("同一评论轮询两轮只建一个任务", async () => {
-    const comment = { id: 1, body: "/pisa 修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/12" };
-    const { runner } = scripted(apiReply([comment]), apiReply([comment]));
+    const comment = { id: 1, body: "/pisa 修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/20" };
+    const { runner } = ghRouter([comment]);
     const { w } = watcher(runner);
     await w.poll();
     await w.poll();
     expect(store.recent().length).toBe(1);
+  });
+
+  test("类型判定失败不投递，也不推进下界", async () => {
+    const comment = { id: 30, body: "/pisa 修一下", issue_url: "https://api.github.com/repos/o/r/issues/20" };
+    const calls: string[][] = [];
+    let typeBroken = true;
+    const runner: Runner = (args) => {
+      calls.push(args);
+      if ((args[2] ?? "").includes("/issues/comments")) return apiReply([comment]);
+      return typeBroken ? reply(1, "", "gh: rate limited") : reply(0, "");
+    };
+    let clock = 1_700_000_000_000;
+    const { w } = watcher(runner, () => clock);
+
+    await w.poll();
+    expect(store.recent().length).toBe(0);
+
+    typeBroken = false;
+    clock += 60_000;
+    await w.poll();
+    expect(store.recent().length).toBe(1);
+    expect(store.recent()[0]!.replyIssue).toBe(20);
+    // 失败那一轮不推进：两轮的下界相同
+    expect(listCall(calls)[2]).toBe(calls[0]![2]);
   });
 
   test("PR 已有成功任务时接续它的分支", async () => {
@@ -246,8 +332,9 @@ describe("GitHub 评论 → 任务", () => {
       }),
     ).toBe(true);
 
-    const { runner } = scripted(
-      apiReply([{ id: 5, body: "/pisa 再改一处", issue_url: "https://api.github.com/repos/o/r/issues/12" }]),
+    const { runner } = ghRouter(
+      [{ id: 5, body: "/pisa 再改一处", issue_url: "https://api.github.com/repos/o/r/issues/12" }],
+      { prs: [12] },
     );
     const { w } = watcher(runner);
     await w.poll();
@@ -309,8 +396,9 @@ describe("GitHub 评论 → 任务", () => {
   });
 
   test("PR 没有成功任务时按普通任务处理", async () => {
-    const { runner } = scripted(
-      apiReply([{ id: 6, body: "/pisa 补一条测试", issue_url: "https://api.github.com/repos/o/r/issues/99" }]),
+    const { runner } = ghRouter(
+      [{ id: 6, body: "/pisa 补一条测试", issue_url: "https://api.github.com/repos/o/r/issues/99" }],
+      { prs: [99] },
     );
     const { w } = watcher(runner);
     await w.poll();
@@ -320,22 +408,30 @@ describe("GitHub 评论 → 任务", () => {
     expect(task.baseRef).toBeNull();
     expect(task.context).toBeNull();
     expect(task.replyPr).toBe(99);
+    expect(task.replyIssue).toBeNull();
   });
 
   test("拉取失败时不建任务、不推进下界；成功后推进", async () => {
-    const comment = { id: 7, body: "/pisa 修一下", issue_url: "https://api.github.com/repos/o/r/issues/12" };
-    const { runner, calls } = scripted(reply(1, "", "gh: boom"), apiReply([comment]));
+    const comment = { id: 7, body: "/pisa 修一下", issue_url: "https://api.github.com/repos/o/r/issues/20" };
+    const calls: string[][] = [];
+    let listBroken = true;
+    const runner: Runner = (args) => {
+      calls.push(args);
+      if (!(args[2] ?? "").includes("/issues/comments")) return reply(0, "");
+      return listBroken ? reply(1, "", "gh: boom") : apiReply([comment]);
+    };
     let clock = 1_700_000_000_000;
     const { w } = watcher(runner, () => clock);
 
     await w.poll();
     expect(store.recent().length).toBe(0);
 
+    listBroken = false;
     clock += 60_000;
     await w.poll();
     expect(store.recent().length).toBe(1);
     // 失败那一轮不推进：两轮的下界相同
-    expect(calls[1]![2]).toBe(calls[0]![2]);
+    expect(listCall(calls)[2]).toBe(calls[0]![2]);
     expect(calls[0]![2]).toContain("since=2023-11-14T22%3A13%3A20.000Z");
   });
 
@@ -361,6 +457,63 @@ describe("GitHub 评论 → 任务", () => {
 
     expect(store.recent()[0]!.status).toBe("succeeded");
     expect(calls).toEqual([["gh", "pr", "comment", "12", "--repo", "o/r", "--body", `${HEADER}改好了`]]);
+  });
+
+  test("任务成功后向来源 Issue 回帖", async () => {
+    const { runner: ghRunner, calls } = scripted(reply(0));
+    const router = new Router({
+      cfg,
+      store,
+      worker: okWorker,
+      deliverer: new GitDeliverer(cfg),
+      channel,
+      ghRunner,
+    });
+    await router.handle({
+      eventId: "github:comment:11",
+      channel: "github",
+      chatId: "c1",
+      userId: "u1",
+      text: "/pisa 修一下登录",
+      replyIssue: 20,
+    });
+    await router.drainOnce();
+
+    const task = store.recent()[0]!;
+    expect(task.status).toBe("succeeded");
+    expect(task.replyIssue).toBe(20);
+    expect(calls).toEqual([["gh", "issue", "comment", "20", "--repo", "o/r", "--body", `${HEADER}改好了`]]);
+  });
+
+  test("Issue 回帖失败只记日志，任务仍成功", async () => {
+    const router = new Router({
+      cfg,
+      store,
+      worker: okWorker,
+      deliverer: new GitDeliverer(cfg),
+      channel,
+      ghRunner: scripted(reply(1, "", "no token")).runner,
+    });
+    await router.handle({
+      eventId: "github:comment:12",
+      channel: "github",
+      chatId: "c1",
+      userId: "u1",
+      text: "/pisa 修一下登录",
+      replyIssue: 20,
+    });
+    await router.drainOnce();
+
+    const task = store.recent()[0]!;
+    expect(task.status).toBe("succeeded");
+    const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
+    expect(log).toContain("Issue #20 回帖失败");
+    expect(log).toContain("no token");
+  });
+
+  test("reply_issue 落库并读回", () => {
+    store.insertTask({ ...baseTask, id: "t_issue", replyIssue: 20 });
+    expect(store.get("t_issue")!.replyIssue).toBe(20);
   });
 
   test("回帖失败只记日志，任务仍成功", async () => {
@@ -412,6 +565,19 @@ describe("GitHub 评论 → 任务", () => {
 
     expect(store.recent()[0]!.status).toBe("succeeded");
     expect(calls).toEqual([]);
+  });
+});
+
+describe("prBody", () => {
+  test("普通任务不带 Closes", () => {
+    const body = prBody({ id: "t1", prompt: "改登录", replyIssue: null });
+    expect(body).toBe("任务号：t1\n\n改登录\n\n---\n\n由 pisa 自动创建。");
+  });
+
+  test("Issue 来源追加一行，空需求也不残缺", () => {
+    expect(prBody({ id: "t2", prompt: "", replyIssue: 20 })).toBe(
+      "任务号：t2\n\n---\n\n由 pisa 自动创建。\n\nCloses #20",
+    );
   });
 });
 
@@ -489,6 +655,27 @@ describe("GitDeliverer 更新既有 PR", () => {
     const res = await deliverer.deliver({ ...baseTask, id: "t_new", branch: "pisa/parent" }, workdir, cfg.repos[0]!);
 
     expect(calls).toEqual(["pisa/parent"]);
+    expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
+  });
+
+  test("Issue 来源的任务在 PR 正文追加 Closes", async () => {
+    const workdir = setup();
+    const bodies: string[] = [];
+    const deliverer = new GitDeliverer(cfg, {
+      hasGh: () => true,
+      createPr: (_workdir, opts) => {
+        bodies.push(opts.body);
+        return reply(0, "https://github.com/o/r/pull/99");
+      },
+    });
+
+    const res = await deliverer.deliver(
+      { ...baseTask, id: "t_issue", prompt: "", branch: "pisa/parent", replyIssue: 20 },
+      workdir,
+      cfg.repos[0]!,
+    );
+
+    expect(bodies).toEqual(["任务号：t_issue\n\n---\n\n由 pisa 自动创建。\n\nCloses #20"]);
     expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
   });
 });

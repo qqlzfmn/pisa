@@ -17,6 +17,7 @@ const task: Task = {
   baseRef: null,
   context: null,
   replyPr: null,
+  replyIssue: null,
   summary: null,
   error: null,
   createdAt: 0,

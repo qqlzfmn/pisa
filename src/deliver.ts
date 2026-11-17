@@ -14,6 +14,13 @@ export interface Deliverer {
   deliver(task: Task, workdir: string, repo: RepoConfig): Promise<DeliveryResult>;
 }
 
+/** 审核与交付：PR 正文带上任务号与需求；Issue 来源追加 Closes 关联 */
+export function prBody(task: Pick<Task, "id" | "prompt" | "replyIssue">): string {
+  const lines = [`任务号：${task.id}`, task.prompt.trim(), "---", "由 pisa 自动创建。"];
+  if (task.replyIssue) lines.push(`Closes #${task.replyIssue}`);
+  return lines.filter((line) => line !== "").join("\n\n");
+}
+
 /** gh 能力的注入点：测试用假实现验证「更新既有 PR 时不新建 PR」 */
 export interface DelivererDeps {
   createPr?: typeof createPr;
@@ -55,7 +62,7 @@ export class GitDeliverer implements Deliverer {
     if (this.cfg.delivery.pr && pushed && remote.includes("github.com") && ghReady()) {
       const pr = (this.deps.createPr ?? createPr)(workdir, {
         title,
-        body: `任务号：${task.id}\n\n${task.prompt}\n\n---\n由 pisa 自动创建。`,
+        body: prBody(task),
         base,
         head: branch,
       });

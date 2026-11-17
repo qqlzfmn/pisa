@@ -15,6 +15,8 @@ export interface IncomingMessage {
   continueFrom?: string;
   /** 任务完成后回帖到该 PR */
   replyPr?: number;
+  /** 任务完成后回帖到该 Issue（与 replyPr 互斥） */
+  replyIssue?: number;
   receivedAt?: number;
 }
 
@@ -36,6 +38,8 @@ export interface Task {
   context: string | null;
   /** 任务完成后回帖到该 PR；null 表示不回帖 */
   replyPr: number | null;
+  /** 任务完成后回帖到该 Issue；null 表示不回帖 */
+  replyIssue: number | null;
   summary: string | null;
   error: string | null;
   createdAt: number;

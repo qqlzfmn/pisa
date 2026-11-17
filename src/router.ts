@@ -8,7 +8,7 @@ import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
 import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
-import { defaultRunner, formatReply, postComment, type Runner } from "./github";
+import { defaultRunner, formatReply, postComment, postIssueComment, type Runner } from "./github";
 import { TaskLogger } from "./log";
 
 export interface RouterDeps {
@@ -260,6 +260,7 @@ export class Router {
       baseRef,
       context,
       replyPr: msg.replyPr ?? null,
+      replyIssue: msg.replyIssue ?? null,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -491,12 +492,23 @@ export class Router {
     return () => clearInterval(timer);
   }
 
-  /** 回帖到来源 PR；失败只记日志，不改任务状态 */
-  private replyToPr(task: Task, summary: string, log: TaskLogger): void {
+  /** 回帖到来源 PR / Issue；失败只记日志，不改任务状态 */
+  private replyToSource(task: Task, summary: string, log: TaskLogger): void {
     const gh = this.deps.cfg.github;
-    if (!task.replyPr || !gh?.enabled) return;
-    const res = postComment(this.deps.ghRunner ?? defaultRunner, gh.repo, task.replyPr, formatReply(summary));
-    log.write("reply-pr", res.ok ? `PR #${task.replyPr} 已回帖` : `PR #${task.replyPr} 回帖失败：${res.error.slice(0, 500)}`);
+    if (!gh?.enabled) return;
+    const runner = this.deps.ghRunner ?? defaultRunner;
+    const body = formatReply(summary);
+    if (task.replyPr) {
+      const res = postComment(runner, gh.repo, task.replyPr, body);
+      log.write("reply-pr", res.ok ? `PR #${task.replyPr} 已回帖` : `PR #${task.replyPr} 回帖失败：${res.error.slice(0, 500)}`);
+    }
+    if (task.replyIssue) {
+      const res = postIssueComment(runner, gh.repo, task.replyIssue, body);
+      log.write(
+        "reply-issue",
+        res.ok ? `Issue #${task.replyIssue} 已回帖` : `Issue #${task.replyIssue} 回帖失败：${res.error.slice(0, 500)}`,
+      );
+    }
   }
 
   /**
@@ -601,7 +613,7 @@ export class Router {
     });
     removeWorktree(repo.path, workdir);
     log.write("done", `files=${delivery.files.length} pushed=${delivery.pushed}`);
-    this.replyToPr(task, result.summary, log);
+    this.replyToSource(task, result.summary, log);
 
     const fresh = store.get(task.id);
     const lines = [`✅ ${task.id} 完成`, result.summary.slice(0, 1200)];

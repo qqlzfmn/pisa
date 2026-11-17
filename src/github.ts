@@ -65,8 +65,21 @@ export function listComments(runner: Runner, repo: string, sinceIso: string): Gh
   return { ok: true, value: comments };
 }
 
+/** 编号是 PR 还是普通 Issue：PR 对应的 issue 对象带 pull_request 字段 */
+export function isPullRequest(runner: Runner, repo: string, n: number): GhResult<boolean> {
+  const res = runner(["gh", "api", `repos/${repo}/issues/${n}`, "--jq", ".pull_request // empty"]);
+  if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
+  return { ok: true, value: res.out.trim() !== "" };
+}
+
 export function postComment(runner: Runner, repo: string, pr: number, body: string): GhResult {
   const res = runner(["gh", "pr", "comment", String(pr), "--repo", repo, "--body", body]);
+  if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
+  return { ok: true, value: undefined };
+}
+
+export function postIssueComment(runner: Runner, repo: string, issue: number, body: string): GhResult {
+  const res = runner(["gh", "issue", "comment", String(issue), "--repo", repo, "--body", body]);
   if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
   return { ok: true, value: undefined };
 }
