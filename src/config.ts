@@ -1,11 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { CapabilitiesConfig, RepoCapabilities } from "./capabilities";
 
 export interface RepoConfig {
   alias: string;
   path: string;
   remote?: string;
   baseBranch?: string;
+  /** 该仓库任务默认的运行能力；任务可再覆盖 */
+  capabilities?: RepoCapabilities;
 }
 
 /** 一条定时任务：cron 到点后用 prompt 开单 */
@@ -15,6 +18,8 @@ export interface ScheduleJob {
   prompt: string;
   repo?: string;
   enabled?: boolean;
+  /** 定时任务的能力，覆盖仓库默认值 */
+  capabilities?: RepoCapabilities;
 }
 
 /** 一个被监听的 GitHub 仓库；chatId / userId 决定评论产生的任务归属 */
@@ -52,6 +57,8 @@ export interface Config {
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
   scheduler?: { chatId: string; userId: string };
   schedules?: ScheduleJob[];
+  /** 运行能力：全局默认与命名档案，仓库/任务引用后显式放行 */
+  capabilities?: CapabilitiesConfig;
   proactive?: {
     keywords?: { enabled: boolean; words: string[]; cooldownSec?: number; chatId?: string; userId?: string; prompt?: string };
     probe?: {
@@ -76,6 +83,7 @@ export const DEFAULT_CONFIG: Config = {
   worker: { adapter: "omp", command: "omp", timeoutSec: 3600, extraArgs: [], concurrency: 2 },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
+  capabilities: {},
   stateDir: ".pisa",
 };
 

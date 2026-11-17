@@ -249,6 +249,38 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 - `id` 重复或 cron 非法的 job 在启动日志告警后跳过，不影响其他 job
 - `/pisa schedules`（私聊 `/schedules`）查看 id、cron、仓库与启用状态
 
+## 运行能力（capabilities）
+
+Worker 默认只能读写自己的工作副本：网络、密钥、GUI 全部关闭，按仓库或定时任务显式放行。
+
+```json
+{
+  "capabilities": {
+    "default": { "secrets": [], "domains": [], "gui": false },
+    "profiles": {
+      "release": { "domains": ["api.github.com"], "secrets": ["GH_TOKEN"] },
+      "gui": { "gui": true }
+    }
+  },
+  "repos": [
+    { "alias": "pisa", "path": "/absolute/path/to/pisa", "capabilities": { "profile": "release" } },
+    { "alias": "shots", "path": "/absolute/path/to/shots", "capabilities": { "profile": "gui", "readDirs": ["../assets"] } }
+  ],
+  "schedules": [
+    { "id": "deps", "cron": "0 3 * * 1", "prompt": "升级依赖", "capabilities": { "domains": ["registry.npmjs.org"] } }
+  ]
+}
+```
+
+- 解析顺序 `default` → `profile` → 仓库 → 定时任务，后者覆盖前者；引用不存在的 profile 直接拒绝建任务
+- 工作目录始终可读可写；`readDirs` / `writeDirs` 的相对路径按工作目录解析，额外目录通过 `--add-dir` 传给 omp
+- `secrets` 写环境变量名：只有名单内的密钥进 Worker，pisa 自己的 `PISA_TELEGRAM_TOKEN` 等不再透传；名单里的变量缺失时任务直接失败
+- `domains` 为空时任何网络命令被拒绝；非空时命令里出现的主机必须在名单内，子域自动放行
+- `gui` 是独立开关：关闭时 `computer` / `browser` 与 `open` / `osascript` 等命令被拒绝
+- 无论能力如何，`git push`、`git reset --hard`、`git clean -f`、`sudo`、`rm -rf /` 一律拒绝
+- 被拒绝的调用会回帖「拦下一条命令」并写入任务审计；`tasks.capabilities` 留着当次快照
+- 已知边界：扩展与 agent 同进程，不是沙箱；MCP 工具只按 GUI 名称过滤，不受 `domains` 约束
+
 ## GitHub 评论（PR / Issue）
 
 评审人和维护者可以直接在 PR / Issue 评论里派活，不用绕回 IM：

@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
+import { resolveCapabilities } from "./capabilities";
 import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
@@ -398,6 +399,19 @@ export class Router {
       return;
     }
 
+    let capabilities: Task["capabilities"];
+    try {
+      capabilities = resolveCapabilities(
+        cfg.capabilities,
+        resolve(cfg.stateDir, "worktrees", taskId),
+        repo.capabilities,
+        msg.capabilities,
+      );
+    } catch (err) {
+      await this.reply(msg.chatId, `任务未创建：${(err as Error).message}`);
+      return;
+    }
+
     const task: Task = {
       id: taskId,
       source: msg.eventId,
@@ -415,6 +429,7 @@ export class Router {
       replyPr: msg.replyPr ?? null,
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
+      capabilities,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -726,7 +741,7 @@ export class Router {
       void this.reply(task.chatId, text, task.id);
     };
 
-    const timer = setInterval(() => {
+    const read = () => {
       let chunk = "";
       try {
         const buf = readFileSync(file, "utf8");
@@ -745,16 +760,26 @@ export class Router {
           continue;
         }
         if (o.type === "session" && o.sessionId) this.deps.store.setSessionId(task.id, String(o.sessionId));
-        if (o.type === "blocked") push(`⛔ 拦下一条命令：${String(o.detail ?? "").slice(0, 120)}`);
+        if (o.type === "blocked") {
+          const detail = String(o.detail ?? "").slice(0, 200);
+          const reason = String(o.reason ?? "").slice(0, 200);
+          this.deps.store.recordAudit(task.id, "blocked", JSON.stringify({ tool: String(o.tool ?? ""), reason, detail }));
+          push(`⛔ 拦下一条命令：${detail.slice(0, 120)}`);
+        }
         if (o.type !== "tool") continue;
         const tool = String(o.tool ?? "");
         const detail = String(o.detail ?? "").slice(0, 120);
         if (tool === "bash") push(`🛠 ${detail}`);
         else if (/edit|write|patch|create/i.test(tool)) push(`✏️ ${tool}${detail ? " " + detail : ""}`);
       }
-    }, 2000);
+    };
 
-    return () => clearInterval(timer);
+    const timer = setInterval(read, 2000);
+    // 进程退出后补读尾部：最后一条越界记录不能丢
+    return () => {
+      clearInterval(timer);
+      read();
+    };
   }
 
   /** 回帖到来源 PR / Issue；失败只记日志，不改任务状态 */
@@ -823,6 +848,21 @@ export class Router {
     const resuming = existsSync(workdir);
     log.write("start", `${repo.alias} ${branch}`);
 
+    // 快照缺失（升级前接单的任务）时按当前配置补算并落库
+    const caps = task.capabilities ?? resolveCapabilities(cfg.capabilities, workdir, repo.capabilities);
+    if (!task.capabilities) store.setCapabilities(task.id, caps);
+    log.write(
+      "capabilities",
+      JSON.stringify({
+        readDirs: caps.readDirs,
+        writeDirs: caps.writeDirs,
+        secrets: caps.secrets,
+        domains: caps.domains,
+        gui: caps.gui,
+        profile: caps.profile,
+      }),
+    );
+
     if (resuming) {
       log.write("resume", "复用已有工作副本");
     } else {
@@ -854,6 +894,7 @@ export class Router {
         (line) => log.write("worker", line),
         () => store.isCancelRequested(task.id),
         resuming,
+        caps,
       );
     } catch (err) {
       result = { ok: false, summary: "", error: (err as Error).message, exitCode: -1 };

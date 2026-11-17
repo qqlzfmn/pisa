@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Store } from "../src/store";
 import { Router, formatDuration } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
@@ -308,6 +308,64 @@ describe("Router", () => {
     expect(existsSync(join(stateDir, "worktrees", task.id))).toBe(false);
     // 回执
     expect(channel.sent.some((s) => s.text.includes("完成"))).toBe(true);
+  });
+
+  test("能力快照随任务落库，越界记录写入任务审计", async () => {
+    let seen: unknown = null;
+    const worker: WorkerRunner = {
+      async run(task): Promise<WorkerResult> {
+        seen = task.capabilities;
+        const file = join(stateDir, "progress", `${task.id}.jsonl`);
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(
+          file,
+          JSON.stringify({ type: "blocked", tool: "bash", reason: "pisa 策略：未授权网络访问", detail: "curl https://evil.com" }) +
+            "\n",
+        );
+        return { ok: true, summary: "ok", exitCode: 0 };
+      },
+    };
+    const router = build(worker);
+    await router.handle(msg("/pisa 做点事"));
+
+    const task = store.recentTasks()[0]!;
+    expect(task.capabilities?.gui).toBe(false);
+    expect(task.capabilities?.domains).toEqual([]);
+    expect(task.capabilities?.readDirs).toEqual([join(stateDir, "worktrees", task.id)]);
+
+    await router.drainOnce();
+
+    const audit = store.auditOf(task.id);
+    expect(audit.length).toBe(1);
+    expect(audit[0]!.kind).toBe("blocked");
+    expect(audit[0]!.detail).toContain("curl https://evil.com");
+    expect(seen).toEqual(task.capabilities);
+  });
+
+  test("仓库能力配置决定任务快照", async () => {
+    cfg = {
+      ...cfg,
+      capabilities: { profiles: { net: { domains: ["api.github.com"], gui: true } } },
+      repos: [{ alias: "demo", path: repo, baseBranch: "main", capabilities: { profile: "net", secrets: ["GH_TOKEN"] } }],
+    };
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 做点事"));
+    const caps = store.recentTasks()[0]!.capabilities;
+    expect(caps?.profile).toBe("net");
+    expect(caps?.domains).toEqual(["api.github.com"]);
+    expect(caps?.gui).toBe(true);
+    expect(caps?.secrets).toEqual(["GH_TOKEN"]);
+  });
+
+  test("引用未知能力档案时拒绝建任务", async () => {
+    cfg = {
+      ...cfg,
+      repos: [{ alias: "demo", path: repo, baseBranch: "main", capabilities: { profile: "missing" } }],
+    };
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 做点事"));
+    expect(store.recentTasks()).toHaveLength(0);
+    expect(channel.sent.at(-1)?.text).toContain("未知的能力档案：missing");
   });
 
   test("续跑任务失败不删除共享分支", async () => {

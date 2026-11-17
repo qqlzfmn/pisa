@@ -9,9 +9,18 @@
     {
       "alias": "pisa",
       "path": "/absolute/path/to/repo",
-      "baseBranch": "main"
+      "baseBranch": "main",
+      "capabilities": { "profile": "default" }
     }
   ],
+  "capabilities": {
+    "default": { "secrets": [], "domains": [], "gui": false },
+    "profiles": {
+      "default": { "readDirs": [], "writeDirs": [] },
+      "release": { "domains": ["api.github.com"], "secrets": ["GH_TOKEN"] },
+      "gui": { "gui": true }
+    }
+  },
   "worker": {
     "adapter": "omp",
     "command": "omp",
@@ -67,7 +76,8 @@
       "cron": "0 9 * * 1-5",
       "prompt": "检查昨天以来的 CI 失败并修复",
       "repo": "pisa",
-      "enabled": false
+      "enabled": false,
+      "capabilities": { "domains": ["registry.npmjs.org"] }
     }
   ],
   "proactive": {

@@ -165,6 +165,7 @@ export class Scheduler {
           userId: sched.userId,
           text: job.prompt,
           repo: job.repo,
+          capabilities: job.capabilities,
           isDirect: true,
         });
       } catch (e) {

@@ -1,3 +1,5 @@
+import type { RepoCapabilities, ResolvedCapabilities } from "./capabilities";
+
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
 /** 任务对外产生的副作用种类：rewind 的依据 */
@@ -32,6 +34,8 @@ export interface IncomingMessage {
   replyIssue?: number;
   /** 回帖目标仓库（owner/repo）；缺省时用 github 配置的单仓库 */
   replyRepo?: string;
+  /** 任务级能力覆盖（定时任务用）；缺省沿用仓库配置 */
+  capabilities?: RepoCapabilities;
   receivedAt?: number;
 }
 
@@ -57,6 +61,8 @@ export interface Task {
   replyIssue: number | null;
   /** 回帖目标仓库；null 表示回退到 github 配置的单仓库 */
   replyRepo: string | null;
+  /** 接单时解析出的能力快照；旧任务为 null，执行前按当时配置补算 */
+  capabilities?: ResolvedCapabilities | null;
   summary: string | null;
   error: string | null;
   createdAt: number;

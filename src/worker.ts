@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 import type { Config } from "./config";
 import type { Task, WorkerResult } from "./types";
+import { capabilityEnv, type ResolvedCapabilities } from "./capabilities";
 import { redact } from "./log";
 import { getAdapter, type WorkerAdapter } from "./adapters";
 
@@ -13,6 +14,8 @@ export interface WorkerRunner {
     isCancelled: () => boolean,
     /** 恢复中断任务：接着原会话执行 */
     resume?: boolean,
+    /** 任务能力快照：决定 env、可读目录与拒绝清单 */
+    capabilities?: ResolvedCapabilities,
   ): Promise<WorkerResult>;
 }
 
@@ -32,11 +35,14 @@ export class Worker implements WorkerRunner {
     onLog: (line: string) => void,
     isCancelled: () => boolean,
     resume = false,
+    capabilities?: ResolvedCapabilities,
   ): Promise<WorkerResult> {
     const extensionPath = join(import.meta.dir, "..", "extensions", "pisa-worker.ts");
     const progressDir = resolve(this.stateDir, "progress");
     mkdirSync(progressDir, { recursive: true });
 
+    const caps = capabilities ?? task.capabilities ?? null;
+    if (!caps) throw new Error("任务缺少能力快照：拒绝在无策略状态下启动 Worker");
     const input = {
       task,
       workdir,
@@ -44,12 +50,13 @@ export class Worker implements WorkerRunner {
       progressFile: join(progressDir, `${task.id}.jsonl`),
       cfg: this.cfg,
       resumeSessionId: resume ? task.sessionId : null,
+      capabilities: caps,
     };
     const proc = Bun.spawn(this.adapter.buildArgs(input), {
       cwd: workdir,
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, ...this.adapter.buildEnv(input) },
+      env: { ...capabilityEnv(caps, process.env), ...this.adapter.buildEnv(input) },
     });
 
     let timedOut = false;

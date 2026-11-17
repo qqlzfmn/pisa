@@ -1,3 +1,4 @@
+import type { ResolvedCapabilities } from "../capabilities";
 import type { Config } from "../config";
 import type { Task } from "../types";
 
@@ -9,6 +10,8 @@ export interface AdapterInput {
   cfg: Config["worker"];
   /** 恢复中断任务时的原会话 id；新任务为 null */
   resumeSessionId?: string | null;
+  /** 任务能力快照；适配器据此放开工作目录之外的只读路径 */
+  capabilities: ResolvedCapabilities;
 }
 
 export interface ParsedLine {

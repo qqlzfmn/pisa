@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import type { ResolvedCapabilities } from "./capabilities";
 import { prNumberFromIssueUrl } from "./github";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_pr         INTEGER,
   reply_issue      INTEGER,
   reply_repo       TEXT,
+  capabilities     TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -54,7 +56,24 @@ CREATE TABLE IF NOT EXISTS task_effects (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (task_id, kind, target)
 );
+
+CREATE TABLE IF NOT EXISTS task_audit (
+  seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id    TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  detail     TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_audit_task ON task_audit(task_id, seq);
 `;
+
+/** 任务审计事件：目前用于记录越界尝试 */
+export interface AuditEntry {
+  seq: number;
+  kind: string;
+  detail: string;
+  createdAt: number;
+}
 
 interface Row {
   id: string;
@@ -73,6 +92,7 @@ interface Row {
   reply_pr: number | null;
   reply_issue: number | null;
   reply_repo: string | null;
+  capabilities: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -99,6 +119,7 @@ function toTask(r: Row): Task {
     replyPr: r.reply_pr,
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
+    capabilities: r.capabilities ? (JSON.parse(r.capabilities) as ResolvedCapabilities) : null,
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -135,6 +156,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "capabilities")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN capabilities TEXT");
     }
   }
 
@@ -189,10 +213,32 @@ export class Store {
     return res.changes > 0;
   }
 
+  /** 任务的能力快照；接单时确定，执行时按它下发 */
+  setCapabilities(id: string, caps: ResolvedCapabilities): void {
+    this.db.run("UPDATE tasks SET capabilities = ? WHERE id = ?", [JSON.stringify(caps), id]);
+  }
+
+  /** 记一条审计事件；越界尝试不改变任务状态，只留痕 */
+  recordAudit(taskId: string, kind: string, detail: string): void {
+    this.db.run("INSERT INTO task_audit(task_id, kind, detail, created_at) VALUES (?, ?, ?, ?)", [
+      taskId,
+      kind,
+      detail,
+      Date.now(),
+    ]);
+  }
+
+  auditOf(taskId: string): AuditEntry[] {
+    const rows = this.db
+      .query("SELECT seq, kind, detail, created_at FROM task_audit WHERE task_id = ? ORDER BY seq")
+      .all(taskId) as Array<{ seq: number; kind: string; detail: string; created_at: number }>;
+    return rows.map((r) => ({ seq: r.seq, kind: r.kind, detail: r.detail, createdAt: r.created_at }));
+  }
+
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, capabilities)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -210,6 +256,7 @@ export class Store {
         t.replyPr,
         t.replyIssue,
         t.replyRepo,
+        t.capabilities ? JSON.stringify(t.capabilities) : null,
       ],
     );
   }

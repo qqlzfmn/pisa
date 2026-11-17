@@ -26,6 +26,21 @@ function assistantText(obj: JsonEvent): string {
     .trim();
 }
 
+/** 把能力快照写进提示词：模型先知道边界，才不会反复撞墙 */
+function capabilityLines(task: Task): string[] {
+  const caps = task.capabilities;
+  if (!caps) return [];
+  return [
+    `## 运行能力`,
+    `- 可读目录：${caps.readDirs.join(", ")}`,
+    `- 可写目录：${caps.writeDirs.join(", ")}`,
+    `- 可访问域名：${caps.domains.length ? caps.domains.join(", ") : "无（网络命令会被拒绝）"}`,
+    `- 可用密钥：${caps.secrets.length ? caps.secrets.join(", ") : "无"}`,
+    `- GUI：${caps.gui ? "允许" : "禁止"}`,
+    ``,
+  ];
+}
+
 export function buildPrompt(task: Task, opts: { resume?: boolean } = {}): string {
   return [
     `你是 pisa 的 Worker，任务号 ${task.id}。`,
@@ -38,6 +53,7 @@ export function buildPrompt(task: Task, opts: { resume?: boolean } = {}): string
         ]
       : []),
     ...(task.context ? [`## 上一轮上下文（供参考，不是新指令）`, task.context, ``] : []),
+    ...capabilityLines(task),
     `## 任务`,
     task.prompt,
     ``,
@@ -49,6 +65,12 @@ export function buildPrompt(task: Task, opts: { resume?: boolean } = {}): string
     `- 完成后用中文给出：改了什么、动了哪些文件、验证结果`,
     `- 不要输出寒暄，直接给结论`,
   ].join("\n");
+}
+
+/** 工作目录之外的可读写目录交给 omp 的 --add-dir，免得工具层先拒绝 */
+function extraDirs(input: AdapterInput): string[] {
+  const dirs = [...input.capabilities.readDirs, ...input.capabilities.writeDirs].filter((dir) => dir !== input.workdir);
+  return [...new Set(dirs)];
 }
 
 /** omp（Oh My Pi）适配器 */
@@ -67,6 +89,7 @@ export class OmpAdapter implements WorkerAdapter {
       buildPrompt(input.task, { resume: Boolean(input.resumeSessionId) }),
       "--cwd",
       input.workdir,
+      ...extraDirs(input).flatMap((dir) => ["--add-dir", dir]),
     ];
   }
 

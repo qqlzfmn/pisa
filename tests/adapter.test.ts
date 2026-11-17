@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { getAdapter } from "../src/adapters";
+import { resolveCapabilities } from "../src/capabilities";
 import type { Task } from "../src/types";
 
 const task: Task = {
@@ -33,6 +34,7 @@ const input = {
   extensionPath: "/tmp/ext.ts",
   progressFile: "/tmp/p.jsonl",
   cfg: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1 },
+  capabilities: resolveCapabilities(undefined, "/tmp/wt"),
 };
 
 describe("WorkerAdapter", () => {
@@ -71,6 +73,13 @@ describe("WorkerAdapter", () => {
     );
     expect(user.text).toBeUndefined();
     expect(a.parseLine("not json").raw).toBe("not json");
+  });
+
+  test("工作目录之外的放行目录交给 --add-dir", () => {
+    const caps = resolveCapabilities({ default: { readDirs: ["../shared"] } }, "/tmp/wt");
+    const args = getAdapter("omp").buildArgs({ ...input, capabilities: caps });
+    const added = args.flatMap((a, i) => (a === "--add-dir" ? [args[i + 1]!] : []));
+    expect(added).toEqual(["/tmp/shared"]);
   });
 
   test("未知适配器直接报错", () => {
