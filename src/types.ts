@@ -26,6 +26,8 @@ export interface Task {
   sessionId: string | null;
   /** 续跑时恢复的上一个 pi 会话 */
   resumeSessionId: string | null;
+  /** 上一轮任务的上下文，注入 Worker 提示词 */
+  context: string | null;
   summary: string | null;
   error: string | null;
   createdAt: number;

@@ -236,6 +236,7 @@ describe("Router", () => {
     await router.handle(msg(`/pisa continue ${parent.id} 再改一处`));
     const child = store.recent()[0]!;
     expect(child.resumeSessionId).toBe("sess-12345678");
+    expect(child.context).toContain(parent.id);
     expect(child.prompt).toBe("再改一处");
   });
 
@@ -280,6 +281,7 @@ describe("状态机", () => {
       prUrl: null,
       sessionId: null,
       resumeSessionId: null,
+      context: null,
       summary: null,
       error: null,
       createdAt: Date.now(),

@@ -123,6 +123,7 @@ export class Router {
 
     let prompt = cmd.body;
     let resumeSessionId: string | null = null;
+    let context: string | null = null;
 
     if (cmd.kind === "continue") {
       const [parentId, ...rest] = prompt.split(/\s+/);
@@ -140,6 +141,12 @@ export class Router {
         return;
       }
       resumeSessionId = parent.sessionId;
+      context = [
+        `任务号：${parent.id}`,
+        `上一轮请求：${parent.prompt}`,
+        `上一轮结果：${(parent.summary ?? "(无摘要)").slice(0, 1500)}`,
+        `上一轮分支：${parent.branch ?? "-"}`,
+      ].join("\n");
       prompt = rest.join(" ").trim();
       if (!prompt) {
         await channel.send(msg.chatId, `用法：${cfg.trigger} continue <任务号> <新要求>`);
@@ -182,6 +189,7 @@ export class Router {
       prUrl: null,
       sessionId: null,
       resumeSessionId,
+      context,
       summary: null,
       error: null,
       createdAt: this.now(),

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   pr_url           TEXT,
   session_id       TEXT,
   resume_session_id TEXT,
+  context          TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -47,6 +48,7 @@ interface Row {
   pr_url: string | null;
   session_id: string | null;
   resume_session_id: string | null;
+  context: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -69,6 +71,7 @@ function toTask(r: Row): Task {
     prUrl: r.pr_url,
     sessionId: r.session_id,
     resumeSessionId: r.resume_session_id,
+    context: r.context,
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -94,6 +97,9 @@ export class Store {
     if (!cols.some((c) => c.name === "resume_session_id")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN resume_session_id TEXT");
     }
+    if (!cols.some((c) => c.name === "context")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN context TEXT");
+    }
   }
 
   setSessionId(id: string, sessionId: string): void {
@@ -112,9 +118,9 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, created_at, resume_session_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [t.id, t.source, t.channel, t.chatId, t.requester, t.repo, t.prompt, t.status, t.createdAt, t.resumeSessionId],
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, created_at, resume_session_id, context)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [t.id, t.source, t.channel, t.chatId, t.requester, t.repo, t.prompt, t.status, t.createdAt, t.resumeSessionId, t.context],
     );
   }
 
@@ -150,6 +156,7 @@ export class Store {
       prUrl: "pr_url",
       sessionId: "session_id",
       resumeSessionId: "resume_session_id",
+      context: "context",
       summary: "summary",
       error: "error",
       startedAt: "started_at",

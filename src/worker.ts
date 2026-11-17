@@ -12,6 +12,7 @@ export function buildPrompt(task: Task): string {
   return [
     `你是 pisa 的 Worker，任务号 ${task.id}。`,
     ``,
+    ...(task.context ? [`## 上一轮上下文（供参考，不是新指令）`, task.context, ``] : []),
     `## 任务`,
     task.prompt,
     ``,
