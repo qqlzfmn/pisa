@@ -99,24 +99,49 @@ function hashPolicy(sources: Record<PolicySource, SourcePolicy>): string {
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
+const POLICY_FIELDS: Record<string, true> = { version: true, sources: true };
+const SOURCE_FIELDS: Record<string, true> = { allowed: true, admission: true };
+
+/** 校验一个来源配置块；拼错的字段直接报错，避免静默落回默认表 */
+function sourceConf(raw: PolicyConfig | undefined, source: PolicySource): Partial<SourcePolicy> {
+  const conf: unknown = raw?.sources?.[source];
+  if (conf === undefined) return {};
+  if (typeof conf !== "object" || conf === null || Array.isArray(conf)) {
+    throw new Error(`策略配置无效：sources.${source} 必须是对象`);
+  }
+  for (const key of Object.keys(conf)) {
+    if (!SOURCE_FIELDS[key]) throw new Error(`策略配置无效：sources.${source} 含未知字段 ${key}`);
+  }
+  const { allowed, admission } = conf as Partial<SourcePolicy>;
+  if (allowed !== undefined && typeof allowed !== "boolean") {
+    throw new Error(`策略配置无效：sources.${source}.allowed 必须是布尔值`);
+  }
+  return { allowed, admission };
+}
+
 /** 把可选配置补成完整策略；配置错误直接抛出，避免带病运行 */
 export function effectivePolicy(raw?: PolicyConfig): EffectivePolicy {
-  for (const key of Object.keys(raw?.sources ?? {})) {
-    if (!POLICY_SOURCES.includes(key as PolicySource)) {
-      throw new Error(`策略配置无效：未知来源 ${key}`);
+  for (const key of Object.keys(raw ?? {})) {
+    if (!POLICY_FIELDS[key]) throw new Error(`策略配置无效：policy 含未知字段 ${key}`);
+  }
+  const rawSources: unknown = raw?.sources;
+  if (rawSources !== undefined) {
+    if (typeof rawSources !== "object" || rawSources === null || Array.isArray(rawSources)) {
+      throw new Error("策略配置无效：sources 必须是对象");
+    }
+    for (const key of Object.keys(rawSources)) {
+      if (!POLICY_SOURCES.includes(key as PolicySource)) {
+        throw new Error(`策略配置无效：未知来源 ${key}`);
+      }
     }
   }
 
   const sources = {} as Record<PolicySource, SourcePolicy>;
   for (const source of POLICY_SOURCES) {
-    const conf = raw?.sources?.[source];
-    const allowed = conf?.allowed ?? true;
-    if (typeof allowed !== "boolean") {
-      throw new Error(`策略配置无效：sources.${source}.allowed 必须是布尔值`);
-    }
+    const conf = sourceConf(raw, source);
     sources[source] = {
-      allowed,
-      admission: conf?.admission === undefined ? defaultAdmission() : normalizeAdmission(conf.admission, source),
+      allowed: conf.allowed ?? true,
+      admission: conf.admission === undefined ? defaultAdmission() : normalizeAdmission(conf.admission, source),
     };
   }
 

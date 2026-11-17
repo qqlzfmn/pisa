@@ -40,6 +40,8 @@ export class Proactive {
       channel: msg.channel,
       chatId: k.chatId ?? msg.chatId,
       userId: k.userId ?? this.cfg.whitelist.users[0] ?? msg.userId,
+      // 原消息是否点名 pisa 决定准入落在哪一格，不能替它断言
+      mentioned: msg.mentioned ?? false,
       isDirect: true,
       text: [
         k.prompt ?? "群里有人报障且没有人接：先定位原因，能修就修，不能修给出可执行的下一步。",

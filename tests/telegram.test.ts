@@ -26,6 +26,37 @@ describe("TelegramChannel.setCommands", () => {
   });
 });
 
+describe("TelegramChannel.start", () => {
+  test("getMe 限时失败后不阻断启动，仍进入轮询", async () => {
+    const methods: string[] = [];
+    let getMeSignal: AbortSignal | null | undefined;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const method = String(url).slice(String(url).lastIndexOf("/") + 1);
+      methods.push(method);
+      if (method === "getMe") {
+        getMeSignal = init?.signal;
+        throw new Error("connect timeout");
+      }
+      return new Response(JSON.stringify({ ok: true, result: [] }), { status: 200 });
+    }) as typeof fetch;
+
+    const warns: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => void warns.push(args.map(String).join(" "));
+    try {
+      const ch = new TelegramChannel("tok");
+      await ch.start(() => {});
+      await ch.stop();
+    } finally {
+      console.warn = realWarn;
+    }
+
+    expect(getMeSignal).toBeInstanceOf(AbortSignal);
+    expect(warns.some((w) => w.includes("getMe"))).toBe(true);
+    expect(methods).toContain("getUpdates");
+  });
+});
+
 describe("mentionsBot", () => {
   test("精确匹配 bot 用户名，区分大小写之外的前后缀", () => {
     expect(mentionsBot("@pisa_bot 修一下", "pisa_bot")).toBe(true);

@@ -41,10 +41,11 @@ export class TelegramChannel implements ChannelAdapter {
 
   async start(onMessage: Handler): Promise<void> {
     try {
-      const me = await this.api<{ username?: string }>("getMe", {});
+      // 启动链在收消息之前，必须限时：代理挂住时不能拖住队列与其它入口
+      const me = await this.api<{ username?: string }>("getMe", {}, 8000);
       this.botUsername = me.result?.username ?? "";
-    } catch {
-      // 拿不到身份不影响收消息，只是无法判断群聊是否 @
+    } catch (err) {
+      console.warn(`[pisa] Telegram getMe 失败，群聊按未 @ 处理：${(err as Error).message}`);
     }
     void this.poll(onMessage);
   }
@@ -102,12 +103,17 @@ export class TelegramChannel implements ChannelAdapter {
     await this.api("setMyCommands", { commands });
   }
 
-  private async api<T = unknown>(method: string, body: Record<string, unknown>): Promise<{ ok: boolean; result?: T }> {
+  private async api<T = unknown>(
+    method: string,
+    body: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<{ ok: boolean; result?: T }> {
     const res = await fetch(`${API}/bot${this.token}/${method}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       ...(this.proxy ? { proxy: this.proxy } : {}),
+      ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     } as RequestInit);
     const json = (await res.json()) as { ok: boolean; result?: T; description?: string };
     if (!json.ok) throw new Error(`Telegram ${method}: ${json.description ?? res.status}`);

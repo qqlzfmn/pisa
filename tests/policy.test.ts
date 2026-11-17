@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Store } from "../src/store";
 import { Router } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
+import { Proactive } from "../src/proactive";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
@@ -129,6 +130,17 @@ describe("准入策略", () => {
     expect(() => effectivePolicy(bad)).toThrow("未知来源");
   });
 
+  test("字段拼错或类型不对时不落回默认表", () => {
+    // 拼错 admission：静默忽略会放宽到默认表（名单内 auto），必须报错
+    expect(() =>
+      effectivePolicy({ sources: { im: { admisson: [{ listed: true, mentioned: true, mode: "off" }] } } as never }),
+    ).toThrow("未知字段");
+    expect(() => effectivePolicy({ policys: {} } as never)).toThrow("未知字段");
+    expect(() => effectivePolicy({ sources: { im: { allowed: null } } } as never)).toThrow("allowed 必须是布尔值");
+    expect(() => effectivePolicy({ sources: "off" } as never)).toThrow("sources 必须是对象");
+    expect(() => effectivePolicy({ sources: { im: "off" } } as never)).toThrow("必须是对象");
+  });
+
   test("通道映射到来源", () => {
     expect(sourceOf("telegram")).toBe("im");
     expect(sourceOf("cli")).toBe("im");
@@ -205,6 +217,57 @@ describe("Router 准入", () => {
     expect(task.mandate).toEqual({ source: "im", channel: "fake", listed: true, mentioned: true, mode: "auto" });
     expect(task.policyVersion).toBe(effectivePolicy().version);
     expect(channel.sent.at(-1)?.text).toContain("已接单");
+  });
+
+  test("群聊关键词转发按「未 @」落格，不冒充点名", async () => {
+    cfg.proactive = { keywords: { enabled: true, words: ["挂了"], cooldownSec: 600 } };
+    const router = build();
+    let pending: Promise<void> | undefined;
+    new Proactive(cfg, (m) => {
+      pending = router.handle(m);
+    }).observe({
+      eventId: "tg-1",
+      channel: "telegram",
+      chatId: "g1",
+      userId: "u1",
+      text: "支付挂了",
+      isDirect: false,
+    });
+    await pending;
+
+    expect(store.recentTasks()[0]!.mandate?.mentioned).toBe(false);
+  });
+
+  test("群聊关键词转发的消息同样受准入格约束", async () => {
+    cfg.proactive = { keywords: { enabled: true, words: ["挂了"], cooldownSec: 600 } };
+    cfg.policy = {
+      sources: {
+        im: {
+          admission: [
+            { listed: true, mentioned: true, mode: "auto" },
+            { listed: true, mentioned: false, mode: "observe" },
+            { listed: false, mentioned: true, mode: "off" },
+            { listed: false, mentioned: false, mode: "off" },
+          ],
+        },
+      },
+    };
+    const router = build();
+    let pending: Promise<void> | undefined;
+    new Proactive(cfg, (m) => {
+      pending = router.handle(m);
+    }).observe({
+      eventId: "tg-2",
+      channel: "telegram",
+      chatId: "g1",
+      userId: "u1",
+      text: "支付挂了",
+      isDirect: false,
+    });
+    await pending;
+
+    expect(store.recentTasks()).toHaveLength(0);
+    expect(channel.sent.at(-1)?.text).toContain("不执行");
   });
 
   test("越权：名单外用户被拒，不建任务", async () => {

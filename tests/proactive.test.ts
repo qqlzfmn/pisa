@@ -35,6 +35,17 @@ describe("主动发现", () => {
     expect(got[0]!.userId).toBe("u1");
   });
 
+  test("关键词转发保留原消息是否点名，不替它断言", () => {
+    const got: IncomingMessage[] = [];
+    const p = new Proactive(
+      cfg({ proactive: { keywords: { enabled: true, words: ["挂了"], cooldownSec: 0 } } }),
+      (msg) => void got.push(msg),
+    );
+    p.observe(m("支付挂了"));
+    p.observe(m("@pisa_bot 支付挂了", { mentioned: true }));
+    expect(got.map((x) => x.mentioned)).toEqual([false, true]);
+  });
+
   test("私聊与带触发词的消息不走关键词", () => {
     const got: IncomingMessage[] = [];
     const p = new Proactive(
