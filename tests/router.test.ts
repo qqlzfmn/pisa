@@ -355,6 +355,19 @@ describe("Router", () => {
       expect(channel.sent.at(-1)!.text).toContain("上下文");
     });
 
+    test("回复补充重复投递只记一次上下文", async () => {
+      seedTask({ id: "t_1", status: "queued" });
+      store.linkMessage("c1", "9001", "t_1");
+      const router = build(okWorker);
+      const m = msg("再加一行", { eventId: "telegram:1:77", threadKey: "telegram:1", replyToMessageId: 9001 });
+      await router.handle(m);
+      await router.handle(m);
+
+      expect(store.get("t_1")!.context).toBe("用户补充：再加一行");
+      expect(store.triggersOf("t_1")).toHaveLength(1);
+      expect(channel.sent).toHaveLength(2);
+    });
+
     test("回复未绑定的消息时按线程找到任务续跑", async () => {
       const parent = seedTask({ id: "t_1", status: "succeeded", branch: "pisa/t_1" });
       store.claimTrigger({

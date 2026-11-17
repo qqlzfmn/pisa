@@ -204,10 +204,23 @@ export class Router {
       const text = msg.text.trim();
       const parent = parentId ? store.get(parentId) : null;
       if (parent && !text.startsWith(cfg.trigger) && !text.startsWith("/")) {
-        // 排队中或执行中：正文记为上下文，不另建任务
+        // 排队中或执行中：正文记为上下文，不另建任务；经触发器表去重，重复投递不重复写入
         if (parent.status === "queued" || parent.status === "running") {
-          store.appendContext(parent.id, `用户补充：${text}`);
-          await this.reply(msg.chatId, `已记为 ${parent.id} 的上下文。`, parent.id);
+          const claim = store.claimTrigger({
+            id: msg.eventId,
+            source: msg.channel,
+            threadKey,
+            actor: msg.userId,
+            payloadHash: payloadHash(text),
+            at: this.now(),
+            newTaskId: parent.id,
+          });
+          if (claim.kind === "duplicate") {
+            await this.reply(msg.chatId, `该补充已记录在 ${claim.taskId}，未重复写入。`, claim.taskId);
+            return;
+          }
+          store.appendContext(claim.taskId, `用户补充：${text}`);
+          await this.reply(msg.chatId, `已记为 ${claim.taskId} 的上下文。`, claim.taskId);
           return;
         }
         msg = { ...msg, repo: parent.repo, text: `${cfg.trigger} continue ${parent.id} ${text}` };
