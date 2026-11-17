@@ -20,6 +20,7 @@
 - [架构](#架构)
 - [与 pi 的关系](#与-pi-的关系)
 - [目录结构](#目录结构)
+- [健康巡检（status）](#健康巡检status)
 - [常驻（launchd）](#常驻launchd)
 - [开发方式](#开发方式)
 - [路线图](#路线图)
@@ -98,9 +99,10 @@ pisa/
 ├── docs/
 │   ├── constitution.md    # 项目宪法：不可协商的架构与质量约束
 │   └── specs/             # 每个 feature 一个目录：spec / plan / tasks
-├── src/                   # Router、任务调度、事件总线
+├── src/                   # Router、任务调度、事件总线、健康检查（health.ts）与 CLI（cli.ts）
 ├── extensions/            # pi 扩展：进度上报 + 策略拦截
 ├── scripts/supervise.sh   # 崩溃自动重启
+├── scripts/ops-check.sh   # 每小时健康巡检
 └── tests/
 ```
 
@@ -294,6 +296,31 @@ pisa 可以改自己：
 
 这条链路已经实测：任务改 README → merge → 进程 PID 变化 → 新内容生效。
 
+## 健康巡检（status）
+
+`pisa status` 一次检查完并直接给结论：退出码就是状态，脚本和 launchd 都能判。
+
+| 退出码 | 含义 | 触发条件 |
+|---|---|---|
+| 0 | 正常 | 配置完整、部件可用、心跳新鲜 |
+| 1 | 需重启 | 心跳缺失或超过 180 秒未更新（进程没跑或卡死） |
+| 2 | 部件错误 | worker 命令找不到、任务库打不开、Telegram 已启用但缺 token |
+| 3 | 待配置 | 配置文件不存在、`repos` 为空、仓库路径不存在、没有启用任何通道 |
+
+多个问题同时存在时取最严重的：3 > 2 > 1。`status` 会逐条列出具体问题；`status --alert` 是巡检模式，正常时一个字都不输出，异常且与上次通知的问题不同才输出并推送 Telegram。
+
+守护进程每 30 秒写一次 `.pisa/heartbeat`，心跳过期由小时巡检发现。去重记录在 `.pisa/ops-alert.json`，恢复（退出码回到 0）时自动删除，下次再坏会重新通知。
+
+命令入口：
+
+```bash
+bun link                 # 安装后可用 pisa 命令
+pisa status              # 手动看，总是打印
+pisa status --alert      # 巡检，正常静默
+```
+
+安装 launchd 时同时挂上 `ai.pisa.opscheck`（每小时跑一次 `scripts/ops-check.sh`），日志在 `~/Library/Logs/pisa.opscheck.log`。
+
 ## 常驻（launchd）
 
 `scripts/supervise.sh` 交给 launchd 托管：开机自启，进程退出后自动拉起。
@@ -304,7 +331,7 @@ pisa 可以改自己：
 ./scripts/install-launchd.sh
 ```
 
-脚本生成 `~/Library/LaunchAgents/ai.pisa.supervisor.plist` 并加载，工作目录是仓库根目录，日志写在 `~/Library/Logs/pisa.launchd.log`（外部卷上的路径 launchd 无权限写入）。多份 worktree 同时安装会互相覆盖，只保留一份。
+脚本生成 `~/Library/LaunchAgents/ai.pisa.supervisor.plist` 并加载，工作目录是仓库根目录，日志写在 `~/Library/Logs/pisa.launchd.log`（外部卷上的路径 launchd 无权限写入）。同一脚本再生成 `ai.pisa.opscheck.plist`，每小时跑一次健康巡检，日志在 `~/Library/Logs/pisa.opscheck.log`。多份 worktree 同时安装会互相覆盖，只保留一份。
 
 看日志：
 
@@ -317,7 +344,8 @@ launchctl print gui/$(id -u)/ai.pisa.supervisor    # 状态
 
 ```bash
 launchctl bootout gui/$(id -u)/ai.pisa.supervisor
-rm ~/Library/LaunchAgents/ai.pisa.supervisor.plist
+launchctl bootout gui/$(id -u)/ai.pisa.opscheck
+rm ~/Library/LaunchAgents/ai.pisa.supervisor.plist ~/Library/LaunchAgents/ai.pisa.opscheck.plist
 ```
 
 token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.pisa/telegram_token` 与 `~/.pisa/webhook_token`。
@@ -367,7 +395,7 @@ specify → plan → tasks → implement → converge
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 89 个全绿；`tsc --noEmit` 无报错
+- 测试 151 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：

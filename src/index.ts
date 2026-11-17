@@ -9,6 +9,7 @@ import { GithubWatcher } from "./github-watcher";
 import { Scheduler } from "./scheduler";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
+import { startHeartbeat } from "./health";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
@@ -16,6 +17,8 @@ async function main(): Promise<void> {
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
 
   const store = new Store(join(cfg.stateDir, "pisa.db"));
+  // 存活标记：pisa status 与小时巡检靠它判断进程是否卡死
+  const stopHeartbeat = startHeartbeat(cfg.stateDir);
 
   let channel: ChannelAdapter;
   if (wantCli) {
@@ -128,6 +131,7 @@ async function main(): Promise<void> {
     proactive.stop();
     githubWatcher.stop();
     scheduler.stop();
+    stopHeartbeat();
     await activeChannel.stop();
     store.close();
     process.exit(75);
