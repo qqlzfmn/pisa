@@ -151,6 +151,31 @@ curl -X POST http://127.0.0.1:8799/event \
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
 
+## 多仓库
+
+`repos` 可以写多个仓库，入口用 `@别名` 指定这次任务落在哪个仓库；不带别名时走第一个（默认仓库）。
+
+```json
+{
+  "trigger": "/pisa",
+  "whitelist": { "users": ["<telegram user id>"], "repos": ["pisa", "family"] },
+  "repos": [
+    { "alias": "pisa", "path": "/absolute/path/to/pisa", "baseBranch": "main" },
+    { "alias": "family", "path": "/absolute/path/to/family", "baseBranch": "main" }
+  ]
+}
+```
+
+```
+/pisa @family 改一下首页     群聊或带触发词
+@family 改一下首页           私聊可以直接说
+```
+
+- 别名在 `repos` 里精确匹配；写错时不会被吞掉，任务仍进默认仓库，正文保留原文
+- 别名可以放在触发词前：`@family /pisa 改一下首页` 与 `/pisa @family 改一下首页` 等价
+- 接单回执写明 `仓库：<别名>`，不用回忆默认仓库是哪个
+- 续跑固定在父任务所在仓库，别名不会把续跑带到别的仓库
+
 ## 主动发现
 
 两种触发方式，都不需要人 @：
@@ -290,7 +315,7 @@ specify → plan → tasks → implement → converge
 - 主动发现：群聊关键词 + 定时探针
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 71 个全绿；`tsc --noEmit` 无报错
+- 测试 77 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：

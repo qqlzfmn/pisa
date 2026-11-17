@@ -140,6 +140,79 @@ describe("Router", () => {
     return task;
   }
 
+  describe("多仓库路由", () => {
+    let family: string;
+
+    beforeEach(() => {
+      family = makeRepo();
+      cfg = {
+        ...cfg,
+        whitelist: { users: ["u1"], repos: ["demo", "family"] },
+        repos: [cfg.repos[0]!, { alias: "family", path: family, baseBranch: "main" }],
+      };
+    });
+
+    afterEach(() => {
+      rmSync(family, { recursive: true, force: true });
+    });
+
+    test("触发词后指定仓库，正文去掉别名", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa @family 做X"));
+
+      const task = store.recent()[0]!;
+      expect(task.repo).toBe("family");
+      expect(task.prompt).toBe("做X");
+      expect(channel.sent.some((s) => s.text.includes("仓库：family"))).toBe(true);
+    });
+
+    test("私聊裸文本指定仓库", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("@family 做X", { isDirect: true }));
+
+      const task = store.recent()[0]!;
+      expect(task.repo).toBe("family");
+      expect(task.prompt).toBe("做X");
+    });
+
+    test("未知别名保持原文并走默认仓库（触发词形式）", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa @nope 做X"));
+
+      const task = store.recent()[0]!;
+      expect(task.repo).toBe("demo");
+      expect(task.prompt).toBe("@nope 做X");
+    });
+
+    test("未知别名保持原文并走默认仓库（私聊裸文本）", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("@nope 做X", { isDirect: true }));
+
+      const task = store.recent()[0]!;
+      expect(task.repo).toBe("demo");
+      expect(task.prompt).toBe("@nope 做X");
+    });
+
+    test("帮助文本包含别名语法", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa help"));
+      expect(channel.sent.at(-1)?.text).toContain("@别名");
+    });
+
+    test("续跑留在父任务所在仓库，不被别名带走", async () => {
+      const parent = seedTask({ id: "t_family_parent", repo: "family", branch: "pisa/parent", status: "succeeded" });
+      expect(sh(["git", "-C", family, "branch", parent.branch!, "main"]).code).toBe(0);
+
+      const router = build(okWorker);
+      await router.handle(msg(`/pisa @demo continue ${parent.id} 再改一处`));
+
+      const task = store.recent()[0]!;
+      expect(task.repo).toBe("family");
+      expect(task.baseRef).toBe("pisa/parent");
+      expect(task.prompt).toBe("再改一处");
+    });
+  });
+
   test("私聊不带触发词也能建任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("把登录超时改成 30 分钟", { isDirect: true }));

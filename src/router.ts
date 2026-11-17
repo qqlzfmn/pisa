@@ -2,7 +2,7 @@ import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import type { Config, RepoConfig } from "./config";
-import { parseCommand, repoByAlias } from "./config";
+import { parseCommand, repoByAlias, splitRepoAlias } from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
 import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
@@ -102,16 +102,35 @@ export class Router {
     }
   }
 
+  /**
+   * `@别名 正文` 指定仓库；触发词形式先剥触发词再识别，命中后重组回触发词文本。
+   * 别名不存在或没有正文时原样返回，仍走默认仓库。
+   */
+  private routeByAlias(msg: IncomingMessage): IncomingMessage {
+    const { cfg } = this.deps;
+    const lead = splitRepoAlias(msg.text, cfg.repos);
+    if (lead) return { ...msg, repo: lead.alias, text: lead.body };
+
+    const text = msg.text.trim();
+    if (!text.startsWith(cfg.trigger)) return msg;
+    const inner = splitRepoAlias(text.slice(cfg.trigger.length), cfg.repos);
+    if (!inner) return msg;
+    return { ...msg, repo: inner.alias, text: `${cfg.trigger} ${inner.body}` };
+  }
+
   /** 处理一条入口消息；幂等、鉴权、建任务都在这里 */
   async handle(msg: IncomingMessage): Promise<void> {
     const { cfg, store, channel } = this.deps;
+
+    msg = this.routeByAlias(msg);
 
     // 回复某条任务消息 = 对该任务续跑
     if (msg.replyToMessageId) {
       const parentId = store.taskByMessage(msg.chatId, String(msg.replyToMessageId));
       const text = msg.text.trim();
       if (parentId && !text.startsWith(cfg.trigger) && !text.startsWith("/")) {
-        msg = { ...msg, text: `${cfg.trigger} continue ${parentId} ${text}` };
+        const parent = store.get(parentId);
+        msg = { ...msg, repo: parent?.repo ?? msg.repo, text: `${cfg.trigger} continue ${parentId} ${text}` };
       }
     }
 
@@ -128,14 +147,13 @@ export class Router {
     }
     if (!cmd) return;
 
-    const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
-
     if (cmd.kind === "help") {
       await this.reply(
         msg.chatId,
         [
           "pisa · 命令",
           `${cfg.trigger} <需求>        接一个任务（私聊可直接说需求）`,
+          `${cfg.trigger} @别名 <需求>   指定仓库（多仓库时用）`,
           `${cfg.trigger} cancel [任务号]  取消（私聊可用 /cancel）`,
           `${cfg.trigger} resume <任务号>  恢复被进程重启中断的任务`,
           `${cfg.trigger} continue <任务号> <新要求>  接着上一轮的分支做`,
@@ -203,6 +221,8 @@ export class Router {
         return;
       }
       baseRef = parent.branch;
+      // 续跑必须落在父任务所在仓库：分支是仓库本地的
+      msg = { ...msg, repo: parent.repo };
       if (msg.replyPr) {
         // 评论续跑必须更新原 PR：复用父任务分支，不留空让 fill() 新开 pisa/<新任务号>
         branch = parent.branch;
@@ -223,6 +243,7 @@ export class Router {
       }
     }
 
+    const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
     const taskId = newId(this.now());
     // 去重：同一事件只登记一次；重复投递直接丢弃
     if (!store.claimEvent(msg.eventId, taskId)) return;
@@ -269,7 +290,7 @@ export class Router {
       cancelRequested: false,
     };
     store.insertTask(task);
-    await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库 ${repo.alias}，排队中。`);
+    await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库：${repo.alias}\n排队中。`);
   }
 
   /** 统一发送；带 taskId 时记住消息 id，之后用户回复这条消息即可续跑 */

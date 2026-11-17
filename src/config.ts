@@ -76,6 +76,20 @@ export function repoByAlias(cfg: Config, alias?: string): RepoConfig | undefined
   return cfg.repos.find((r) => r.alias === alias);
 }
 
+const REPO_ALIAS_PREFIX = /^@([A-Za-z0-9_-]+)\s+([\s\S]+)$/;
+
+/**
+ * IM 仓库前缀：`@别名 正文`。
+ * 别名必须精确存在于配置中；不存在或没有正文时返回 null，调用方保持原文不动。
+ */
+export function splitRepoAlias(text: string, repos: RepoConfig[]): { alias: string; body: string } | null {
+  const m = REPO_ALIAS_PREFIX.exec(text.trim());
+  if (!m) return null;
+  const alias = m[1]!;
+  if (!repos.some((r) => r.alias === alias)) return null;
+  return { alias, body: m[2]!.trim() };
+}
+
 /** 触发词解析：仅接受以 trigger 开头的文本 */
 export function parseCommand(
   text: string,
