@@ -94,6 +94,8 @@ const NETWORK_WORDS: Record<string, true> = {
 };
 const GIT_REMOTE: Record<string, true> = { clone: true, fetch: true, pull: true, push: true, "ls-remote": true, submodule: true };
 const GUI_COMMAND = /(?:^|[;&|]\s*|\s)(open|osascript|screencapture|xdg-open|wmctrl|xdotool)\b/;
+/** shell 变量展开：$NAME、${NAME}、$1、$@、$(cmd)；单独的 `$`（如正则锚点）不算 */
+const SHELL_VAR = /\$(?:\{?[A-Za-z_][A-Za-z0-9_]*\}?|[0-9@*#?$!(-])/;
 
 /** 无论能力如何都拒绝：破坏性操作与提权不属于任何任务 */
 const HARD_DENY: Array<{ re: RegExp; label: string }> = [
@@ -246,12 +248,20 @@ function segments(words: string[]): string[][] {
   return out;
 }
 
+/** 去掉 shell 成对引号：`"/etc/passwd"` 与 /etc/passwd 是同一个落点 */
+function stripQuotes(token: string): string {
+  const m = /^(['"])(.*)\1$/.exec(token);
+  return m ? m[2]! : token;
+}
+
 function hostOf(value: string): string | null {
-  const url = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/\s]+)/.exec(value);
+  // authority 到 `?` / `#` 为止，避免把 https://evil.com#@allowed.com 的后半段当成主机
+  const url = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/\s?#]+)/.exec(value);
   if (url) return (url[1] ?? "").split("@").pop()!.split(":")[0]!.toLowerCase() || null;
   const scp = /^(?:[^@\s]+@)?([\w.-]+\.[\w-]+):/.exec(value);
   if (scp) return (scp[1] ?? "").toLowerCase();
-  if (/^[\w.-]+\.[a-z]{2,}$/i.test(value)) return value.toLowerCase();
+  const bare = value.replace(/^[^@\s/]+@/, "");
+  if (/^[\w.-]+\.[a-z]{2,}$/i.test(bare)) return bare.toLowerCase();
   return null;
 }
 
@@ -284,10 +294,13 @@ function checkNetwork(caps: ResolvedCapabilities, command: string, segs: string[
 
 function checkPathTokens(caps: ResolvedCapabilities, words: string[]): Verdict | null {
   for (let i = 0; i < words.length; i++) {
-    const raw = words[i]!;
+    const raw = stripQuotes(words[i]!);
     if (raw.includes("://")) continue;
     const looksAbsolute = raw.startsWith("/") || raw.startsWith("~");
     const looksRelative = raw.startsWith("./") || raw.startsWith("../") || raw === ".." || raw.includes("/../");
+    const looksExpanded = SHELL_VAR.test(raw) && (raw.includes("/") || raw.startsWith("~") || /^\$\{?(HOME|PWD|OLDPWD)\}?$/.test(raw));
+    // 变量展开后的落点无法静态判定，按默认拒绝处理
+    if (looksExpanded) return deny("路径含变量无法校验", raw);
     if (!looksAbsolute && !looksRelative) continue;
     const abs = normalizeDir(caps.workdir, raw);
     if (SAFE_PATHS[abs]) continue;
@@ -318,8 +331,11 @@ function writeTargets(command: string): string[] {
 }
 
 function checkWrites(caps: ResolvedCapabilities, command: string): Verdict | null {
-  for (const target of writeTargets(command)) {
-    const abs = normalizeDir(caps.workdir, target);
+  for (const token of writeTargets(command)) {
+    const raw = stripQuotes(token);
+    // shell 会展开变量；落点无法静态确认时默认拒绝
+    if (SHELL_VAR.test(raw)) return deny("写入路径含变量无法校验", raw);
+    const abs = normalizeDir(caps.workdir, raw);
     if (SAFE_PATHS[abs]) continue;
     if (caps.writeDirs.some((root) => within(root, abs))) continue;
     return deny("写入越界", abs);

@@ -47,8 +47,8 @@ Worker 以 pisa 进程的身份裸跑：继承全部环境变量（含 `PISA_TEL
 | FR-004 | 快照含绝对 `readDirs`/`writeDirs`、`secrets`、`domains`、`gui`、`profile` 与派生 `blockedCommands`，接单时写入 `tasks.capabilities` |
 | FR-005 | Worker env 为白名单：基础系统变量 + `OMP_*`/`PI_*` 非密钥项 + 名单内密钥 + `PISA_CAPABILITIES`；名单外密钥不进子进程；声明的密钥缺失时报错 |
 | FR-006 | bash 检查顺序：硬拒绝（`git push`、`git reset --hard`、`git clean -f`、`sudo`、`rm -rf /`、`chmod/chown /etc`）→ GUI → 网络 → 路径 → 写目标 |
-| FR-007 | 网络命令（curl/wget/ssh/scp/rsync/git 远端操作等）在 `domains` 为空时一律拒绝；非空时命令里出现的主机必须在名单内 |
-| FR-008 | 绝对路径、`~` 路径与含 `..` 的相对路径必须在 `readDirs` 内（命令首词位于系统 bin 目录除外）；重定向、`tee`、`mkdir`、`cp/mv` 落点必须在 `writeDirs` 内 |
+| FR-007 | 网络命令（curl/wget/ssh/scp/rsync/git 远端操作等）在 `domains` 为空时一律拒绝；非空时命令里出现的主机必须在名单内。主机取 URL authority 到 `#`/`?` 为止、`user@host` 取 `@` 之后的部分 |
+| FR-008 | 绝对路径、`~` 路径与含 `..` 的相对路径必须在 `readDirs` 内（命令首词位于系统 bin 目录除外）；重定向、`tee`、`mkdir`、`cp/mv` 落点必须在 `writeDirs` 内。检查前去掉成对引号；含 `$` 变量且无法静态判定的路径与写入落点一律拒绝 |
 | FR-009 | 文件工具（`read`/`glob`/`grep`/`lsp`）按 `readDirs` 校验，`edit`/`write`/`ast_edit` 按 `writeDirs` 校验；内部 URI 与 `*.db:表` 前缀按规则剥离 |
 | FR-010 | GUI 未开启时拒绝 `computer`/`browser`/`pencil` 类工具与 `open`/`osascript`/`screencapture` 等命令 |
 | FR-011 | 扩展拒绝调用时返回 `{block:true, reason}` 并写 `blocked` 进度事件；Router 把事件写入 `task_audit`，进程退出前补读尾部 |

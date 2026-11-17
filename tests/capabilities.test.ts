@@ -113,6 +113,17 @@ describe("checkBashCommand：默认拒绝", () => {
     expect(checkBashCommand(caps, "open -a Safari https://example.com").allow).toBe(false);
     expect(checkBashCommand(caps, "osascript -e 'tell app \"Finder\" to activate'").allow).toBe(false);
   });
+
+  test("引号与变量展开不能绕过路径与写入检查", () => {
+    expect(checkBashCommand(caps, `cat "/etc/passwd"`).allow).toBe(false);
+    expect(checkBashCommand(caps, "cat '/etc/passwd'").allow).toBe(false);
+    expect(checkBashCommand(caps, "cat $HOME/.ssh/id_rsa").allow).toBe(false);
+    expect(checkBashCommand(caps, "cat ${HOME}/.ssh/id_rsa").allow).toBe(false);
+    expect(checkBashCommand(caps, `echo x > "/etc/passwd"`).allow).toBe(false);
+    expect(checkBashCommand(caps, "echo x > $HOME/.zshrc").allow).toBe(false);
+    // 正则里的 $ 锚点不是变量展开
+    expect(checkBashCommand(caps, "grep -E '^/api/$' src/a.ts").allow).toBe(true);
+  });
 });
 
 describe("checkToolCall：默认拒绝", () => {
@@ -151,6 +162,9 @@ describe("显式放行", () => {
     expect(checkBashCommand(caps, "curl https://api.github.com/x").allow).toBe(true);
     expect(checkBashCommand(caps, "curl https://evil.com/x").allow).toBe(false);
     expect(checkBashCommand(caps, "curl https://github.com.evil.com/x").allow).toBe(false);
+    expect(checkBashCommand(caps, "curl https://evil.com#@github.com/x").allow).toBe(false);
+    expect(checkBashCommand(caps, "ssh deploy@github.com").allow).toBe(true);
+    expect(checkBashCommand(caps, "ssh deploy@evil.com").allow).toBe(false);
     expect(checkBashCommand(caps, "git clone https://github.com/o/r").allow).toBe(true);
     expect(checkBashCommand(caps, "git fetch origin").allow).toBe(true);
   });

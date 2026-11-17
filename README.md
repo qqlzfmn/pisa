@@ -275,7 +275,8 @@ Worker 默认只能读写自己的工作副本：网络、密钥、GUI 全部关
 - 解析顺序 `default` → `profile` → 仓库 → 定时任务，后者覆盖前者；引用不存在的 profile 直接拒绝建任务
 - 工作目录始终可读可写；`readDirs` / `writeDirs` 的相对路径按工作目录解析，额外目录通过 `--add-dir` 传给 omp
 - `secrets` 写环境变量名：只有名单内的密钥进 Worker，pisa 自己的 `PISA_TELEGRAM_TOKEN` 等不再透传；名单里的变量缺失时任务直接失败
-- `domains` 为空时任何网络命令被拒绝；非空时命令里出现的主机必须在名单内，子域自动放行
+- `domains` 为空时任何网络命令被拒绝；非空时命令里出现的主机必须在名单内，子域自动放行；`user@host` 取 host 部分，`#` / `?` 之后不算主机
+- 路径检查先去掉 shell 引号；含 `$` 变量展开的读路径与写入落点无法静态判定，一律拒绝
 - `gui` 是独立开关：关闭时 `computer` / `browser` 与 `open` / `osascript` 等命令被拒绝
 - 无论能力如何，`git push`、`git reset --hard`、`git clean -f`、`sudo`、`rm -rf /` 一律拒绝
 - 被拒绝的调用会回帖「拦下一条命令」并写入任务审计；`tasks.capabilities` 留着当次快照
