@@ -6,6 +6,7 @@ import { Worker } from "./worker";
 import { GitDeliverer } from "./deliver";
 import { Proactive } from "./proactive";
 import { GithubWatcher } from "./github-watcher";
+import { Scheduler } from "./scheduler";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import type { ChannelAdapter } from "./types";
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
 
   const proactive = new Proactive(cfg, (m) => router.handle(m));
   const githubWatcher = new GithubWatcher({ cfg, store, enqueue: (m) => router.handle(m) });
+  const scheduler = new Scheduler({ cfg, store, enqueue: (m) => router.handle(m) });
   await channel.start((m) => {
     proactive.observe(m);
     return router.handle(m);
@@ -64,6 +66,7 @@ async function main(): Promise<void> {
   router.start();
   proactive.start();
   githubWatcher.start();
+  scheduler.start();
   if (gh?.enabled) console.log(`[pisa] GitHub PR 评论轮询已启用 · ${gh.repo}`);
 
   // 事件入口：CI / 监控 / 脚本可以把任务推进来
@@ -112,6 +115,7 @@ async function main(): Promise<void> {
     await router.stop(3000);
     proactive.stop();
     githubWatcher.stop();
+    scheduler.stop();
     await activeChannel.stop();
     store.close();
     process.exit(75);

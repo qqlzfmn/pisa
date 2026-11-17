@@ -8,6 +8,15 @@ export interface RepoConfig {
   baseBranch?: string;
 }
 
+/** 一条定时任务：cron 到点后用 prompt 开单 */
+export interface ScheduleJob {
+  id: string;
+  cron: string;
+  prompt: string;
+  repo?: string;
+  enabled?: boolean;
+}
+
 export interface Config {
   trigger: string;
   /** 私聊里不带触发词也当成任务 */
@@ -20,6 +29,9 @@ export interface Config {
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
   /** PR 评论 → 任务 → 回帖；repo 形如 owner/repo */
   github?: { enabled: boolean; repo: string; intervalSec?: number; tokenEnv?: string; chatId: string; userId: string };
+  /** 定时任务的发送方身份；缺省时 schedules 不生效 */
+  scheduler?: { chatId: string; userId: string };
+  schedules?: ScheduleJob[];
   proactive?: {
     keywords?: { enabled: boolean; words: string[]; cooldownSec?: number; chatId?: string; userId?: string; prompt?: string };
     probe?: {
@@ -94,7 +106,7 @@ export function splitRepoAlias(text: string, repos: RepoConfig[]): { alias: stri
 export function parseCommand(
   text: string,
   trigger: string,
-): { kind: "task" | "cancel" | "help" | "status" | "continue" | "merge" | "resume"; body: string } | null {
+): { kind: "task" | "cancel" | "help" | "status" | "continue" | "merge" | "resume" | "schedules"; body: string } | null {
   const t = text.trim();
   if (!t.startsWith(trigger)) return null;
   const rest = t.slice(trigger.length).trim();
@@ -103,6 +115,7 @@ export function parseCommand(
   if (head === "cancel" || head === "取消") return { kind: "cancel", body: tail.join(" ").trim() };
   if (head === "help" || head === "帮助") return { kind: "help", body: "" };
   if (head === "status" || head === "状态") return { kind: "status", body: "" };
+  if (head === "schedules" || head === "定时") return { kind: "schedules", body: "" };
   if (head === "continue" || head === "继续") return { kind: "continue", body: tail.join(" ").trim() };
   if (head === "merge" || head === "合并") return { kind: "merge", body: tail.join(" ").trim() };
   if (head === "resume" || head === "恢复") return { kind: "resume", body: tail.join(" ").trim() };

@@ -203,6 +203,27 @@ curl -X POST http://127.0.0.1:8799/event \
 - **关键词**：群里出现这些词且没人带触发词，自动开单（同一群有冷却）
 - **探针**：定时跑一条命令，退出码非 0 就开单；命令写法自由，CI、探活、磁盘检查都能接
 
+## 定时任务
+
+cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副本、执行、回执。
+
+```json
+{
+  "scheduler": { "chatId": "<telegram chat id>", "userId": "<telegram user id>" },
+  "schedules": [
+    { "id": "morning", "cron": "0 9 * * 1-5", "prompt": "检查昨天以来的 CI 失败并修复", "repo": "pisa" },
+    { "id": "monthly", "cron": "0 0 1 * *", "prompt": "升级依赖并跑测试", "enabled": false }
+  ]
+}
+```
+
+- cron 为 5 段 `分 时 日 月 周`，按进程本地时区；支持 `*`、`*/n`、逗号列表、区间 `a-b`、区间步长 `a-b/n`，周 `7` 等同周日
+- `scheduler` 决定任务挂在谁的会话下，缺省时 `schedules` 不生效
+- `enabled: false` 保留配置但不触发；`repo` 省略时走默认仓库
+- 每 30 秒检查一次；同一分钟只投一次，进程重启也不会重投
+- `id` 重复或 cron 非法的 job 在启动日志告警后跳过，不影响其他 job
+- `/pisa schedules`（私聊 `/schedules`）查看 id、cron、仓库与启用状态
+
 ## GitHub 评论（PR / Issue）
 
 评审人和维护者可以直接在 PR / Issue 评论里派活，不用绕回 IM：
@@ -313,9 +334,10 @@ specify → plan → tasks → implement → converge
 - 订阅绑定：回复任务消息即续跑（消息 → 任务映射落库）
 - GitHub 评论：`/pisa` 触发轮询；PR 上已有任务则接续分支，普通 Issue 从主干开新分支；完成后回帖到来源 PR / Issue，Issue 来源的 PR 带 `Closes #<n>`
 - 主动发现：群聊关键词 + 定时探针
+- 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 77 个全绿；`tsc --noEmit` 无报错
+- 测试 89 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：

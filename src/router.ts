@@ -141,6 +141,7 @@ export class Router {
       const t = msg.text.trim();
       if (t === "/start" || t === "/help" || t === "帮助") cmd = { kind: "help", body: "" };
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
+      else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
       else if (t && !t.startsWith("/")) cmd = { kind: "task", body: t };
@@ -158,6 +159,7 @@ export class Router {
           `${cfg.trigger} resume <任务号>  恢复被进程重启中断的任务`,
           `${cfg.trigger} continue <任务号> <新要求>  接着上一轮的分支做`,
           `${cfg.trigger} merge <任务号>     合并到主干（自举）`,
+          `${cfg.trigger} schedules      查看定时任务（私聊可用 /schedules）`,
           `${cfg.trigger} help           本帮助（私聊可用 /help）`,
         ].join("\n"),
       );
@@ -176,6 +178,26 @@ export class Router {
 
     if (cmd.kind === "merge") {
       await this.handleMerge(msg, cmd.body);
+      return;
+    }
+
+    if (cmd.kind === "schedules") {
+      const jobs = cfg.schedules ?? [];
+      if (jobs.length === 0) {
+        await this.reply(
+          msg.chatId,
+          [
+            "没有配置定时任务。",
+            "在 pisa.config.json 里加 scheduler（发送方身份）与 schedules，重启后生效：",
+            '{"scheduler":{"chatId":"<chat id>","userId":"<user id>"},"schedules":[{"id":"morning","cron":"0 9 * * 1-5","prompt":"检查 CI 失败并修复","repo":"pisa"}]}',
+          ].join("\n"),
+        );
+        return;
+      }
+      const lines = jobs.map(
+        (j) => `${j.id} · ${j.cron} · ${j.repo ?? "默认仓库"} · ${j.enabled === false ? "停用" : "启用"}`,
+      );
+      await this.reply(msg.chatId, `定时任务（${jobs.length}）\n${lines.join("\n")}`);
       return;
     }
 

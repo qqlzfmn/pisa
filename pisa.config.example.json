@@ -48,6 +48,19 @@
     "chatId": "<telegram chat id>",
     "userId": "<telegram user id>"
   },
+  "scheduler": {
+    "chatId": "<telegram chat id>",
+    "userId": "<telegram user id>"
+  },
+  "schedules": [
+    {
+      "id": "morning",
+      "cron": "0 9 * * 1-5",
+      "prompt": "检查昨天以来的 CI 失败并修复",
+      "repo": "pisa",
+      "enabled": false
+    }
+  ],
   "proactive": {
     "keywords": {
       "enabled": false,
