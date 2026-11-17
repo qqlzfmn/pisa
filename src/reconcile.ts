@@ -1,10 +1,10 @@
 import { existsSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { RepoConfig } from "./config";
 import type { Store } from "./store";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { closePr, type Runner } from "./github";
-import { deleteBranch, remoteRepo, remoteUrl, removeWorktree, sh } from "./git";
+import { deleteBranch, remoteRepo, remoteUrl, removeWorktree, sh, type ExecResult } from "./git";
 
 /** 分支前缀与任务号共同决定资源归属：`pisa/<任务号>` */
 export const BRANCH_PREFIX = "pisa/";
@@ -29,6 +29,10 @@ export interface WorktreeEntry {
   path: string;
   /** 注册该工作副本的仓库；目录存在但未注册时为 null */
   repoPath: string | null;
+  /** git 登记为 locked：调用方不得删除 */
+  locked: boolean;
+  /** 已登记但目录已被删掉：只需 prune 登记 */
+  stale: boolean;
 }
 
 export interface OpenPr {
@@ -61,8 +65,13 @@ export function localReconcileProbes(deps: {
 
   return {
     localBranches(repoPath) {
-      const res = sh(["git", "-C", repoPath, "for-each-ref", "--format=%(refname:short)", `refs/heads/${BRANCH_PREFIX}`]);
-      return res.code === 0 ? res.out.split("\n").filter(Boolean) : null;
+      // 用全名再裁前缀：%(refname:short) 遇到同名 tag 会输出 heads/pisa/x，解析不出任务号
+      const res = sh(["git", "-C", repoPath, "for-each-ref", "--format=%(refname)", `refs/heads/${BRANCH_PREFIX}`]);
+      if (res.code !== 0) return null;
+      return res.out
+        .split("\n")
+        .filter(Boolean)
+        .map((ref) => ref.replace(/^refs\/heads\//, ""));
     },
 
     remoteBranches(repoPath) {
@@ -90,14 +99,19 @@ export function localReconcileProbes(deps: {
       for (const repo of deps.repos) {
         const res = sh(["git", "-C", repo.path, "worktree", "list", "--porcelain"]);
         if (res.code !== 0) continue;
-        for (const line of res.out.split("\n")) {
-          if (!line.startsWith("worktree ")) continue;
-          const listed = resolve(line.slice("worktree ".length));
-          if (!canonical(listed).startsWith(`${canonicalRoot}/`)) continue;
-          // 目录已被手工删掉时，git 仍会列出登记项；磁盘上无物可清
-          if (!existsSync(listed)) continue;
-          const path = join(root, basename(listed));
-          found.set(canonical(path), { path, repoPath: repo.path });
+        for (const block of res.out.split(/\n\s*\n/)) {
+          const listed = block.split("\n").find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+          if (!listed) continue;
+          const path0 = resolve(listed);
+          // 目录已被手工删掉时父目录仍在，用它归一化才不会把路径误判到别处
+          if (canonical(dirname(path0)) !== canonicalRoot) continue;
+          const path = join(root, basename(path0));
+          found.set(canonical(path), {
+            path,
+            repoPath: repo.path,
+            locked: block.split("\n").some((line) => line === "locked" || line.startsWith("locked ")),
+            stale: !existsSync(path0),
+          });
         }
       }
       if (existsSync(root)) {
@@ -105,7 +119,7 @@ export function localReconcileProbes(deps: {
           if (!entry.isDirectory()) continue;
           const path = join(root, entry.name);
           const key = canonical(path);
-          if (!found.has(key)) found.set(key, { path, repoPath: null });
+          if (!found.has(key)) found.set(key, { path, repoPath: null, locked: false, stale: false });
         }
       }
       return [...found.values()].sort((a, b) => a.path.localeCompare(b.path));
@@ -114,13 +128,19 @@ export function localReconcileProbes(deps: {
     openPrs(repoPath) {
       const repo = remoteRepo(repoByPath.get(resolve(repoPath))?.remote ?? remoteUrl(repoPath));
       if (!repo) return null;
-      const res = deps.runner([
-        "gh", "pr", "list",
-        "--state", "open",
-        "--limit", "200",
-        "--json", "number,headRefName,url",
-        "--repo", repo,
-      ]);
+      let res: ExecResult;
+      try {
+        res = deps.runner([
+          "gh", "pr", "list",
+          "--state", "open",
+          "--limit", "200",
+          "--json", "number,headRefName,url",
+          "--repo", repo,
+        ]);
+      } catch {
+        // gh 不在 PATH 时 spawn 直接抛异常；按「无法确认」处理，不中断扫描
+        return null;
+      }
       if (res.code !== 0) return null;
       try {
         const rows = JSON.parse(res.out) as Array<{ number?: unknown; headRefName?: unknown; url?: unknown }>;
@@ -135,7 +155,15 @@ export function localReconcileProbes(deps: {
 }
 
 export type ReconcileAction =
-  | { kind: "remove-worktree"; label: string; workdir: string; repoPath: string | null; taskId: string | null }
+  | {
+      kind: "remove-worktree";
+      label: string;
+      workdir: string;
+      repoPath: string | null;
+      taskId: string | null;
+      /** 目录已不存在，只清 git 里的登记 */
+      stale?: true;
+    }
   | { kind: "delete-local-branch"; label: string; repoPath: string; branch: string; taskId: string | null }
   | { kind: "delete-remote-branch"; label: string; repoPath: string; branch: string; taskId: string | null }
   | { kind: "close-pr"; label: string; repo: string; number: number; taskId: string | null }
@@ -179,6 +207,10 @@ export function planReconcile(input: ReconcileInput): ReconcilePlan {
   const kept: string[] = [];
   const unknown: string[] = [];
 
+  // 工作副本先探：locked 表示有人显式保护，该任务的所有资源都不清理
+  const wts = probes.worktrees(stateDir);
+  const lockedIds = new Set(wts.filter((w) => w.locked).map((w) => basename(w.path)));
+
   const localSets = new Map<string, Set<string> | null>();
   const remoteSets = new Map<string, Set<string> | null>();
 
@@ -193,6 +225,10 @@ export function planReconcile(input: ReconcileInput): ReconcilePlan {
     for (const branch of branches ?? []) {
       const id = taskIdOfBranch(branch);
       if (!id || !inScope(id)) continue;
+      if (lockedIds.has(id)) {
+        kept.push(`本地分支 ${branch}（任务 ${id} 的工作副本已锁定，保留）`);
+        continue;
+      }
       const task = byId.get(id);
       if (!task) {
         local.push({
@@ -225,6 +261,10 @@ export function planReconcile(input: ReconcileInput): ReconcilePlan {
       for (const branch of heads) {
         const id = taskIdOfBranch(branch);
         if (!id || !inScope(id)) continue;
+        if (lockedIds.has(id)) {
+          kept.push(`远程分支 origin/${branch}（任务 ${id} 的工作副本已锁定，保留）`);
+          continue;
+        }
         const task = byId.get(id);
         if (!task) {
           remote.push({
@@ -257,6 +297,10 @@ export function planReconcile(input: ReconcileInput): ReconcilePlan {
       for (const pr of open) {
         const id = taskIdOfBranch(pr.head);
         if (!id || !inScope(id)) continue;
+        if (lockedIds.has(id)) {
+          kept.push(`PR #${pr.number} ${pr.head}（任务 ${id} 的工作副本已锁定，保留）`);
+          continue;
+        }
         const task = byId.get(id);
         if (!task) {
           prs.push({
@@ -283,10 +327,33 @@ export function planReconcile(input: ReconcileInput): ReconcilePlan {
     }
   }
 
-  for (const wt of probes.worktrees(stateDir)) {
+  for (const wt of wts) {
     const id = basename(wt.path);
     if (!TASK_ID.test(id) || !inScope(id)) continue;
+    if (wt.locked) {
+      kept.push(`工作副本 ${wt.path}（已锁定，保留）`);
+      continue;
+    }
     const task = byId.get(id);
+    if (task && ACTIVE[task.status]) {
+      kept.push(`工作副本 ${wt.path}（任务 ${id} ${task.status}，保留）`);
+      continue;
+    }
+    // 目录已被手工删掉时只剩 git 登记；不 prune 会让同名分支永远删不掉
+    if (wt.stale) {
+      worktrees.push({
+        kind: "remove-worktree",
+        label: task
+          ? residueLabel(task, `清理工作副本登记 ${wt.path}（目录已不存在）`)
+          : `清理工作副本登记 ${wt.path}（目录已不存在，无任务记录）`,
+        workdir: wt.path,
+        repoPath: wt.repoPath,
+        taskId: task?.id ?? null,
+        stale: true,
+      });
+      continue;
+    }
+    // 成功任务的交付物在分支与 PR 上，工作副本属于必然回收的残留
     if (!task) {
       worktrees.push({
         kind: "remove-worktree",
@@ -295,11 +362,6 @@ export function planReconcile(input: ReconcileInput): ReconcilePlan {
         repoPath: wt.repoPath,
         taskId: null,
       });
-      continue;
-    }
-    // 成功任务的交付物在分支与 PR 上，工作副本属于必然回收的残留
-    if (ACTIVE[task.status]) {
-      kept.push(`工作副本 ${wt.path}（任务 ${id} ${task.status}，保留）`);
       continue;
     }
     worktrees.push({
@@ -311,10 +373,10 @@ export function planReconcile(input: ReconcileInput): ReconcilePlan {
     });
   }
 
-  // 账本核对：资源已经不存在时删掉记录；运行中的任务不做账本清理
+  // 账本核对：资源已经不存在时删掉记录；运行中的任务与锁定任务不做账本清理
   const relevant = onlyTaskId ? ([byId.get(onlyTaskId)].filter(Boolean) as Task[]) : tasks;
   for (const task of relevant) {
-    if (ACTIVE[task.status]) continue;
+    if (ACTIVE[task.status] || lockedIds.has(task.id)) continue;
     const repo = repos.find((r) => r.alias === task.repo);
     const localSet = repo ? localSets.get(repo.path) : null;
     const remoteSet = repo ? remoteSets.get(repo.path) : null;
@@ -397,13 +459,34 @@ export function applyReconcile(plan: ReconcilePlan, deps: ReconcileDeps): Reconc
   });
 }
 
+/** 工作副本是否仍在 git 登记里；目录可能已被删，按路径末段比对 */
+function registered(repoPath: string, workdir: string): boolean {
+  const res = sh(["git", "-C", repoPath, "worktree", "list", "--porcelain"]);
+  if (res.code !== 0) return true;
+  const name = basename(workdir);
+  return res.out
+    .split("\n")
+    .some((line) => line.startsWith("worktree ") && basename(line.slice("worktree ".length)) === name);
+}
+
 function runAction(a: ReconcileAction, deps: ReconcileDeps): { ok: boolean; error?: string } {
   switch (a.kind) {
     case "remove-worktree": {
-      if (a.repoPath) removeWorktree(a.repoPath, a.workdir);
-      if (existsSync(a.workdir)) rmSync(a.workdir, { recursive: true, force: true });
-      // 目录被直接删掉时 git 仍保留 worktree 登记，导致后续 branch -D 拒绝
-      if (a.repoPath) sh(["git", "-C", a.repoPath, "worktree", "prune"]);
+      if (a.stale) {
+        if (!a.repoPath) return { ok: false, error: "工作副本未登记到任何仓库，无法清理登记" };
+        const pruned = sh(["git", "-C", a.repoPath, "worktree", "prune"]);
+        if (pruned.code !== 0) return { ok: false, error: (pruned.err || pruned.out).slice(0, 300) };
+        if (registered(a.repoPath, a.workdir)) return { ok: false, error: "工作副本登记仍然存在" };
+        return { ok: true };
+      }
+      if (a.repoPath) {
+        // 只交给 git 删：locked 的工作副本 git 会拒绝，兜底强删会毁掉受保护的内容
+        const res = removeWorktree(a.repoPath, a.workdir);
+        if (res.code !== 0) return { ok: false, error: (res.err || res.out).slice(0, 300) };
+      } else {
+        // 未登记的目录没有 git 语义，只能直接删
+        rmSync(a.workdir, { recursive: true, force: true });
+      }
       if (existsSync(a.workdir)) return { ok: false, error: "工作副本仍然存在" };
       if (a.taskId) deps.store.removeEffect(a.taskId, "worktree", a.workdir);
       return { ok: true };

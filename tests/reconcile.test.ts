@@ -348,6 +348,92 @@ describe("Router.reconcile", () => {
     expect(store.effectsOf(FAILED).map((e) => e.kind)).toEqual(["pr"]);
   });
 
+  test("gh 不在 PATH 时按无法确认处理，不抛异常", async () => {
+    const wt = leaveResidue(FAILED);
+    seedTask(FAILED, "failed");
+    const runner: Runner = () => {
+      throw new Error('Executable not found in $PATH: "gh"');
+    };
+    const router = new Router({
+      cfg,
+      store,
+      worker: okWorker,
+      deliverer: new GitDeliverer(cfg),
+      channel,
+      ghRunner: runner,
+    });
+
+    await router.handle(msg("/pisa reconcile"));
+
+    expect(channel.last).toContain("PR：仓库 demo 无法查询");
+    expect(channel.last).toContain(`删除本地分支 pisa/${FAILED}`);
+    expect(existsSync(wt)).toBe(true);
+  });
+
+  test("目录已删、登记仍在时可清理登记并删掉同名分支", async () => {
+    const wt = leaveResidue(FAILED);
+    seedTask(FAILED, "failed");
+    seedEffects(FAILED, [
+      ["worktree", wt],
+      ["branch", `pisa/${FAILED}`],
+      ["push", "origin", `pisa/${FAILED}`],
+    ]);
+    rmSync(wt, { recursive: true, force: true });
+    const router = build(ghRunner([]));
+
+    await router.handle(msg("/pisa reconcile"));
+    expect(channel.last).toContain(`清理工作副本登记 ${wt}`);
+
+    await router.handle(msg("/pisa reconcile --fix"));
+    const listed = git(repo, "worktree", "list", "--porcelain")
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "));
+    expect(listed).toHaveLength(1);
+    expect(git(repo, "branch", "--list", `pisa/${FAILED}`)).toBe("");
+    expect(git(bare, "branch", "--list", `pisa/${FAILED}`)).toBe("");
+    expect(store.effectsOf(FAILED)).toEqual([]);
+
+    await router.handle(msg("/pisa reconcile --fix"));
+    expect(channel.last).toContain("没有可清理的残留");
+  });
+
+  test("locked 工作副本不清理，资源与账本都保留", async () => {
+    const wt = leaveResidue(FAILED);
+    expect(sh(["git", "-C", repo, "worktree", "lock", wt]).code).toBe(0);
+    seedTask(FAILED, "failed");
+    seedEffects(FAILED, [
+      ["worktree", wt],
+      ["branch", `pisa/${FAILED}`],
+      ["push", "origin", `pisa/${FAILED}`],
+    ]);
+    const gh = ghRunner([{ number: 7, head: `pisa/${FAILED}` }]);
+    const router = build(gh);
+
+    await router.handle(msg("/pisa reconcile --fix"));
+
+    expect(channel.last).toContain("没有可清理的残留");
+    expect(channel.last).toContain(`工作副本 ${wt}（已锁定，保留）`);
+    expect(existsSync(wt)).toBe(true);
+    expect(git(repo, "branch", "--list", `pisa/${FAILED}`)).toContain(`pisa/${FAILED}`);
+    expect(git(bare, "branch", "--list", `pisa/${FAILED}`)).toContain(`pisa/${FAILED}`);
+    expect(gh.closed).toEqual([]);
+    expect(store.effectsOf(FAILED)).toHaveLength(3);
+  });
+
+  test("同名 tag 不会让存在的分支被当成已删除", async () => {
+    git(repo, "branch", `pisa/${DONE}`);
+    git(repo, "tag", `pisa/${DONE}`);
+    seedTask(DONE, "succeeded");
+    seedEffects(DONE, [["branch", `pisa/${DONE}`]]);
+    const router = build(ghRunner([]));
+
+    await router.handle(msg("/pisa reconcile"));
+    expect(channel.last).not.toContain("删除账本记录");
+
+    await router.handle(msg("/pisa reconcile --fix"));
+    expect(store.effectsOf(DONE)).toHaveLength(1);
+  });
+
   test("资源已不存在时清掉账本行", async () => {
     seedTask(DONE, "succeeded");
     seedEffects(DONE, [

@@ -28,9 +28,11 @@ export function createWorktree(repoPath: string, workdir: string, branch: string
   return sh(["git", "-C", repoPath, "worktree", "add", workdir, branch]);
 }
 
-export function removeWorktree(repoPath: string, workdir: string): void {
-  sh(["git", "-C", repoPath, "worktree", "remove", "--force", workdir]);
+/** 删除工作副本并清理登记；返回 git 的结果，调用方据此判断是否真的删掉 */
+export function removeWorktree(repoPath: string, workdir: string): ExecResult {
+  const res = sh(["git", "-C", repoPath, "worktree", "remove", "--force", workdir]);
   sh(["git", "-C", repoPath, "worktree", "prune"]);
+  return res;
 }
 
 /** 清理失败/取消任务留下的空分支 */
