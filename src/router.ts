@@ -130,6 +130,44 @@ export class Router {
     return lines.join("\n");
   }
 
+  /** 任务统计：总量与状态、成功率、平均耗时、仓库分布、最近 7 天完成量 */
+  private statsReport(): string {
+    const start = new Date(this.now());
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 6);
+    const s = this.deps.store.stats(start.getTime());
+    const c = s.counts;
+    const total = Object.values(c).reduce((sum, n) => sum + n, 0);
+    const finished = c.succeeded + c.failed + c.cancelled;
+
+    const lines = [
+      "任务统计",
+      `总量 ${total} · 成功 ${c.succeeded} · 失败 ${c.failed} · 取消 ${c.cancelled} · 运行中 ${c.running} · 排队 ${c.queued} · 暂停 ${c.paused}`,
+      finished === 0
+        ? "成功率 —（还没有已结束任务）"
+        : `成功率 ${Math.round((c.succeeded / finished) * 100)}%（${c.succeeded}/${finished}）`,
+      s.avgSucceededMs === null ? "平均耗时 —" : `平均耗时 ${formatDuration(s.avgSucceededMs)}（成功任务）`,
+      "",
+      "按仓库",
+    ];
+
+    const TOP_REPOS = 5;
+    if (s.repos.length === 0) lines.push("(无)");
+    for (const r of s.repos.slice(0, TOP_REPOS)) lines.push(`${r.repo} · ${r.total} 个 · 成功 ${r.succeeded}`);
+    if (s.repos.length > TOP_REPOS) lines.push(`其余 ${s.repos.length - TOP_REPOS} 个仓库未列出`);
+
+    lines.push("", "最近 7 天完成");
+    const byDay = new Map(s.days.map((d) => [d.day, d.n]));
+    for (let i = 0; i < 7; i += 1) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      const md = `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      lines.push(`${md} · ${byDay.get(`${d.getFullYear()}-${md}`) ?? 0}`);
+    }
+
+    return lines.join("\n");
+  }
+
   /** 立即执行一个已进入 running 的任务；不等待完成 */
   private launch(task: Task): void {
     const branch = task.branch ?? `pisa/${task.id}`;
@@ -191,6 +229,7 @@ export class Router {
       const t = msg.text.trim();
       if (t === "/start" || t === "/help" || t === "帮助") cmd = { kind: "help", body: "" };
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
+      else if (t === "/stats" || t === "统计") cmd = { kind: "stats", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
@@ -210,6 +249,7 @@ export class Router {
           `${cfg.trigger} continue <任务号> <新要求>  接着上一轮的分支做`,
           `${cfg.trigger} merge <任务号>     合并到主干（自举）`,
           `${cfg.trigger} schedules      查看定时任务（私聊可用 /schedules）`,
+          `${cfg.trigger} stats          任务统计（私聊可用 /stats）`,
           `${cfg.trigger} help           本帮助（私聊可用 /help）`,
         ].join("\n"),
       );
@@ -253,6 +293,11 @@ export class Router {
 
     if (cmd.kind === "status") {
       await this.reply(msg.chatId, this.statusBoard());
+      return;
+    }
+
+    if (cmd.kind === "stats") {
+      await this.reply(msg.chatId, this.statsReport());
       return;
     }
 

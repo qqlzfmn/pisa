@@ -139,7 +139,10 @@ export function splitRepoAlias(text: string, repos: RepoConfig[]): { alias: stri
 export function parseCommand(
   text: string,
   trigger: string,
-): { kind: "task" | "cancel" | "help" | "status" | "continue" | "merge" | "resume" | "schedules"; body: string } | null {
+): {
+  kind: "task" | "cancel" | "help" | "status" | "stats" | "continue" | "merge" | "resume" | "schedules";
+  body: string;
+} | null {
   const t = text.trim();
   if (!t.startsWith(trigger)) return null;
   const rest = t.slice(trigger.length).trim();
@@ -148,6 +151,7 @@ export function parseCommand(
   if (head === "cancel" || head === "取消") return { kind: "cancel", body: tail.join(" ").trim() };
   if (head === "help" || head === "帮助") return { kind: "help", body: "" };
   if (head === "status" || head === "状态") return { kind: "status", body: "" };
+  if (head === "stats" || head === "统计") return { kind: "stats", body: "" };
   if (head === "schedules" || head === "定时") return { kind: "schedules", body: "" };
   if (head === "continue" || head === "继续") return { kind: "continue", body: tail.join(" ").trim() };
   if (head === "merge" || head === "合并") return { kind: "merge", body: tail.join(" ").trim() };

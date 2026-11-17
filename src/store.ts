@@ -99,6 +99,16 @@ function toTask(r: Row): Task {
   };
 }
 
+export interface TaskStats {
+  counts: Record<TaskStatus, number>;
+  /** 成功任务平均耗时（毫秒）；没有成功任务时为 null */
+  avgSucceededMs: number | null;
+  /** 按仓库聚合，任务数倒序，同数按仓库名 */
+  repos: Array<{ repo: string; total: number; succeeded: number }>;
+  /** since 之后按本地日期分组的已结束任务数 */
+  days: Array<{ day: string; n: number }>;
+}
+
 export class Store {
   readonly db: Database;
 
@@ -302,6 +312,34 @@ export class Store {
     const counts: Record<TaskStatus, number> = { queued: 0, running: 0, paused: 0, succeeded: 0, failed: 0, cancelled: 0 };
     for (const r of rows) counts[r.status] = r.n;
     return counts;
+  }
+
+  /** 统计聚合：状态分布、成功任务平均耗时、按仓库、按本地日期；口径见 docs/specs/012-stats */
+  stats(since: number): TaskStats {
+    const counts = this.countByStatus();
+
+    const avg = this.db
+      .query(
+        "SELECT AVG(COALESCE(ended_at, created_at) - COALESCE(started_at, created_at)) AS ms FROM tasks WHERE status = 'succeeded'",
+      )
+      .get() as { ms: number | null };
+
+    const repos = this.db
+      .query(
+        "SELECT repo, COUNT(*) AS total, SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded FROM tasks GROUP BY repo ORDER BY total DESC, repo",
+      )
+      .all() as Array<{ repo: string; total: number; succeeded: number }>;
+
+    const days = this.db
+      .query(
+        `SELECT date(ended_at / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS n
+         FROM tasks
+         WHERE status IN ('succeeded','failed','cancelled') AND ended_at IS NOT NULL AND ended_at >= ?
+         GROUP BY day`,
+      )
+      .all(since) as Array<{ day: string; n: number }>;
+
+    return { counts, avgSucceededMs: avg.ms, repos, days };
   }
 
   close(): void {

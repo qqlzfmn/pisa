@@ -79,6 +79,11 @@ describe("parseCommand", () => {
     expect(parseCommand("/pisa cancel t_1", "/pisa")).toEqual({ kind: "cancel", body: "t_1" });
     expect(parseCommand("/pisa", "/pisa")).toEqual({ kind: "help", body: "" });
   });
+  test("统计命令", () => {
+    expect(parseCommand("/pisa stats", "/pisa")).toEqual({ kind: "stats", body: "" });
+    expect(parseCommand("/pisa 统计", "/pisa")).toEqual({ kind: "stats", body: "" });
+  });
+
   test("没有触发词不响应", () => {
     expect(parseCommand("你好", "/pisa")).toBeNull();
   });
@@ -251,6 +256,49 @@ describe("Router", () => {
     const text = channel.sent.at(-1)!.text;
     expect(text).toContain("运行中\n(无)");
     expect(text).toContain("汇总：0 个任务 · 成功 0 · 失败 0 · 暂停 0");
+  });
+
+  test("私聊 /stats 空库也给出完整报告", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/stats", { isDirect: true }));
+    expect(store.recentTasks().length).toBe(0);
+    const text = channel.sent.at(-1)!.text;
+    expect(text).toContain("总量 0 · 成功 0 · 失败 0 · 取消 0 · 运行中 0 · 排队 0 · 暂停 0");
+    expect(text).toContain("成功率 —（还没有已结束任务）");
+    expect(text).toContain("平均耗时 —");
+    expect(text).toContain("按仓库\n(无)");
+    expect(text.match(/^\d{2}-\d{2} · 0$/gm)?.length).toBe(7);
+  });
+
+  test("/pisa stats 聚合状态、耗时、仓库与最近 7 天", async () => {
+    const now = new Date(2026, 10, 17, 12, 0, 0).getTime();
+    // 真实流程：queued 落库 → 占位 running → 终态，耗时来自 started_at / ended_at
+    seedTask({ id: "t_s1", createdAt: now - 300_000 });
+    store.claimQueued("t_s1", now - 300_000, "pisa/t_s1");
+    store.transition("t_s1", "succeeded", { endedAt: now - 180_000 });
+
+    seedTask({ id: "t_s2", createdAt: now - 25 * 3_600_000 });
+    store.claimQueued("t_s2", now - 25 * 3_600_000, "pisa/t_s2");
+    store.transition("t_s2", "succeeded", { endedAt: now - 25 * 3_600_000 + 1_200_000 });
+
+    seedTask({ id: "t_f1", repo: "family", createdAt: now - 60_000 });
+    store.claimQueued("t_f1", now - 60_000, "pisa/t_f1");
+    store.transition("t_f1", "failed", { endedAt: now - 30_000 });
+
+    seedTask({ id: "t_r1", createdAt: now - 10_000 });
+    store.claimQueued("t_r1", now - 10_000, "pisa/t_r1");
+
+    const router = build(okWorker, () => now);
+    await router.handle(msg("/pisa stats"));
+
+    const text = channel.sent.at(-1)!.text;
+    expect(text).toContain("总量 4 · 成功 2 · 失败 1 · 取消 0 · 运行中 1 · 排队 0 · 暂停 0");
+    expect(text).toContain("成功率 67%（2/3）");
+    expect(text).toContain("平均耗时 11m0s（成功任务）");
+    expect(text).toContain("demo · 3 个 · 成功 2");
+    expect(text).toContain("family · 1 个 · 成功 0");
+    expect(text).toContain("11-17 · 2");
+    expect(text).toContain("11-16 · 1");
   });
 
   test("非白名单用户被拒，且不建任务", async () => {
