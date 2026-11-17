@@ -109,6 +109,36 @@ describe("Router", () => {
     return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel });
   }
 
+  /** 直接落一条任务，用于构造续跑/占用场景 */
+  function seedTask(over: Partial<Task> & { id: string }): Task {
+    const { id, ...rest } = over;
+    const task: Task = {
+      id,
+      source: `seed:${id}`,
+      channel: "fake",
+      chatId: "c1",
+      requester: "u1",
+      repo: "demo",
+      prompt: "续跑",
+      status: "queued",
+      branch: null,
+      prUrl: null,
+      sessionId: null,
+      baseRef: null,
+      context: null,
+      replyPr: null,
+      summary: null,
+      error: null,
+      createdAt: 0,
+      startedAt: null,
+      endedAt: null,
+      cancelRequested: false,
+      ...rest,
+    };
+    store.insertTask(task);
+    return task;
+  }
+
   test("私聊不带触发词也能建任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("把登录超时改成 30 分钟", { isDirect: true }));
@@ -163,6 +193,60 @@ describe("Router", () => {
     expect(existsSync(join(stateDir, "worktrees", task.id))).toBe(false);
     // 回执
     expect(channel.sent.some((s) => s.text.includes("完成"))).toBe(true);
+  });
+
+  test("续跑任务失败不删除共享分支", async () => {
+    const failWorker: WorkerRunner = {
+      async run(): Promise<WorkerResult> {
+        return { ok: false, summary: "", error: "改坏了", exitCode: 1 };
+      },
+    };
+    const router = build(failWorker);
+    const shared = "pisa/parent";
+    expect(sh(["git", "-C", repo, "branch", shared, "main"]).code).toBe(0);
+    const task = seedTask({ id: "t_child_fail", branch: shared, baseRef: shared, prUrl: "https://github.com/o/r/pull/12" });
+
+    await router.drainOnce();
+
+    expect(store.get(task.id)?.status).toBe("failed");
+    expect(sh(["git", "-C", repo, "rev-parse", "--verify", shared]).code).toBe(0);
+    // 任务自建的分支才应该被清理
+    expect(sh(["git", "-C", repo, "rev-parse", "--verify", `pisa/${task.id}`]).code).not.toBe(0);
+  });
+
+  test("续跑任务取消不删除共享分支", async () => {
+    const cancelWorker: WorkerRunner = {
+      async run(): Promise<WorkerResult> {
+        return { ok: false, summary: "", error: "任务已取消", exitCode: 130 };
+      },
+    };
+    const router = build(cancelWorker);
+    const shared = "pisa/parent";
+    expect(sh(["git", "-C", repo, "branch", shared, "main"]).code).toBe(0);
+    const task = seedTask({ id: "t_child_cancel", branch: shared, baseRef: shared });
+    store.requestCancel(task.id);
+
+    await router.drainOnce();
+
+    expect(store.get(task.id)?.status).toBe("cancelled");
+    expect(sh(["git", "-C", repo, "rev-parse", "--verify", shared]).code).toBe(0);
+  });
+
+  test("分支被其它工作副本占用时任务失败并报错，不新建同名分支", async () => {
+    const router = build(okWorker);
+    const shared = "pisa/busy";
+    expect(createWorktree(repo, join(stateDir, "busy-wt"), shared).code).toBe(0);
+    const task = seedTask({ id: "t_busy", branch: shared, baseRef: shared });
+
+    await router.drainOnce();
+
+    const done = store.get(task.id)!;
+    expect(done.status).toBe("failed");
+    expect(done.error).toContain("已被其它工作副本占用");
+    expect(done.error).toContain(shared);
+    // 没有为目标任务建出工作副本，也没有派生新分支
+    expect(existsSync(join(stateDir, "worktrees", task.id))).toBe(false);
+    expect(sh(["git", "-C", repo, "rev-parse", "--verify", `pisa/${task.id}`]).code).not.toBe(0);
   });
 
   test("Worker 失败时任务 failed，不产生分支提交", async () => {

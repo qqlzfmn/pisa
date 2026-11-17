@@ -16,3 +16,5 @@
       验证: `tsc --noEmit`；`bun test` 全绿
 - [x] T8 README 增加「GitHub PR 评论」小节
       验证: 人工检查 README 正文
+- [x] T9 评论续跑的分支/PR 语义：继承父任务分支与 prUrl、只清理自建分支、复用 PR 不再新建、分支占用明确失败 (FR-006/FR-012/FR-013)
+      验证: `bun test tests/router.test.ts tests/github-comments.test.ts`；`tsc --noEmit`

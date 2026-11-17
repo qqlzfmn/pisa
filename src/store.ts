@@ -150,9 +150,24 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, created_at, base_ref, context, reply_pr)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [t.id, t.source, t.channel, t.chatId, t.requester, t.repo, t.prompt, t.status, t.createdAt, t.baseRef, t.context, t.replyPr],
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        t.id,
+        t.source,
+        t.channel,
+        t.chatId,
+        t.requester,
+        t.repo,
+        t.prompt,
+        t.status,
+        t.branch,
+        t.prUrl,
+        t.createdAt,
+        t.baseRef,
+        t.context,
+        t.replyPr,
+      ],
     );
   }
 

@@ -14,12 +14,22 @@ export interface Deliverer {
   deliver(task: Task, workdir: string, repo: RepoConfig): Promise<DeliveryResult>;
 }
 
+/** gh 能力的注入点：测试用假实现验证「更新既有 PR 时不新建 PR」 */
+export interface DelivererDeps {
+  createPr?: typeof createPr;
+  hasGh?: () => boolean;
+}
+
 export class GitDeliverer implements Deliverer {
-  constructor(private cfg: Config) {}
+  constructor(
+    private cfg: Config,
+    private deps: DelivererDeps = {},
+  ) {}
 
   async deliver(task: Task, workdir: string, repo: RepoConfig): Promise<DeliveryResult> {
     const files = changedFiles(workdir);
-    if (files.length === 0) return { files: [], pushed: false };
+    // 续跑既有 PR 时没有改动也要保住 PR 绑定
+    if (files.length === 0) return { files: [], pushed: false, prUrl: task.prUrl ?? undefined };
 
     const base = repo.baseBranch ?? "main";
     const branch = task.branch ?? `pisa/${task.id}`;
@@ -37,9 +47,13 @@ export class GitDeliverer implements Deliverer {
       pushed = true;
     }
 
+    // 已有 PR：分支推送即更新 PR，不再新建
+    if (task.prUrl) return { branch, prUrl: task.prUrl, files, pushed };
+
+    const ghReady = this.deps.hasGh ?? hasGh;
     let prUrl: string | undefined;
-    if (this.cfg.delivery.pr && pushed && remote.includes("github.com") && hasGh()) {
-      const pr = createPr(workdir, {
+    if (this.cfg.delivery.pr && pushed && remote.includes("github.com") && ghReady()) {
+      const pr = (this.deps.createPr ?? createPr)(workdir, {
         title,
         body: `任务号：${task.id}\n\n${task.prompt}\n\n---\n由 pisa 自动创建。`,
         base,

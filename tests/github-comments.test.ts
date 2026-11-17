@@ -13,7 +13,7 @@ import { GithubWatcher } from "../src/github-watcher";
 import { Store } from "../src/store";
 import { Router } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
-import { sh, type ExecResult } from "../src/git";
+import { createWorktree, sh, type ExecResult } from "../src/git";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
@@ -255,10 +255,57 @@ describe("GitHub 评论 → 任务", () => {
     const child = store.recent().find((t) => t.prompt === "再改一处")!;
     expect(child).toBeDefined();
     expect(child.baseRef).toBe("pisa/t_parent");
+    // 评论续跑落在父任务分支与原 PR 上，不新开分支/PR
+    expect(child.branch).toBe("pisa/t_parent");
+    expect(child.prUrl).toBe("https://github.com/o/r/pull/12");
     expect(child.context).toContain("任务号：t_parent");
     expect(child.context).toContain("#12");
     expect(child.context).toContain("PR 评论：/pisa 再改一处");
     expect(child.replyPr).toBe(12);
+  });
+
+  test("评论续跑在原分支上提交，不新建分支也不新建 PR", async () => {
+    expect(sh(["git", "-C", repo, "branch", "pisa/t_parent", "main"]).code).toBe(0);
+    store.insertTask({ ...baseTask, id: "t_parent", prompt: "第一轮" });
+    expect(store.claimQueued("t_parent", Date.now(), "pisa/t_parent")).toBe(true);
+    expect(
+      store.transition("t_parent", "succeeded", {
+        summary: "建了 a.txt",
+        prUrl: "https://github.com/o/r/pull/12",
+        endedAt: Date.now(),
+      }),
+    ).toBe(true);
+
+    const editingWorker: WorkerRunner = {
+      async run(_task, workdir): Promise<WorkerResult> {
+        writeFileSync(join(workdir, "out.txt"), "hi\n");
+        return { ok: true, summary: "再改一处", exitCode: 0 };
+      },
+    };
+    const router = new Router({ cfg, store, worker: editingWorker, deliverer: new GitDeliverer(cfg), channel });
+    await router.handle({
+      eventId: "github:comment:20",
+      channel: "github",
+      chatId: "c1",
+      userId: "u1",
+      text: "/pisa 再改一处",
+      continueFrom: "t_parent",
+      replyPr: 12,
+    });
+
+    const child = store.recent()[0]!;
+    expect(child.branch).toBe("pisa/t_parent");
+    expect(child.prUrl).toBe("https://github.com/o/r/pull/12");
+
+    await router.drainOnce();
+
+    const done = store.get(child.id)!;
+    expect(done.status).toBe("succeeded");
+    expect(done.branch).toBe("pisa/t_parent");
+    expect(done.prUrl).toBe("https://github.com/o/r/pull/12");
+    // 提交落在共享分支上，没有派生新分支
+    expect(sh(["git", "-C", repo, "cat-file", "-e", "pisa/t_parent:out.txt"]).code).toBe(0);
+    expect(sh(["git", "-C", repo, "rev-parse", "--verify", `pisa/${child.id}`]).code).not.toBe(0);
   });
 
   test("PR 没有成功任务时按普通任务处理", async () => {
@@ -365,5 +412,83 @@ describe("GitHub 评论 → 任务", () => {
 
     expect(store.recent()[0]!.status).toBe("succeeded");
     expect(calls).toEqual([]);
+  });
+});
+
+describe("GitDeliverer 更新既有 PR", () => {
+  let repo: string;
+  let bare: string;
+  let stateDir: string;
+  let cfg: Config;
+
+  beforeEach(() => {
+    repo = makeRepo();
+    bare = mkdtempSync(join(tmpdir(), "pisa-gh-bare-"));
+    sh(["git", "init", "--bare", "-q", bare]);
+    sh(["git", "-C", repo, "remote", "add", "origin", bare]);
+    stateDir = mkdtempSync(join(tmpdir(), "pisa-gh-deliver-"));
+    const base = makeCfg(repo, stateDir);
+    cfg = {
+      ...base,
+      delivery: { ...base.delivery, push: true, pr: true },
+      // 远端地址决定是否走 gh pr create；推送实际走 origin（bare）
+      repos: [{ alias: "demo", path: repo, baseBranch: "main", remote: "https://github.com/o/r.git" }],
+    };
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(bare, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  /** 父任务分支 + 已挂载的工作副本，带一处改动 */
+  function setup(): string {
+    expect(sh(["git", "-C", repo, "branch", "pisa/parent", "main"]).code).toBe(0);
+    const workdir = join(stateDir, "wt");
+    expect(createWorktree(repo, workdir, "pisa/parent").code).toBe(0);
+    writeFileSync(join(workdir, "out.txt"), "hi\n");
+    return workdir;
+  }
+
+  test("task.prUrl 非空时只推送分支，不新建 PR", async () => {
+    const workdir = setup();
+    const calls: string[] = [];
+    const deliverer = new GitDeliverer(cfg, {
+      hasGh: () => true,
+      createPr: (_workdir, opts) => {
+        calls.push(opts.head);
+        return reply(0, "https://github.com/o/r/pull/99");
+      },
+    });
+
+    const res = await deliverer.deliver(
+      { ...baseTask, id: "t_child", branch: "pisa/parent", prUrl: "https://github.com/o/r/pull/12" },
+      workdir,
+      cfg.repos[0]!,
+    );
+
+    expect(calls).toEqual([]);
+    expect(res.branch).toBe("pisa/parent");
+    expect(res.prUrl).toBe("https://github.com/o/r/pull/12");
+    expect(res.pushed).toBe(true);
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "--verify", "pisa/parent"]).code).toBe(0);
+  });
+
+  test("没有 prUrl 时按原有逻辑创建 PR", async () => {
+    const workdir = setup();
+    const calls: string[] = [];
+    const deliverer = new GitDeliverer(cfg, {
+      hasGh: () => true,
+      createPr: (_workdir, opts) => {
+        calls.push(opts.head);
+        return reply(0, "https://github.com/o/r/pull/99");
+      },
+    });
+
+    const res = await deliverer.deliver({ ...baseTask, id: "t_new", branch: "pisa/parent" }, workdir, cfg.repos[0]!);
+
+    expect(calls).toEqual(["pisa/parent"]);
+    expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
   });
 });

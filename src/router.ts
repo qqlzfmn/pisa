@@ -96,7 +96,7 @@ export class Router {
     while (this.active.size < limit) {
       const task = this.deps.store.nextQueued();
       if (!task) break;
-      const branch = `pisa/${task.id}`;
+      const branch = task.branch ?? `pisa/${task.id}`;
       if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
       this.launch({ ...task, branch, status: "running" });
     }
@@ -180,6 +180,9 @@ export class Router {
     let prompt = cmd.body;
     let baseRef: string | null = null;
     let context: string | null = null;
+    /** PR 评论续跑：直接落在父任务的分支与原 PR 上 */
+    let branch: string | null = null;
+    let prUrl: string | null = null;
 
     // 续跑：命令式 `/pisa continue <任务号> <新要求>`，或 PR 评论直接指定父任务
     if (cmd.kind === "continue" || msg.continueFrom) {
@@ -200,6 +203,11 @@ export class Router {
         return;
       }
       baseRef = parent.branch;
+      if (msg.replyPr) {
+        // 评论续跑必须更新原 PR：复用父任务分支，不留空让 fill() 新开 pisa/<新任务号>
+        branch = parent.branch;
+        prUrl = parent.prUrl;
+      }
       const lines = [
         `任务号：${parent.id}`,
         `上一轮请求：${parent.prompt}`,
@@ -246,8 +254,8 @@ export class Router {
       repo: repo.alias,
       prompt,
       status: "queued",
-      branch: null,
-      prUrl: null,
+      branch,
+      prUrl,
       sessionId: null,
       baseRef,
       context,
@@ -491,6 +499,14 @@ export class Router {
     log.write("reply-pr", res.ok ? `PR #${task.replyPr} 已回帖` : `PR #${task.replyPr} 回帖失败：${res.error.slice(0, 500)}`);
   }
 
+  /**
+   * 失败/取消清理：只删任务自建的分支。
+   * 续跑复用父任务分支时该分支是共享资产，删掉会毁掉上一轮成果与原 PR。
+   */
+  private cleanupBranch(repoPath: string, task: Task, branch: string): void {
+    if (branch === `pisa/${task.id}`) deleteBranch(repoPath, branch);
+  }
+
   private async runTask(task: Task, branch: string): Promise<void> {
     const { cfg, store, channel, worker, deliverer } = this.deps;
     const repo = repoByAlias(cfg, task.repo);
@@ -513,9 +529,13 @@ export class Router {
     } else {
       const wt = createWorktree(repo.path, workdir, branch, task.baseRef ?? repo.baseBranch ?? "HEAD");
       if (wt.code !== 0) {
-        log.write("worktree", wt.err);
-        store.transition(task.id, "failed", { error: `创建工作副本失败：${wt.err}`, endedAt: this.now() });
-        await this.reply(task.chatId, `失败 · ${task.id}\n创建工作副本失败`);
+        // 分支被占：git 拒绝把同一分支挂到两个工作副本；绝不另建同名分支顶替
+        const occupied = /already checked out|already used by worktree/i.test(wt.err);
+        const reason = occupied ? `分支 ${branch} 已被其它工作副本占用` : `创建工作副本失败（分支 ${branch}）`;
+        const error = `${reason}：${wt.err || wt.out}`;
+        log.write("worktree", error);
+        store.transition(task.id, "failed", { error, endedAt: this.now() });
+        await this.reply(task.chatId, `失败 · ${task.id}\n${error.slice(0, 800)}`);
         return;
       }
     }
@@ -546,7 +566,7 @@ export class Router {
 
     if (store.isCancelRequested(task.id) || result.error === "任务已取消") {
       removeWorktree(repo.path, workdir);
-      deleteBranch(repo.path, branch);
+      this.cleanupBranch(repo.path, task, branch);
       store.transition(task.id, "cancelled", { endedAt: this.now() });
       await this.reply(task.chatId, `已取消 · ${task.id}`);
       return;
@@ -555,7 +575,7 @@ export class Router {
     if (!result.ok) {
       log.write("failed", result.error ?? "");
       removeWorktree(repo.path, workdir);
-      deleteBranch(repo.path, branch);
+      this.cleanupBranch(repo.path, task, branch);
       store.transition(task.id, "failed", { error: result.error ?? "未知错误", endedAt: this.now() });
       await this.reply(task.chatId, `失败 · ${task.id}\n${(result.error ?? "").slice(0, 800)}`, task.id);
       return;
@@ -567,7 +587,7 @@ export class Router {
     } catch (err) {
       log.write("deliver", (err as Error).message);
       removeWorktree(repo.path, workdir);
-      deleteBranch(repo.path, branch);
+      this.cleanupBranch(repo.path, task, branch);
       store.transition(task.id, "failed", { error: (err as Error).message, endedAt: this.now() });
       await this.reply(task.chatId, `失败 · ${task.id}\n${(err as Error).message.slice(0, 800)}`);
       return;
