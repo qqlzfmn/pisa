@@ -110,7 +110,9 @@ export class Worker implements WorkerRunner {
     if (cancelled) return { ok: false, summary: "", error: "任务已取消", exitCode };
     if (timedOut) return { ok: false, summary: "", error: `执行超时（${this.cfg.timeoutSec}s）`, exitCode };
 
-    const summary = redact((texts.join("\n\n") || rawTail.slice(-40).join("\n")).trim()).slice(0, 4000);
+    // 评审的结论写在最后一条助手消息里：前序工具旁白会把从头截断的结论整段挤掉
+    const narrative = task.mode === "review" ? texts[texts.length - 1] : texts.join("\n\n");
+    const summary = redact((narrative || rawTail.slice(-40).join("\n")).trim()).slice(0, 4000);
     if (exitCode !== 0) {
       const err = rawTail.slice(-20).join("\n") || `Worker 退出码 ${exitCode}`;
       return { ok: false, summary, error: redact(err).slice(0, 2000), exitCode };

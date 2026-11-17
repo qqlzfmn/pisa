@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatReview, listOpenPulls, reviewPrompt, type PullSummary } from "../src/github";
@@ -10,7 +10,7 @@ import { GitDeliverer } from "../src/deliver";
 import { sh, type ExecResult } from "../src/git";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
-import type { WorkerRunner } from "../src/worker";
+import { Worker, type WorkerRunner } from "../src/worker";
 
 function reply(code: number, out = "", err = ""): ExecResult {
   return { code, out, err };
@@ -373,5 +373,83 @@ describe("评审任务的执行", () => {
 
     // 回复里也有结论
     expect(channel.sent.some((m) => m.text.includes("评审完成"))).toBe(true);
+  });
+});
+
+describe("评审结论的提取", () => {
+  let dir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "pisa-review-omp-"));
+    stateDir = mkdtempSync(join(tmpdir(), "pisa-review-omp-state-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  /** 真 Worker + 假 omp：只吐 message_end 流，验证摘要取哪一条助手消息 */
+  function stub(texts: string[]): Worker {
+    const script = join(dir, "omp-stub.ts");
+    writeFileSync(
+      script,
+      `#!${process.execPath}\n` +
+        `const emit = (text: string) => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }] } }));\n` +
+        `for (const text of ${JSON.stringify(texts)}) emit(text);\n`,
+    );
+    chmodSync(script, 0o755);
+    return new Worker({ adapter: "omp", command: script, timeoutSec: 20, extraArgs: [], concurrency: 1 }, stateDir);
+  }
+
+  function task(mode: Task["mode"]): Task {
+    return {
+      id: "t_review",
+      source: "github",
+      channel: "cli",
+      chatId: "c1",
+      requester: "u1",
+      repo: "demo",
+      prompt: "评审 PR",
+      mode,
+      status: "running",
+      branch: null,
+      prUrl: null,
+      sessionId: null,
+      baseRef: "a".repeat(40),
+      context: null,
+      replyPr: 7,
+      replyIssue: null,
+      replyRepo: "o/r",
+      summary: null,
+      error: null,
+      createdAt: 0,
+      startedAt: 0,
+      endedAt: null,
+      cancelRequested: false,
+    };
+  }
+
+  test("三段旁白之后才给结论：评审摘要就是结论，回帖含结论", async () => {
+    const narration = [
+      "第 1 轮：读 src/router.ts:169 的 launch 与 store.claimQueued。".repeat(45),
+      "第 2 轮：读 src/github.ts 的 formatReview 与回帖路径。".repeat(45),
+      "第 3 轮：读 docs/specs/014-pr-auto-review/spec.md 的 FR-008。".repeat(45),
+    ];
+    const conclusion = "**结论：有阻塞问题**\n\n1. src/router.ts:213 —— 评审分支在命令解析之前拦截";
+    expect(narration.join("").length).toBeGreaterThan(4000);
+
+    const res = await stub([...narration, conclusion]).run(task("review"), dir, () => {}, () => false);
+
+    expect(res.ok).toBe(true);
+    expect(res.summary).toBe(conclusion);
+    expect(formatReview(7, "a".repeat(40), res.summary)).toContain("结论：有阻塞问题");
+  });
+
+  test("工作任务的摘要仍是全部助手消息", async () => {
+    const texts = ["先看 src/router.ts", "改了 src/router.ts:169", "改完了"];
+    const res = await stub(texts).run(task("work"), dir, () => {}, () => false);
+    expect(res.summary).toBe(texts.join("\n\n"));
   });
 });
