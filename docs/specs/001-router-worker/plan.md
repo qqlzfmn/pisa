@@ -42,7 +42,7 @@ src/
 ```sql
 CREATE TABLE tasks (
   id           TEXT PRIMARY KEY,          -- t_20261117_ab12cd
-  source       TEXT NOT NULL,             -- telegram:7355434308:6582
+  source       TEXT NOT NULL,             -- telegram:<chat_id>:<message_id>
   channel      TEXT NOT NULL,
   chat_id      TEXT NOT NULL,
   requester    TEXT NOT NULL,
