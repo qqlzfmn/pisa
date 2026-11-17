@@ -20,6 +20,7 @@ import {
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
 import { TaskLogger } from "./log";
+import { METRICS_WINDOW_MS, summarize } from "./metrics";
 
 export interface RouterDeps {
   cfg: Config;
@@ -148,7 +149,19 @@ export class Router {
     }
 
     lines.push("", `汇总：${total} 个任务 · 成功 ${counts.succeeded} · 失败 ${counts.failed} · 暂停 ${counts.paused}`);
+    lines.push(this.windowLine(now));
     return lines.join("\n");
+  }
+
+  /** 看板末行：最近 24 小时的完成量、成功率与耗时分位 */
+  private windowLine(now: number): string {
+    const since = now - METRICS_WINDOW_MS;
+    const m = summarize(this.deps.store.finishedSince(since), since);
+    if (m.total === 0) return "近 24h：(无完成)";
+    const rate = m.successRate === null ? "-" : `${(m.successRate * 100).toFixed(1)}%`;
+    const p50 = m.p50Ms === null ? "-" : formatDuration(m.p50Ms);
+    const p95 = m.p95Ms === null ? "-" : formatDuration(m.p95Ms);
+    return `近 24h：完成 ${m.total} · 成功率 ${rate} · P50 ${p50} · P95 ${p95}`;
   }
 
   /** 立即执行一个已进入 running 的任务；不等待完成 */

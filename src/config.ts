@@ -47,6 +47,8 @@ export interface Config {
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string; proxy?: string } };
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
+  /** 探活接口；缺省启用，只监听 127.0.0.1 */
+  health?: { enabled: boolean; port: number };
   /** 评论 → 任务 → 回帖；repo 形如 owner/repo */
   github?: GithubConfig;
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
@@ -68,6 +70,8 @@ export interface Config {
   stateDir: string;
 }
 
+export const DEFAULT_HEALTH = { enabled: true, port: 8798 };
+
 export const DEFAULT_CONFIG: Config = {
   trigger: "/pisa",
   dmWithoutTrigger: true,
@@ -76,6 +80,7 @@ export const DEFAULT_CONFIG: Config = {
   worker: { adapter: "omp", command: "omp", timeoutSec: 3600, extraArgs: [], concurrency: 2 },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
+  health: DEFAULT_HEALTH,
   stateDir: ".pisa",
 };
 

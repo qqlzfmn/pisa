@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { BOT_COMMANDS, githubRepos, loadConfig } from "./config";
+import { BOT_COMMANDS, DEFAULT_HEALTH, githubRepos, loadConfig } from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker } from "./worker";
@@ -9,9 +9,11 @@ import { GithubWatcher } from "./github-watcher";
 import { Scheduler } from "./scheduler";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
+import { startHealthServer, type HealthServer } from "./health";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
+  const startedAt = Date.now();
   const cfg = loadConfig();
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
 
@@ -116,6 +118,18 @@ async function main(): Promise<void> {
       console.log(`[pisa] webhook listening on 127.0.0.1:${cfg.webhook.port}`);
     }
   }
+  // 探活接口：默认启用；端口占用只告警，不阻断启动
+  const healthCfg = { ...DEFAULT_HEALTH, ...cfg.health };
+  let healthServer: HealthServer | null = null;
+  if (healthCfg.enabled) {
+    try {
+      healthServer = startHealthServer({ store, port: healthCfg.port, startedAt });
+      console.log(`[pisa] health listening on 127.0.0.1:${healthServer.port}/health`);
+    } catch (err) {
+      console.error(`[pisa] 健康接口启动失败（端口 ${healthCfg.port}）：${(err as Error).message}`);
+    }
+  }
+
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
   // 关停：先停调度（最多等 3 秒让执行中的任务收尾），再停通道与数据库，
@@ -129,6 +143,7 @@ async function main(): Promise<void> {
     githubWatcher.stop();
     scheduler.stop();
     await activeChannel.stop();
+    healthServer?.stop(true);
     store.close();
     process.exit(75);
   };

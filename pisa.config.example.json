@@ -40,6 +40,10 @@
     "chatId": "<telegram chat id>",
     "userId": "<telegram user id>"
   },
+  "health": {
+    "enabled": true,
+    "port": 8798
+  },
   "github": {
     "enabled": false,
     "intervalSec": 120,

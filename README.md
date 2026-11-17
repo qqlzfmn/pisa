@@ -157,7 +157,7 @@ Telegram 启动时用 `setMyCommands` 注册命令菜单（私聊可直接点选
 - **排队**：数量 + 最多 5 条 `任务号 · 仓库 · 需求前 40 字`
 - **最近完成**：最多 5 条 `状态 · 耗时 · 仓库 · 需求前 30 字 · PR 链接`
 
-末尾一行汇总 `总数 / 成功 / 失败 / 暂停`；某段为空时显示 `(无)`。
+末尾一行汇总 `总数 / 成功 / 失败 / 暂停`，再一行最近 24 小时趋势：`近 24h：完成 3 · 成功率 66.7% · P50 20s · P95 1m0s`（无完成时显示 `近 24h：(无完成)`）；某段为空时显示 `(无)`。
 
 进程重启后，工作副本与会话都还在的 `running` 任务进入 `paused`，可用 `resume` 拉回执行；缺任一条的标记 `failed`。
 
@@ -175,6 +175,37 @@ curl -X POST http://127.0.0.1:8799/event \
 ```
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
+
+## 健康检查
+
+进程默认在 `127.0.0.1:8798` 提供只读探活接口，不用鉴权，适合 cron、systemd、脚本直接采集：
+
+```bash
+curl -s http://127.0.0.1:8798/health
+```
+
+```json
+{
+  "ok": true,
+  "uptimeSec": 3612,
+  "running": 1,
+  "queueDepth": 2,
+  "repos": [{ "repo": "demo", "running": 1, "queued": 2, "finished24h": 7 }],
+  "last24h": { "total": 9, "succeeded": 7, "failed": 1, "cancelled": 1, "successRate": 0.875, "p50Ms": 20000, "p95Ms": 60000 }
+}
+```
+
+- 只看 `GET /health`：其它方法 405，其它路径 404
+- 成功率分母是成功 + 失败，取消与撤销只计数；耗时分位按「结束 − 开始」取最近秩，未开始的任务不参与
+- 存储读取失败返回 503 与 `ok: false`、`error`
+- 端口与开关在配置里改：
+
+```json
+{ "health": { "enabled": true, "port": 8798 } }
+```
+
+端口被占用只写告警日志，不影响任务执行；只监听回环地址，不做远程暴露。
+
 
 ## 多仓库
 
@@ -365,6 +396,7 @@ specify → plan → tasks → implement → converge
 - GitHub 评论：`/pisa` 触发多仓库轮询（`github.repos`，旧的单仓库写法兼容），按仓库隔离增量下界、去重与回帖；PR 上已有任务则接续分支，普通 Issue 从主干开新分支；完成后回帖到评论所在仓库，Issue 来源的 PR 带 `Closes #<n>`
 - 主动发现：群聊关键词 + 定时探针
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
+- 健康检查：`GET /health` 探活 + 最近 24h 成功率/耗时分位/每仓库负载；`/pisa status` 末行同步趋势
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
 - 测试 89 个全绿；`tsc --noEmit` 无报错

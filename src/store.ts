@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   cancel_requested INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_ended ON tasks(status, ended_at);
 
 CREATE TABLE IF NOT EXISTS task_messages (
   chat_id    TEXT NOT NULL,
@@ -320,6 +321,25 @@ export class Store {
       .query("SELECT * FROM tasks WHERE status IN ('succeeded','failed','cancelled','rewound') ORDER BY created_at DESC LIMIT ?")
       .all(limit) as Row[];
     return rows.map(toTask);
+  }
+
+  /** 结束时间不早于 since 的终态任务，指标窗口用 */
+  finishedSince(since: number): Task[] {
+    const rows = this.db
+      .query(
+        "SELECT * FROM tasks WHERE status IN ('succeeded','failed','cancelled','rewound') AND ended_at >= ? ORDER BY ended_at",
+      )
+      .all(since) as Row[];
+    return rows.map(toTask);
+  }
+
+  /** 运行中与排队任务按仓库、状态分组的计数，健康接口的每仓库负载 */
+  activeByRepo(): Array<{ repo: string; status: TaskStatus; n: number }> {
+    return this.db
+      .query(
+        "SELECT repo, status, COUNT(*) AS n FROM tasks WHERE status IN ('running','queued') GROUP BY repo, status ORDER BY repo",
+      )
+      .all() as Array<{ repo: string; status: TaskStatus; n: number }>;
   }
 
   /** 各状态任务数；看板汇总行用 */
