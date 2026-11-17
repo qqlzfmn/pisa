@@ -70,6 +70,20 @@
       "enabled": false
     }
   ],
+  "policy": {
+    "sources": {
+      "im": {
+        "allowed": true,
+        "admission": [
+          { "listed": true, "mentioned": true, "mode": "auto" },
+          { "listed": true, "mentioned": false, "mode": "auto" },
+          { "listed": false, "mentioned": true, "mode": "observe" },
+          { "listed": false, "mentioned": false, "mode": "off" }
+        ]
+      },
+      "webhook": { "allowed": true }
+    }
+  },
   "proactive": {
     "keywords": {
       "enabled": false,

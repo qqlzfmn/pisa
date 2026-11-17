@@ -1,3 +1,5 @@
+import type { PolicySource } from "./policy";
+
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
 /** 任务对外产生的副作用种类：rewind 的依据 */
@@ -22,6 +24,8 @@ export interface IncomingMessage {
   repo?: string;
   /** 私聊（一对一）消息 */
   isDirect?: boolean;
+  /** 是否明确 @ 了 pisa；缺省按 true 处理，未知语义的通道不要设置 */
+  mentioned?: boolean;
   /** 回复的是哪条消息（用于接续对应任务） */
   replyToMessageId?: number;
   /** 直接续跑这个任务，跳过命令里的任务号（PR 评论绑定用） */
@@ -33,6 +37,15 @@ export interface IncomingMessage {
   /** 回帖目标仓库（owner/repo）；缺省时用 github 配置的单仓库 */
   replyRepo?: string;
   receivedAt?: number;
+}
+
+/** 任务被接受时依据的准入事实；策略变更不回溯改写 */
+export interface Mandate {
+  source: PolicySource;
+  channel: string;
+  listed: boolean;
+  mentioned: boolean;
+  mode: "auto" | "observe";
 }
 
 export interface Task {
@@ -57,6 +70,10 @@ export interface Task {
   replyIssue: number | null;
   /** 回帖目标仓库；null 表示回退到 github 配置的单仓库 */
   replyRepo: string | null;
+  /** 接受任务时的准入依据；旧任务为 null */
+  mandate: Mandate | null;
+  /** 接受任务时的策略版本；旧任务为 null */
+  policyVersion: string | null;
   summary: string | null;
   error: string | null;
   createdAt: number;

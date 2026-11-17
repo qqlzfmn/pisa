@@ -134,6 +134,7 @@ bun run src/index.ts
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
 /pisa status                     任务看板（私聊可用 /status）
+/pisa policy                     查看准入策略与版本（私聊可用 /policy）
 ```
 
 撤销：
@@ -174,7 +175,41 @@ curl -X POST http://127.0.0.1:8799/event \
   -d '{"prompt":"跑测试并修掉失败","eventId":"ci:12345"}'
 ```
 
-执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
+执行链路：消息 → 准入 → 仓库校验 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
+
+## 准入策略
+
+`whitelist` 决定名单，`policy` 决定每个来源怎么使用名单。不写 `policy` 时，名单内用户发起即执行，名单外一律拒绝。
+
+每个来源有 `allowed` 开关和一张四格表：名单内外 × 是否 @，每格取 `off` / `observe` / `auto`。
+
+```json
+{
+  "policy": {
+    "sources": {
+      "im": {
+        "allowed": true,
+        "admission": [
+          { "listed": true, "mentioned": true, "mode": "auto" },
+          { "listed": true, "mentioned": false, "mode": "auto" },
+          { "listed": false, "mentioned": true, "mode": "observe" },
+          { "listed": false, "mentioned": false, "mode": "off" }
+        ]
+      },
+      "webhook": { "allowed": false }
+    }
+  }
+}
+```
+
+- 来源：`im`（Telegram、CLI 等）、`github`、`webhook`、`cron`、`proactive`；未列出的来源保持默认
+- `off` 拒绝并说明；`observe` 记录判定但不建任务；`auto` 建任务
+- 四格缺失的按 `off` 处理，重复格或未知来源在启动时报错
+- 版本号默认由生效规则哈希生成，配置 `policy.version` 可固定；改动任一格版本号变化
+- 每个任务记录 `mandate`（来源、名单内外、是否 @、模式）与 `policyVersion`；策略变更不改写既有任务
+- `resume` 前按当前名单重新校验；不再满足 `auto` 时拒绝恢复、任务保持暂停，并回复当前版本与原因
+- Telegram 群聊用 bot 用户名精确匹配 `@username`；拿不到用户名时群聊按未 @ 处理
+- `/pisa policy`（私聊 `/policy`）查看版本、各来源开关与四格模式
 
 ## 多仓库
 

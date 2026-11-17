@@ -20,10 +20,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** 精确匹配 @用户名：`@family` 这类仓库前缀不会命中 */
+export function mentionsBot(text: string, username: string): boolean {
+  if (!username) return false;
+  const escaped = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`@${escaped}(?![A-Za-z0-9_])`, "i").test(text);
+}
+
 export class TelegramChannel implements ChannelAdapter {
   name = "telegram";
   private offset = 0;
   private stopped = false;
+  /** getMe 得到的 bot 用户名；拿不到时保持空串，群聊按显式请求处理 */
+  private botUsername = "";
 
   constructor(
     private token: string,
@@ -31,6 +40,12 @@ export class TelegramChannel implements ChannelAdapter {
   ) {}
 
   async start(onMessage: Handler): Promise<void> {
+    try {
+      const me = await this.api<{ username?: string }>("getMe", {});
+      this.botUsername = me.result?.username ?? "";
+    } catch {
+      // 拿不到身份不影响收消息，只是无法判断群聊是否 @
+    }
     void this.poll(onMessage);
   }
 
@@ -55,6 +70,8 @@ export class TelegramChannel implements ChannelAdapter {
             userId: String(m.from?.id ?? m.chat.id),
             text: m.text,
             isDirect: m.chat.type === "private",
+            mentioned:
+              m.chat.type === "private" || (this.botUsername !== "" && mentionsBot(m.text, this.botUsername)),
             replyToMessageId: m.reply_to_message?.message_id,
             receivedAt: (m.date ?? 0) * 1000,
           });

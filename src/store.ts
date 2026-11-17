@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
-import type { Effect, EffectKind, Task, TaskStatus } from "./types";
+import type { Effect, EffectKind, Mandate, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
 const SCHEMA = `
@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_pr         INTEGER,
   reply_issue      INTEGER,
   reply_repo       TEXT,
+  mandate          TEXT,
+  policy_version   TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -73,6 +75,8 @@ interface Row {
   reply_pr: number | null;
   reply_issue: number | null;
   reply_repo: string | null;
+  mandate: string | null;
+  policy_version: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -99,6 +103,8 @@ function toTask(r: Row): Task {
     replyPr: r.reply_pr,
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
+    mandate: r.mandate ? (JSON.parse(r.mandate) as Mandate) : null,
+    policyVersion: r.policy_version,
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -135,6 +141,12 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "mandate")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN mandate TEXT");
+    }
+    if (!cols.some((c) => c.name === "policy_version")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN policy_version TEXT");
     }
   }
 
@@ -191,8 +203,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mandate, policy_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -210,6 +222,8 @@ export class Store {
         t.replyPr,
         t.replyIssue,
         t.replyRepo,
+        t.mandate ? JSON.stringify(t.mandate) : null,
+        t.policyVersion,
       ],
     );
   }

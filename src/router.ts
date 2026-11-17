@@ -19,6 +19,15 @@ import {
   type Runner,
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import {
+  decide,
+  effectivePolicy,
+  sourceOf,
+  POLICY_SOURCES,
+  type AdmissionCell,
+  type AdmissionDecision,
+  type EffectivePolicy,
+} from "./policy";
 import { TaskLogger } from "./log";
 
 export interface RouterDeps {
@@ -70,6 +79,8 @@ export class Router {
   private stopping = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => number;
+  /** 启动时展开的生效策略；配置在运行期不变 */
+  private readonly policy: EffectivePolicy;
   /** 拒绝提示节流：同一用户 24h 只提示一次 */
   private deniedAt = new Map<string, number>();
   /** 被拦下的单英文词任务：键 `${chatId}:${userId}`，每人只保留一条 */
@@ -77,6 +88,7 @@ export class Router {
 
   constructor(private deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
+    this.policy = effectivePolicy(deps.cfg.policy);
   }
 
   start(intervalMs = 800): void {
@@ -151,6 +163,18 @@ export class Router {
     return lines.join("\n");
   }
 
+  /** 当前准入策略：版本 + 每个来源的开关与四格处置 */
+  private policyText(): string {
+    const cell = (c: AdmissionCell) => `${c.listed ? "名单内" : "名单外"}${c.mentioned ? "@" : ""}`;
+    const lines = [`准入策略 · ${this.policy.version}`];
+    for (const source of POLICY_SOURCES) {
+      const s = this.policy.sources[source];
+      const cells = s.admission.map((c) => `${cell(c)} ${c.mode}`).join(" · ");
+      lines.push(`${source} · ${s.allowed ? "允许" : "禁用"} · ${cells}`);
+    }
+    return lines.join("\n");
+  }
+
   /** 立即执行一个已进入 running 的任务；不等待完成 */
   private launch(task: Task): void {
     const branch = task.branch ?? `pisa/${task.id}`;
@@ -213,6 +237,7 @@ export class Router {
       if (t === "/start" || t === "/help" || t === "帮助") cmd = { kind: "help", body: "" };
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
+      else if (t === "/policy" || t === "策略") cmd = { kind: "policy", body: "" };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
@@ -275,6 +300,7 @@ export class Router {
           `${cfg.trigger} merge <任务号>     合并到主干（自举）`,
           `${cfg.trigger} rewind <任务号>    预览任务副作用（--yes 执行撤销）`,
           `${cfg.trigger} schedules      查看定时任务（私聊可用 /schedules）`,
+          `${cfg.trigger} policy         查看准入策略（私聊可用 /policy）`,
           `${cfg.trigger} confirm        确认刚被拦下的单英文词任务`,
           `${cfg.trigger} help           本帮助（私聊可用 /help）`,
         ].join("\n"),
@@ -324,6 +350,11 @@ export class Router {
 
     if (cmd.kind === "status") {
       await this.reply(msg.chatId, this.statusBoard());
+      return;
+    }
+
+    if (cmd.kind === "policy") {
+      await this.reply(msg.chatId, this.policyText());
       return;
     }
 
@@ -380,6 +411,26 @@ export class Router {
     // 去重：同一事件只登记一次；重复投递直接丢弃
     if (!store.claimEvent(msg.eventId, taskId)) return;
 
+    const source = sourceOf(msg.channel);
+    const listed = cfg.whitelist.users.includes(msg.userId);
+    const mentioned = msg.mentioned ?? true;
+    const admission = decide(this.policy, { source, listed, mentioned });
+    if (admission.mode === "off") {
+      const last = this.deniedAt.get(msg.userId) ?? 0;
+      if (this.now() - last > 24 * 3600 * 1000) {
+        this.deniedAt.set(msg.userId, this.now());
+        await this.reply(msg.chatId, admission.reason);
+      }
+      return;
+    }
+    if (admission.mode === "observe") {
+      await this.reply(
+        msg.chatId,
+        `已记录，不执行 · 来源 ${source}\n策略版本：${this.policy.version}\n${admission.reason}`,
+      );
+      return;
+    }
+
     const denied = this.checkAccess(msg, repo);
     if (denied) {
       const last = this.deniedAt.get(msg.userId) ?? 0;
@@ -415,6 +466,8 @@ export class Router {
       replyPr: msg.replyPr ?? null,
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
+      mandate: { source, channel: msg.channel, listed, mentioned, mode: "auto" },
+      policyVersion: this.policy.version,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -464,7 +517,6 @@ export class Router {
 
   private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
     const { cfg } = this.deps;
-    if (!cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
     if (!repo) return `仓库未配置：${msg.repo ?? "(默认)"}`;
     if (!cfg.whitelist.repos.includes(repo.alias)) return `无权限：仓库 ${repo.alias} 不在白名单。`;
     if (!isGitRepo(repo.path)) return `仓库路径不是 git 仓库：${repo.path}`;
@@ -661,6 +713,17 @@ export class Router {
     await this.reply(msg.chatId, `取消中 · ${id}`);
   }
 
+  /**
+   * 恢复前重校验：名单内外用当前白名单，来源与是否 @ 用任务记录的 mandate。
+   * 旧任务没有 mandate 时按通道推导来源，并视为显式请求，避免绕过校验。
+   */
+  private admitResume(task: Task): AdmissionDecision {
+    const { cfg } = this.deps;
+    const source = task.mandate?.source ?? sourceOf(task.channel);
+    const mentioned = task.mandate?.mentioned ?? true;
+    return decide(this.policy, { source, listed: cfg.whitelist.users.includes(task.requester), mentioned });
+  }
+
   /** 恢复被进程重启中断的任务：复用原工作副本与会话再次执行 */
   private async handleResume(msg: IncomingMessage, body: string): Promise<void> {
     const { cfg, store } = this.deps;
@@ -680,6 +743,15 @@ export class Router {
     }
     if (!existsSync(resolve(cfg.stateDir, "worktrees", id))) {
       await this.reply(msg.chatId, `任务 ${id} 的工作副本已不存在，无法恢复。`);
+      return;
+    }
+    // 策略可能已变：按当前名单重新判定，旧任务不回溯改写 mandate
+    const recheck = this.admitResume(task);
+    if (recheck.mode !== "auto") {
+      await this.reply(
+        msg.chatId,
+        `拒绝恢复 · ${id}\n策略版本：${this.policy.version}\n${recheck.reason}\n任务保持暂停，策略放宽后可重试。`,
+      );
       return;
     }
     const limit = Math.max(1, cfg.worker.concurrency ?? 1);

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { PolicyConfig } from "./policy";
 
 export interface RepoConfig {
   alias: string;
@@ -52,6 +53,8 @@ export interface Config {
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
   scheduler?: { chatId: string; userId: string };
   schedules?: ScheduleJob[];
+  /** 来源准入策略；缺省等价于「白名单用户发起即执行，名单外拒绝」 */
+  policy?: PolicyConfig;
   proactive?: {
     keywords?: { enabled: boolean; words: string[]; cooldownSec?: number; chatId?: string; userId?: string; prompt?: string };
     probe?: {
@@ -140,6 +143,7 @@ export type CommandKind =
   | "help"
   | "status"
   | "schedules"
+  | "policy"
   | "continue"
   | "merge"
   | "resume"
@@ -162,6 +166,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "help", alias: "帮助", description: "查看命令帮助", menu: true },
   { command: "status", alias: "状态", description: "查看任务看板", menu: true },
   { command: "schedules", alias: "定时", description: "查看定时任务", menu: true },
+  { command: "policy", alias: "策略", description: "查看准入策略", menu: true },
   { command: "continue", alias: "继续", description: "接着上一轮分支继续", menu: true },
   { command: "merge", alias: "合并", description: "把已完成任务合入主干", menu: true },
   { command: "resume", alias: "恢复", description: "恢复被中断的任务", menu: true },
