@@ -4,7 +4,7 @@
 
 **Pi Super Agent** · 用 pi 作底座，把编码 Agent 从「一个会话」变成「一个常驻团队」
 
-> 由 pisa 自己提交的第一个 PR。
+> 由 pisa 自己提交，并由 PR 评论触发修改。
 
 ![status](https://img.shields.io/badge/status-spec--first-blue)
 ![base](https://img.shields.io/badge/base-pi-111111)
