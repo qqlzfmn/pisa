@@ -46,8 +46,10 @@
 
 两条硬边界：
 
-- **core 不认识具体通道，也不认识具体 agent**。通道走 `ChannelAdapter` 接口（`src/types.ts`），agent 走 `WorkerAdapter` 接口（`src/adapters/types.ts`），装配只发生在 `src/index.ts`。
+- **core 不认识具体通道，也不认识具体 agent**。通道走 `ChannelAdapter` 接口（`src/types.ts`），实现只在 `src/index.ts` 按配置分支挑选；agent 走 `WorkerAdapter` 接口（`src/adapters/types.ts`），具体实现由 `src/worker.ts` 经 registry `getAdapter()`（`src/adapters/index.ts`）按名字取。core 其余模块只见到接口。
 - **core 与 runtime 之间只有两个接口**：`WorkerRunner.run()` 进（`src/worker.ts`），文件与 git 出（`src/git.ts`、`src/deliver.ts`）。skill 通过 progress jsonl 单向上报，core 轮询读取，没有回调。
+
+这两条边界不是靠约定维持，`tests/architecture-doc.test.ts` 从 import 图断言它们。
 
 core 内部模块关系：
 
