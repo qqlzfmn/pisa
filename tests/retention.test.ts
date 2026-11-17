@@ -24,7 +24,7 @@ function setup(over: Partial<Config> = {}) {
   return { dir, store, retention, done };
 }
 
-function seed(store: Store, id: string, status: TaskStatus, endedAt: number | null): void {
+function seed(store: Store, id: string, status: TaskStatus, endedAt: number | null, createdAt = endedAt ?? NOW - 100 * DAY): void {
   const task: Task = {
     id,
     source: `seed:${id}`,
@@ -44,7 +44,7 @@ function seed(store: Store, id: string, status: TaskStatus, endedAt: number | nu
     replyRepo: null,
     summary: null,
     error: null,
-    createdAt: endedAt ?? NOW - 100 * DAY,
+    createdAt,
     startedAt: null,
     endedAt,
     cancelRequested: false,
@@ -132,7 +132,7 @@ describe("每日清理", () => {
     store.claimEvent("github:comment:1:t_b", "t_b", NOW - 50 * DAY);
     writeProgress(dir, "t_b");
     const again = retention.tick(new Date(NOW));
-    expect(again).toEqual({ events: 0, progress: 0, vacuumed: false });
+    expect(again).toEqual({ events: 0, progress: 0, progressFailed: 0, vacuumed: false });
     expect(store.get("t_b")).not.toBeNull();
     expect(existsSync(join(dir, "progress", "t_b.jsonl"))).toBe(true);
 
@@ -186,6 +186,39 @@ describe("每日清理", () => {
     expect(eventIds(store)).toContain("github:comment:1:t_6d");
     done();
   });
+
+  test("判据是结束时间：创建很早但刚结束的保留，结束很久的过期", () => {
+    const { store, retention, done } = setup();
+    seed(store, "t_long", "succeeded", NOW - 10 * DAY, NOW - 90 * DAY);
+    seed(store, "t_old", "failed", NOW - 40 * DAY, NOW - 60 * DAY);
+    store.claimEvent("github:comment:1:long", "t_long", NOW - 90 * DAY);
+    store.claimEvent("github:comment:1:old", "t_old", NOW - 60 * DAY);
+
+    const r = retention.tick(new Date(NOW));
+
+    expect(r.events).toBe(1);
+    expect(eventIds(store)).toContain("github:comment:1:long");
+    expect(eventIds(store)).not.toContain("github:comment:1:old");
+    done();
+  });
+
+  test("单个 progress 文件删不掉时不影响 events 清理", () => {
+    const { dir, store, retention, done } = setup();
+    seed(store, "t_bad", "succeeded", NOW - 40 * DAY);
+    seed(store, "t_ok", "succeeded", NOW - 40 * DAY);
+    store.claimEvent("github:comment:1:t_bad", "t_bad", NOW - 40 * DAY);
+    store.claimEvent("github:comment:1:t_ok", "t_ok", NOW - 40 * DAY);
+    mkdirSync(join(dir, "progress", "t_bad.jsonl"), { recursive: true }); // 目录占位：rmSync 抛 EISDIR
+    writeProgress(dir, "t_ok");
+
+    const r = retention.tick(new Date(NOW));
+
+    expect(r.events).toBe(2);
+    expect(r.progress).toBe(1);
+    expect(r.progressFailed).toBe(1);
+    expect(existsSync(join(dir, "progress", "t_ok.jsonl"))).toBe(false);
+    done();
+  });
 });
 
 describe("每周 VACUUM", () => {
@@ -194,6 +227,15 @@ describe("每周 VACUUM", () => {
     expect(retention.tick(new Date(2026, 10, 18)).vacuumed).toBe(true);
     expect(retention.tick(new Date(2026, 10, 22)).vacuumed).toBe(false); // 同周周日
     expect(retention.tick(new Date(2026, 10, 23)).vacuumed).toBe(true); // 下周一
+    done();
+  });
+
+  test("保留期短于一周时，当周键仍不会被清理掉", () => {
+    const { store, retention, done } = setup({ retentionDays: 3 });
+    expect(retention.tick(new Date(2026, 10, 18)).vacuumed).toBe(true);
+    // 周日仍属第 47 周，距首次 VACUUM 已 4 天，超过保留期
+    expect(retention.tick(new Date(2026, 10, 22)).vacuumed).toBe(false);
+    expect(eventIds(store)).toContain("retention:vacuum:2026-W47");
     done();
   });
 });
@@ -218,6 +260,20 @@ describe("日志轮转", () => {
     for (let i = 0; i < 3; i++) log.write("worker", `line-${i}`);
     expect(existsSync(`${log.path()}.1`)).toBe(false);
     expect(readFileSync(log.path(), "utf8").trim().split("\n")).toHaveLength(3);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("单行超过上限时截断，主文件不超过上限", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pisa-log-"));
+    const log = new TaskLogger(dir, "t3", 300);
+    log.write("worker", "x".repeat(5000));
+
+    expect(statSync(log.path()).size).toBeLessThanOrEqual(300);
+    const lines = readFileSync(log.path(), "utf8").trim().split("\n");
+    expect(lines).toHaveLength(1);
+    const rec = JSON.parse(lines[0]!) as { stage: string; msg: string };
+    expect(rec.stage).toBe("worker");
+    expect(rec.msg.endsWith("…[truncated]")).toBe(true);
     rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -1,12 +1,10 @@
 import { existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_RETENTION_DAYS, type Config } from "./config";
-import type { Store } from "./store";
+import { RETENTION_TASK_ID, type Store } from "./store";
 
 const DAY_MS = 86_400_000;
 const TICK_MS = 3_600_000;
-/** 保留自身的幂等占位行使用的 task_id；没有对应任务行，不会被按任务的清理删掉 */
-const SELF_TASK = "retention";
 
 const pad2 = (n: number): string => String(n).padStart(2, "0");
 
@@ -38,12 +36,14 @@ export interface RetentionResult {
   events: number;
   /** 删除的 progress 文件数 */
   progress: number;
+  /** 删除失败的 progress 文件数；单个文件失败不影响其余清理 */
+  progressFailed: number;
   vacuumed: boolean;
 }
 
 /**
  * 数据保留：每日清掉过期终态任务的 events 与 progress 文件，每周 VACUUM。
- * 幂等键落在 events 表（task_id = "retention"），进程重启后仍能认出本日/本周是否已执行。
+ * 幂等键落在 events 表（task_id = RETENTION_TASK_ID），进程重启后仍能认出本日/本周是否已执行。
  */
 export class Retention {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -67,8 +67,9 @@ export class Retention {
   private run(): void {
     try {
       const r = this.tick();
-      if (r.events > 0 || r.progress > 0 || r.vacuumed) {
+      if (r.events > 0 || r.progress > 0 || r.progressFailed > 0 || r.vacuumed) {
         const parts = [`events ${r.events} 行`, `progress ${r.progress} 个`];
+        if (r.progressFailed > 0) parts.push(`progress 失败 ${r.progressFailed} 个`);
         if (r.vacuumed) parts.push("已 VACUUM");
         console.log(`[pisa] 数据保留：清理 ${parts.join("、")}`);
       }
@@ -80,27 +81,36 @@ export class Retention {
   /** 执行一次检查；测试直接调用 */
   tick(at = new Date(this.now())): RetentionResult {
     const { cfg, store } = this.deps;
-    const result: RetentionResult = { events: 0, progress: 0, vacuumed: false };
+    const result: RetentionResult = { events: 0, progress: 0, progressFailed: 0, vacuumed: false };
     const stamp = at.getTime();
     const days = Math.trunc(cfg.retentionDays ?? DEFAULT_RETENTION_DAYS);
+    const cleanupKey = `retention:cleanup:${dayKey(stamp)}`;
+    const vacuumKey = `retention:vacuum:${weekKey(stamp)}`;
 
     // 非正数视为关闭清理；VACUUM 仍按周执行
-    if (days > 0 && store.claimEvent(`retention:cleanup:${dayKey(stamp)}`, SELF_TASK, stamp)) {
+    if (days > 0 && store.claimEvent(cleanupKey, RETENTION_TASK_ID, stamp)) {
       const cutoff = stamp - days * DAY_MS;
+      const progressDir = join(resolve(cfg.stateDir), "progress");
       for (const id of store.finishedTaskIdsBefore(cutoff)) {
-        const file = join(resolve(cfg.stateDir), "progress", `${id}.jsonl`);
-        if (existsSync(file)) {
-          rmSync(file, { force: true });
+        const file = join(progressDir, `${id}.jsonl`);
+        try {
+          if (!existsSync(file)) continue;
+          rmSync(file);
           result.progress += 1;
+        } catch {
+          // 单个文件删不掉（权限、目录占位等）不能拖住 events 清理
+          result.progressFailed += 1;
         }
       }
       result.events = store.purgeEvents(cutoff);
     }
 
-    if (store.claimEvent(`retention:vacuum:${weekKey(stamp)}`, SELF_TASK, stamp)) {
+    if (store.claimEvent(vacuumKey, RETENTION_TASK_ID, stamp)) {
       store.vacuum();
       result.vacuumed = true;
     }
+
+    store.pruneRetentionMarks([cleanupKey, vacuumKey]);
     return result;
   }
 }

@@ -8,6 +8,9 @@ import { canTransition } from "./types";
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
 const FINISHED_IN = "('succeeded','failed','cancelled','rewound')";
 
+/** 保留策略自身幂等占位行使用的 task_id；没有对应任务行，按任务清理碰不到它 */
+export const RETENTION_TASK_ID = "retention";
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
   id               TEXT PRIMARY KEY,
@@ -212,10 +215,18 @@ export class Store {
        )`,
       [cutoff],
     );
-    const orphan = this.db.run("DELETE FROM events WHERE seen_at < ? AND task_id NOT IN (SELECT id FROM tasks)", [
-      cutoff,
-    ]);
+    // 保留占位不按时间过期：当周键若被提前删掉，同一 ISO 周会重复 VACUUM
+    const orphan = this.db.run(
+      "DELETE FROM events WHERE seen_at < ? AND task_id NOT IN (SELECT id FROM tasks) AND task_id <> ?",
+      [cutoff, RETENTION_TASK_ID],
+    );
     return byTask.changes + orphan.changes;
+  }
+
+  /** 保留占位只留当次的两个键（当日清理、当周 VACUUM），历史键删掉，避免长期积累 */
+  pruneRetentionMarks(keep: string[]): void {
+    const holes = keep.map(() => "?").join(", ");
+    this.db.run(`DELETE FROM events WHERE task_id = ? AND event_id NOT IN (${holes})`, [RETENTION_TASK_ID, ...keep]);
   }
 
   /** 回收磁盘空间；每周由 Retention 调用。WAL 模式下文件要等 checkpoint 才实际缩小 */
@@ -226,8 +237,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, started_at, ended_at, base_ref, context, reply_pr, reply_issue, reply_repo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -240,6 +251,8 @@ export class Store {
         t.branch,
         t.prUrl,
         t.createdAt,
+        t.startedAt,
+        t.endedAt,
         t.baseRef,
         t.context,
         t.replyPr,
