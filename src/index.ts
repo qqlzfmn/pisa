@@ -93,12 +93,17 @@ async function main(): Promise<void> {
   }
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
+  // 关停：先停调度（最多等 3 秒让执行中的任务收尾），再停通道与数据库，
+  // 最后用退出码 75 退出，由 supervisor 重启；遗留的 running 任务下次启动转 paused。
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await router.stop(3000);
     proactive.stop();
-    await router.stop();
     await activeChannel.stop();
     store.close();
-    process.exit(0);
+    process.exit(75);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

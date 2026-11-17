@@ -412,6 +412,46 @@ describe("Router", () => {
     await router.handle(msg(`/pisa cancel ${task.id}`));
     expect(store.get(task.id)?.status).toBe("cancelled");
   });
+
+  test("关停中 Worker 完成后任务保持 running，工作副本与分支保留", async () => {
+    const started = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const worker: WorkerRunner = {
+      async run(_task, workdir): Promise<WorkerResult> {
+        writeFileSync(join(workdir, "out.txt"), "hi\n");
+        started.resolve();
+        await gate.promise;
+        return { ok: true, summary: "改了 out.txt", exitCode: 0 };
+      },
+    };
+    const router = build(worker);
+    await router.handle(msg("/pisa 关停测试"));
+    const task = store.recent()[0]!;
+
+    const drain = router.drainOnce();
+    await started.promise;
+    const stopping = router.stop();
+    gate.resolve();
+    await stopping;
+    await drain;
+
+    const after = store.get(task.id)!;
+    expect(after.status).toBe("running");
+    expect(existsSync(join(stateDir, "worktrees", task.id))).toBe(true);
+    expect(sh(["git", "-C", repo, "rev-parse", "--verify", `pisa/${task.id}`]).code).toBe(0);
+    expect(channel.sent.some((s) => s.text.includes("完成") || s.text.includes("失败"))).toBe(false);
+  });
+
+  test("stop() 之后不再调度新任务", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 排队任务"));
+    const task = store.recent()[0]!;
+
+    await router.stop();
+    expect(await router.drainOnce()).toBe(false);
+    expect(store.get(task.id)?.status).toBe("queued");
+    expect(existsSync(join(stateDir, "worktrees", task.id))).toBe(false);
+  });
 });
 
 describe("状态机", () => {

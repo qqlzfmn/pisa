@@ -68,3 +68,17 @@
 3. `/pisa resume <任务号>` 成功后 Worker 在同一个工作副本目录上再执行一次，任务最终 `succeeded`
 4. 非原请求者、非 `paused` 状态、工作副本缺失的恢复请求都被拒绝，状态不变
 5. 会话恢复参数出现在 Worker 命令行，且提示词包含「先检查工作区、不要重做」的要求
+6. 关停时 Worker 返回后任务保持 `running`，工作副本与分支都还在，且没有 `failed` / `succeeded` 写入
+7. `stop()` 之后 `fill()` / `drainOnce()` 不再调度排队任务
+
+## 7. 关停语义
+
+进程收到 `SIGTERM` / `SIGINT` 时，执行中的任务不是失败，而是被中断。中断可续，失败不可续，两条路径必须分开。
+
+- Router 持有 `stopping` 标记，`stop()` 置位后 `fill()` 与 `drainOnce()` 立即返回，不再取排队任务
+- `runTask` 在 Worker 返回后检查 `stopping`：为真则直接返回，不写 `failed` / `succeeded`，不 `removeWorktree`，不 `deleteBranch`；任务留在 `running`，工作副本与分支原样保留
+- `stop()` 只停止调度并等待，不终止 Worker；最多等 3 秒让执行中的任务收尾，超时后继续关停
+- `index.ts` 的 shutdown 顺序：`router.stop(3000)` → 停主动发现 → 停通道 → `store.close()` → `process.exit(75)`；退出码 75 表示临时失败，由 supervisor 重启
+- 下次启动 `recoverInterrupted()` 按既有规则处理遗留 `running`：工作副本与会话都在的转 `paused`，其余标 `failed`。因此正常关停后「中断可续」同样成立
+
+约束：关停路径不写任何任务状态。状态写入只发生在 `recoverInterrupted()` 与请求者发起的 `resume` / `cancel` 中。

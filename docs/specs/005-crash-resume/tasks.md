@@ -15,3 +15,5 @@
 - [x] T7 文档：README 用法、001/002/003 指向新行为
       验证: 人工检查，无 `markOrphansFailed` 残留引用
 - [x] T8 全量验收：`bun test`（37 通过）+ `tsc --noEmit`（无输出）
+- [x] T9 关停语义：`stopping` 标记、`runTask` 早退、退出码 75 (spec §7)
+      验证: 「关停中 Worker 完成后任务保持 running，工作副本与分支保留」「stop() 之后不再调度新任务」

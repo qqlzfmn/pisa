@@ -28,7 +28,8 @@ function newId(now = Date.now()): string {
 
 export class Router {
   private active = new Map<string, Promise<void>>();
-  private stopped = false;
+  /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
+  private stopping = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => number;
   /** 拒绝提示节流：同一用户 24h 只提示一次 */
@@ -43,14 +44,19 @@ export class Router {
     this.timer = setInterval(() => void this.fill(), intervalMs);
   }
 
-  async stop(): Promise<void> {
-    this.stopped = true;
-    if (this.timer) clearInterval(this.timer);
+  /**
+   * 关停：只停止调度与等待，不改写任务状态、不清理工作副本。
+   * 执行中的任务由 runTask 在 Worker 返回后看到 stopping 直接退出，任务留在 running，
+   * 下次启动由 recoverInterrupted 转成 paused 等待请求者恢复。
+   */
+  async stop(timeoutMs = 3000): Promise<void> {
+    this.stopping = true;
+    clearInterval(this.timer ?? undefined);
     this.timer = null;
-    await Promise.race([
-      Promise.all([...this.active.values()]),
-      new Promise((r) => setTimeout(r, 10_000)),
-    ]);
+    const cap = Promise.withResolvers<void>();
+    const capTimer = setTimeout(cap.resolve, timeoutMs);
+    await Promise.race([Promise.all([...this.active.values()]), cap.promise]);
+    clearTimeout(capTimer);
   }
 
   /**
@@ -82,7 +88,7 @@ export class Router {
 
   /** 按并发上限补位；不等待任务完成 */
   private async fill(): Promise<void> {
-    if (this.stopped) return;
+    if (this.stopping) return;
     const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
     while (this.active.size < limit) {
       const task = this.deps.store.nextQueued();
@@ -410,7 +416,7 @@ export class Router {
 
   /** 取一个排队任务执行；返回是否真的执行了 */
   async drainOnce(): Promise<boolean> {
-    if (this.stopped) return false;
+    if (this.stopping) return false;
     let started = false;
     while (true) {
       await this.fill();
@@ -513,6 +519,12 @@ export class Router {
       result = { ok: false, summary: "", error: (err as Error).message, exitCode: -1 };
     } finally {
       stopWatch();
+    }
+
+    // 关停中：不写终态、不删工作副本与分支，任务留在 running 等下次启动分流为 paused
+    if (this.stopping) {
+      log.write("stopping", "进程关停，任务保持 running");
+      return;
     }
 
     if (store.isCancelRequested(task.id) || result.error === "任务已取消") {
