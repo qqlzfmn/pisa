@@ -182,6 +182,33 @@ describe("GitDeliverer 敏感路径分拣", () => {
     expect(sh(["git", "-C", workdir, "cat-file", "-e", "HEAD:.env"]).code).toBe(0);
   });
 
+  test("工作树 hooks 塞不进敏感路径", async () => {
+    const workdir = setup();
+    // agent 能往共享的 .git/hooks 里装 hook：不带 --no-verify 时它会往索引里补文件
+    writeFileSync(join(repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\ngit add -f .env\n", { mode: 0o755 });
+    writeFileSync(join(workdir, "a.txt"), "a\n");
+    writeFileSync(join(workdir, ".env"), "SECRET=1\n");
+
+    const res = await new GitDeliverer(cfg).deliver({ ...baseTask, id: "t1", branch: "pisa/t1" }, workdir, cfg.repos[0]!);
+
+    expect(sh(["git", "-C", workdir, "show", "--name-only", "--pretty=format:", "HEAD"]).out).toBe("a.txt");
+    expect(res.files).toEqual(["a.txt"]);
+  });
+
+  test("agent 自己提交的敏感文件不随分支推送出去", async () => {
+    const workdir = setup();
+    writeFileSync(join(workdir, ".env"), "SECRET=1\n");
+    sh(["git", "-C", workdir, "add", "-A"]);
+    sh(["git", "-C", workdir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "agent 自己提交"]);
+    writeFileSync(join(workdir, "a.txt"), "a\n");
+
+    await expect(
+      new GitDeliverer(cfg).deliver({ ...baseTask, id: "t1", branch: "pisa/t1" }, workdir, cfg.repos[0]!),
+    ).rejects.toThrow("分支历史含敏感路径，已停止推送: .env");
+    // 分支没上远端，远端与 HEAD 都不含 .env
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "--verify", "pisa/t1"]).code).not.toBe(0);
+  });
+
   test("改名到敏感路径时整条改名都不提交", async () => {
     const workdir = setup();
     renameSync(join(workdir, "README.md"), join(workdir, "server.pem"));

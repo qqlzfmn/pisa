@@ -53,15 +53,17 @@ export function changedFiles(workdir: string): string[] {
     .filter(Boolean);
 }
 
-/** 索引条目（目录已展开）；改名/复制是「旧路径 + 新路径」一条，整体放行或整体拦截 */
-function stagedEntries(workdir: string): string[][] {
+/** `git diff --name-status -z` 的条目；改名/复制是「旧路径 + 新路径」一条记录 */
+function nameStatus(workdir: string, args: string[]): { entries: string[][]; err: string } {
   // 显式 -M：diff.renames 是仓库配置，agent 能关掉；关掉后改名拆成 D+A，
   // 敏感文件改名到普通文件名就只剩新路径待判，内容会以新名字进提交
-  const p = Bun.spawnSync(["git", "-C", workdir, "diff", "--cached", "--name-status", "-z", "-M"], {
+  const p = Bun.spawnSync(["git", "-C", workdir, "diff", "--name-status", "-z", "-M", ...args], {
     stdout: "pipe",
     stderr: "pipe",
   });
-  if ((p.exitCode ?? -1) !== 0) return [];
+  if ((p.exitCode ?? -1) !== 0) {
+    return { entries: [], err: (p.stderr?.toString() ?? "").trim() || "git diff 失败" };
+  }
   const parts = (p.stdout?.toString() ?? "").split("\0");
   const entries: string[][] = [];
   for (let i = 0; i < parts.length; ) {
@@ -70,7 +72,12 @@ function stagedEntries(workdir: string): string[][] {
     entries.push(parts.slice(i, i + paths));
     i += paths;
   }
-  return entries;
+  return { entries, err: "" };
+}
+
+/** 分支相对 base 的全部改动：agent 自己提交的记录也在里面，推送前用它核对 */
+export function branchEntries(workdir: string, base: string): { entries: string[][]; err: string } {
+  return nameStatus(workdir, [`${base}...HEAD`]);
 }
 
 /** 全量暂存后按路径分拣：isBlocked 命中的条目从索引移除，不进入本次提交 */
@@ -81,7 +88,8 @@ export function stageAllExcept(
   const add = sh(["git", "-C", workdir, "add", "-A"]);
   if (add.code !== 0) return { files: [], blocked: [], err: add.err || add.out };
 
-  const entries = stagedEntries(workdir);
+  const { entries, err } = nameStatus(workdir, ["--cached"]);
+  if (err) return { files: [], blocked: [], err };
   const kept = entries.filter((paths) => !paths.some(isBlocked));
   const blocked = entries.filter((paths) => paths.some(isBlocked)).flat();
   if (blocked.length > 0) {
@@ -92,8 +100,9 @@ export function stageAllExcept(
   return { files: kept.flat(), blocked, err: "" };
 }
 
+/** hooks 在共享 .git 里，agent 能装 pre-commit 把敏感文件补回索引：提交与推送都不执行 hook */
 export function commitStaged(workdir: string, message: string, name: string, email: string): ExecResult {
-  return sh(["git", "-C", workdir, "-c", `user.name=${name}`, "-c", `user.email=${email}`, "commit", "-m", message]);
+  return sh(["git", "-C", workdir, "-c", `user.name=${name}`, "-c", `user.email=${email}`, "commit", "--no-verify", "-m", message]);
 }
 
 export function remoteUrl(workdir: string): string {
@@ -101,7 +110,7 @@ export function remoteUrl(workdir: string): string {
 }
 
 export function pushBranch(workdir: string, branch: string): ExecResult {
-  return sh(["git", "-C", workdir, "push", "-u", "origin", branch]);
+  return sh(["git", "-C", workdir, "push", "--no-verify", "-u", "origin", branch]);
 }
 
 /** 无 PR 能力时给一个可点的对比链接 */

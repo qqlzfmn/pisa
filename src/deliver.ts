@@ -1,6 +1,7 @@
 import type { Config, RepoConfig } from "./config";
 import type { DeliveryResult, Task } from "./types";
 import {
+  branchEntries,
   changedFiles,
   commitStaged,
   compareUrl,
@@ -77,6 +78,11 @@ export class GitDeliverer implements Deliverer {
     let pushed = false;
 
     if (this.cfg.delivery.push && remote) {
+      // agent 能自己 git commit：分支上已有的提交同样会随推送上线，推前按同一规则核对整条分支
+      const history = branchEntries(workdir, base);
+      if (history.err) throw new Error(`读取分支历史失败: ${history.err}`);
+      const leaked = history.entries.filter((paths) => paths.some(isSensitivePath)).flat();
+      if (leaked.length > 0) throw new Error(`分支历史含敏感路径，已停止推送: ${leaked.join(", ")}`);
       const p = pushBranch(workdir, branch);
       if (p.code !== 0) throw new Error(`推送失败: ${p.err || p.out}`);
       pushed = true;
