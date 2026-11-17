@@ -31,7 +31,7 @@ bun test tests/router.test.ts   # 单个文件
 bunx tsc --noEmit               # 类型检查
 ```
 
-两个命令都必须是绿的。CI 在每次 push 与 PR 上跑同样的两步（`.github/workflows/ci.yml`），本地没跑过就推等于让 CI 替你跑。
+两个命令都必须是绿的。CI 工作流（`.github/workflows/ci.yml`）在每次 push 与 PR 上跑同样的两步，因此本地没跑过就推等于让 CI 替你跑。仓库当前未配置远程，工作流要托管到 GitHub 后才真正触发；本地按上面两条命令自查。
 
 升级 bun 版本时同步修改 `.github/workflows/ci.yml` 的 `bun-version`：`bun test` 的行为与 `@types/bun` 都跟运行时版本相关，两边不一致会出现本地绿、CI 红。
 

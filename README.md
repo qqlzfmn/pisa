@@ -368,7 +368,7 @@ specify → plan → tasks → implement → converge
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- `bun test` 与 `bunx tsc --noEmit` 全绿，CI 每次 push 与 PR 都会跑这两步
+- `bun test` 与 `bunx tsc --noEmit` 本地全绿；CI 工作流已就绪（`.github/workflows/ci.yml`），仓库当前未配置远程，托管到 GitHub 后随 push 与 PR 运行
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：

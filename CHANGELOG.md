@@ -2,7 +2,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-只记用户可见的变化：能力、行为、接口、配置、安全修复。内部重构与文档措辞不单独成条。未发布的改动放在 `Unreleased`，发版时补日期并新建版本段。
+只记用户可见的变化：能力、行为、接口、配置、安全修复。内部重构不单独成条；仓库工程化与协作文档的成组新增按条记录。未发布的改动放在 `Unreleased`，发版时补日期并新建版本段。
 
 ## [Unreleased]
 
@@ -16,7 +16,11 @@
 
 ### Changed
 
-- README 去掉「测试 89 个全绿」这类硬编码计数，改为不随测试数量漂移的表述；新增指向 CONTRIBUTING 与 SECURITY 的入口
+- README 去掉「测试 89 个全绿」这类硬编码计数，改为不随测试数量漂移的表述；新增指向 CONTRIBUTING 与 SECURITY 的入口；CI 状态描述与仓库现状一致（未配远程时工作流尚未触发）
+
+### Fixed
+
+- `SECURITY.md` 的 webhook 边界补齐白名单校验与去重顺序：投递消息以 `webhook.userId` 过 `checkAccess`，被拒事件的 `eventId` 已占位不可重投
 
 ## [0.1.0]
 

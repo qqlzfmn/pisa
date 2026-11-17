@@ -12,7 +12,7 @@ pisa 会把自然语言需求变成真实命令执行。谁能送进需求，谁
 | --- | --- | --- |
 | Telegram / CLI | `whitelist.users` 精确匹配 `userId` | 不在白名单的用户一律拒绝（`src/router.ts` 的 `checkAccess`），并做 24 小时一次的拒绝回复 |
 | 仓库范围 | `whitelist.repos` 匹配 `repos[].alias` | 白名单用户也只能操作列出的仓库；路径必须是 git 仓库 |
-| webhook | 只监听 `127.0.0.1`，校验 `x-pisa-token` 请求头 | 不对外网暴露；同一 `eventId` 去重（`store.claimEvent`），但没有时间戳与签名，依赖回环地址和共享 token |
+| webhook | 只监听 `127.0.0.1`，校验 `x-pisa-token` 请求头 | 不对外网暴露；没有时间戳与签名，依赖回环地址和共享 token。投递的消息以 `webhook.userId` 走 `checkAccess`，该 id 必须在 `whitelist.users` 里，否则被拒；去重（`store.claimEvent`）在鉴权之前，被拒事件的 `eventId` 已占位，重投不会再生效 |
 | GitHub 评论 | 无作者鉴权 | 能在被监听的仓库里评论的人，就能用 `/pisa ...` 派活；任务归属取配置里的 `chatId` / `userId`。只把可信或私有仓库放进 `github.repos` |
 
 Agent 的执行权限：
