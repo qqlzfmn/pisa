@@ -1,0 +1,48 @@
+name: 功能建议
+description: 说明要解决的问题与期望的效果
+title: "[feat] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        本项目按规格驱动开发：行为变更先落 `docs/specs/<NNN-name>/spec.md`（WHAT / WHY），再进 plan 与 tasks。
+        提建议时说清问题比说清实现更有用。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 现在卡在哪、谁受影响、当前怎么绕过去
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的效果
+      description: 用可观察的行为描述，例如「/pisa xxx 之后会发生什么」
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响范围
+      options:
+        - Router / 任务分派
+        - Worker / 执行
+        - 通道（Telegram / CLI / webhook）
+        - GitHub 评论
+        - 定时任务
+        - 配置 / 启动
+        - 其它
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案（可选）
+      description: 考虑过但不打算采用的方案，以及放弃的原因
+    validations:
+      required: false

@@ -24,6 +24,7 @@
 - [开发方式](#开发方式)
 - [路线图](#路线图)
 - [当前状态](#当前状态)
+- [贡献](#贡献)
 - [致谢](#致谢)
 
 ## 为什么做
@@ -367,13 +368,21 @@ specify → plan → tasks → implement → converge
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 89 个全绿；`tsc --noEmit` 无报错
+- `bun test` 与 `bunx tsc --noEmit` 全绿，CI 每次 push 与 PR 都会跑这两步
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：
 
 - P3 真正的会话持久化——仍用「上一轮分支 + 上下文注入」替代
 - `gh pr create` 未实测——仓库没配远程，只在本地裸仓库验证了 push
+
+## 贡献
+
+流程与命令见 [CONTRIBUTING.md](./CONTRIBUTING.md)：规格驱动开发，`bun test` 与 `bunx tsc --noEmit` 必过，提交用 Conventional Commits。
+
+- 缺陷与建议：用 `.github/ISSUE_TEMPLATE/` 里的表单，PR 按模板填写验证与回滚
+- 安全漏洞：不要开公开 Issue，按 [SECURITY.md](./SECURITY.md) 私密上报
+- 版本变更：[CHANGELOG.md](./CHANGELOG.md)
 
 ## 致谢
 
