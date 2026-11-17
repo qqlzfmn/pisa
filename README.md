@@ -183,6 +183,7 @@ specify → plan → tasks → implement → converge
 - pi 集成：Worker 挂 pisa 扩展，工具级进度上报 + 命令拦截 + 会话续跑
 - 测试 19 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
+- 已支持自举：merge 后由看护进程自动重启
 
 ## 致谢
 
