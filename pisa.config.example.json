@@ -2,12 +2,8 @@
   "trigger": "/pisa",
   "dmWithoutTrigger": true,
   "whitelist": {
-    "users": [
-      "<telegram user id>"
-    ],
-    "repos": [
-      "pisa"
-    ]
+    "users": ["<telegram user id>"],
+    "repos": ["pisa"]
   },
   "repos": [
     {
@@ -81,11 +77,7 @@
   "proactive": {
     "keywords": {
       "enabled": false,
-      "words": [
-        "挂了",
-        "报错",
-        "失败"
-      ],
+      "words": ["挂了", "报错", "失败"],
       "cooldownSec": 600,
       "chatId": "<group chat id>",
       "userId": "<telegram user id>",

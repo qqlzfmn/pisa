@@ -335,7 +335,6 @@ export class Store {
     return rows.map(toTask);
   }
 
-  /** 创建时间不早于 since 的任务；指标分桶用 */
   /** 窗口内创建或结束的任务：跨天完成的任务也要算进完成日指标 */
   tasksTouchedSince(since: number): Task[] {
     const rows = this.db
