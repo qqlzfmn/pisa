@@ -7,7 +7,7 @@ label="ai.pisa.supervisor"
 plist="$HOME/Library/LaunchAgents/$label.plist"
 domain="gui/$(id -u)"
 
-mkdir -p "$HOME/Library/LaunchAgents" "$repo/.pisa"
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs" "$repo/.pisa"
 
 cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -35,9 +35,9 @@ cat > "$plist" <<PLIST
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.bun/bin</string>
   </dict>
   <key>StandardOutPath</key>
-  <string>$repo/.pisa/launchd.log</string>
+  <string>$HOME/Library/Logs/pisa.launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>$repo/.pisa/launchd.log</string>
+  <string>$HOME/Library/Logs/pisa.launchd.log</string>
 </dict>
 </plist>
 PLIST
@@ -48,4 +48,4 @@ fi
 
 launchctl bootstrap "$domain" "$plist"
 echo "[install-launchd] 已加载 $label → $repo"
-echo "[install-launchd] 日志：$repo/.pisa/launchd.log"
+echo "[install-launchd] 日志：$HOME/Library/Logs/pisa.launchd.log"

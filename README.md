@@ -198,12 +198,12 @@ pisa 可以改自己：
 ./scripts/install-launchd.sh
 ```
 
-脚本生成 `~/Library/LaunchAgents/ai.pisa.supervisor.plist` 并加载，工作目录是仓库根目录，日志写在仓库的 `.pisa/launchd.log`。多份 worktree 同时安装会互相覆盖，只保留一份。
+脚本生成 `~/Library/LaunchAgents/ai.pisa.supervisor.plist` 并加载，工作目录是仓库根目录，日志写在 `~/Library/Logs/pisa.launchd.log`（外部卷上的路径 launchd 无权限写入）。多份 worktree 同时安装会互相覆盖，只保留一份。
 
 看日志：
 
 ```bash
-tail -f .pisa/launchd.log
+tail -f ~/Library/Logs/pisa.launchd.log
 launchctl print gui/$(id -u)/ai.pisa.supervisor    # 状态
 ```
 
