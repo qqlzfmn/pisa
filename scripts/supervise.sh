@@ -1,11 +1,16 @@
 #!/bin/bash
 # pisa 看护进程：崩了自动重启，带退避。
-# 用法：PISA_TELEGRAM_TOKEN=$(cat ~/.pisa/telegram_token) ./scripts/supervise.sh
+# 用法：./scripts/supervise.sh
+# token 优先取环境变量，缺省时读 ~/.pisa/telegram_token、~/.pisa/webhook_token。
 set -u
 cd "$(dirname "$0")/.."
 
 if [ -z "${PISA_TELEGRAM_TOKEN:-}" ] && [ -f "$HOME/.pisa/telegram_token" ]; then
   export PISA_TELEGRAM_TOKEN="$(cat "$HOME/.pisa/telegram_token")"
+fi
+
+if [ -z "${PISA_WEBHOOK_TOKEN:-}" ] && [ -f "$HOME/.pisa/webhook_token" ]; then
+  export PISA_WEBHOOK_TOKEN="$(cat "$HOME/.pisa/webhook_token")"
 fi
 
 if [ -z "${PISA_TELEGRAM_TOKEN:-}" ]; then

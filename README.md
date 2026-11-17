@@ -20,6 +20,7 @@
 - [架构](#架构)
 - [与 pi 的关系](#与-pi-的关系)
 - [目录结构](#目录结构)
+- [常驻（launchd）](#常驻launchd)
 - [开发方式](#开发方式)
 - [路线图](#路线图)
 - [当前状态](#当前状态)
@@ -183,6 +184,34 @@ pisa 可以改自己：
 3. 看护模式（`PISA_SUPERVISED=1`）下进程退出，`scripts/supervise.sh` 拉起新代码
 
 这条链路已经实测：任务改 README → merge → 进程 PID 变化 → 新内容生效。
+
+## 常驻（launchd）
+
+`scripts/supervise.sh` 交给 launchd 托管：开机自启，进程退出后自动拉起。
+
+安装（重复执行等于重装）：
+
+```bash
+./scripts/install-launchd.sh
+```
+
+脚本生成 `~/Library/LaunchAgents/ai.pisa.supervisor.plist` 并加载，工作目录是仓库根目录，日志写在仓库的 `.pisa/launchd.log`。多份 worktree 同时安装会互相覆盖，只保留一份。
+
+看日志：
+
+```bash
+tail -f .pisa/launchd.log
+launchctl print gui/$(id -u)/ai.pisa.supervisor    # 状态
+```
+
+卸载：
+
+```bash
+launchctl bootout gui/$(id -u)/ai.pisa.supervisor
+rm ~/Library/LaunchAgents/ai.pisa.supervisor.plist
+```
+
+token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.pisa/telegram_token` 与 `~/.pisa/webhook_token`。
 
 ## 开发方式
 
