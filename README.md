@@ -131,7 +131,10 @@ bun run src/index.ts
 /status、/cancel、/help 在私聊可直接用。
 
 /pisa continue <任务号> <新要求>   从上一轮的分支和上下文继续做
+/pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 ```
+
+进程重启后，工作副本与会话都还在的 `running` 任务进入 `paused`，可用 `resume` 拉回执行；缺任一条的标记 `failed`。
 
 **回复机器人的任意一条任务消息，等于继续那个任务**，不用记任务号。
 

@@ -37,7 +37,7 @@
 
 ## 4. 退出策略
 
-SIGTERM：停止调度 → 等待 `active` 最多 10 秒 → 超时任务保持 `running`，下次启动由 `markOrphansFailed` 收尾。
+SIGTERM：停止调度 → 等待 `active` 最多 10 秒 → 超时任务保持 `running`，下次启动由 Router 分流：可续的转 `paused`，其余标 `failed`（见 005）。
 
 ## 5. 测试
 

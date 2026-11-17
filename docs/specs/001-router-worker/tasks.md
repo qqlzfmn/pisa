@@ -18,7 +18,7 @@
 ## T3 存储与幂等
 
 - [x] `src/store.ts`：任务表、事件去重表、唯一状态写入口
-- [x] `markOrphansFailed`：重启清理 running
+- [x] 重启清理 running：遗留任务有明确归宿（现为 005 的分流与恢复）
 - 验证：非法跃迁返回 false；重复事件只建一个任务
 
 ## T4 Worker 适配

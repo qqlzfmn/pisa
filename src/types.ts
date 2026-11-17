@@ -1,4 +1,4 @@
-export type TaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled";
 
 export interface IncomingMessage {
   eventId: string;
@@ -67,7 +67,9 @@ export interface DeliveryResult {
 /** 状态机允许的跃迁，唯一事实源 */
 export const ALLOWED: Record<TaskStatus, TaskStatus[]> = {
   queued: ["running", "cancelled"],
-  running: ["succeeded", "failed", "cancelled"],
+  running: ["paused", "succeeded", "failed", "cancelled"],
+  // 中断：进程重启时从 running 转入；只能由请求者恢复或放弃
+  paused: ["running", "cancelled"],
   succeeded: [],
   failed: [],
   cancelled: [],

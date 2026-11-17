@@ -6,7 +6,14 @@ import { redact } from "./log";
 import { getAdapter, type WorkerAdapter } from "./adapters";
 
 export interface WorkerRunner {
-  run(task: Task, workdir: string, onLog: (line: string) => void, isCancelled: () => boolean): Promise<WorkerResult>;
+  run(
+    task: Task,
+    workdir: string,
+    onLog: (line: string) => void,
+    isCancelled: () => boolean,
+    /** 恢复中断任务：接着原会话执行 */
+    resume?: boolean,
+  ): Promise<WorkerResult>;
 }
 
 export class Worker implements WorkerRunner {
@@ -24,6 +31,7 @@ export class Worker implements WorkerRunner {
     workdir: string,
     onLog: (line: string) => void,
     isCancelled: () => boolean,
+    resume = false,
   ): Promise<WorkerResult> {
     const extensionPath = join(import.meta.dir, "..", "extensions", "pisa-worker.ts");
     const progressDir = resolve(this.stateDir, "progress");
@@ -35,6 +43,7 @@ export class Worker implements WorkerRunner {
       extensionPath,
       progressFile: join(progressDir, `${task.id}.jsonl`),
       cfg: this.cfg,
+      resumeSessionId: resume ? task.sessionId : null,
     };
     const proc = Bun.spawn(this.adapter.buildArgs(input), {
       cwd: workdir,

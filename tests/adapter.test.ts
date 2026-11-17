@@ -42,6 +42,21 @@ describe("WorkerAdapter", () => {
     expect(args).toContain("-e");
   });
 
+  test("恢复会话时带 -r <id>，位于 --mode=json 之前", () => {
+    const args = getAdapter("omp").buildArgs({ ...input, resumeSessionId: "sess-9" });
+    const at = args.indexOf("-r");
+    expect(at).toBeGreaterThan(-1);
+    expect(args[at + 1]).toBe("sess-9");
+    expect(at).toBeLessThan(args.indexOf("--mode=json"));
+    expect(args[args.indexOf("-p") + 1]).toContain("上一次执行被中断");
+  });
+
+  test("新任务不带 -r，提示词也没有恢复段", () => {
+    const args = getAdapter("omp").buildArgs(input);
+    expect(args).not.toContain("-r");
+    expect(args[args.indexOf("-p") + 1]).not.toContain("上一次执行被中断");
+  });
+
   test("只取 assistant 的 message_end", () => {
     const a = getAdapter("omp");
     const ok = a.parseLine(

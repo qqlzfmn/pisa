@@ -7,6 +7,8 @@ export interface AdapterInput {
   extensionPath: string;
   progressFile: string;
   cfg: Config["worker"];
+  /** 恢复中断任务时的原会话 id；新任务为 null */
+  resumeSessionId?: string | null;
 }
 
 export interface ParsedLine {

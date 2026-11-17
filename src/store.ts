@@ -208,13 +208,10 @@ export class Store {
     return row?.cancel_requested === 1;
   }
 
-  /** 进程重启：所有遗留 running 任务视为中断 */
-  markOrphansFailed(reason: string): number {
-    const rows = this.db.query("SELECT id FROM tasks WHERE status = 'running'").all() as Array<{ id: string }>;
-    for (const r of rows) {
-      this.transition(r.id, "failed", { error: reason, endedAt: Date.now() });
-    }
-    return rows.length;
+  /** 遗留的执行中任务；启动时由 Router 分流为 paused 或 failed */
+  listRunning(): Task[] {
+    const rows = this.db.query("SELECT * FROM tasks WHERE status = 'running' ORDER BY created_at").all() as Row[];
+    return rows.map(toTask);
   }
 
   recent(limit = 10): Task[] {

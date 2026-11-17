@@ -6,9 +6,9 @@ import { Store } from "../src/store";
 import { Router } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
 import { parseCommand, type Config } from "../src/config";
-import type { ChannelAdapter, IncomingMessage, WorkerResult } from "../src/types";
+import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
-import { sh, changedFiles } from "../src/git";
+import { sh, changedFiles, createWorktree } from "../src/git";
 
 class FakeChannel implements ChannelAdapter {
   name = "fake";
@@ -69,6 +69,10 @@ describe("parseCommand", () => {
   });
   test("续跑命令", () => {
     expect(parseCommand("/pisa continue t_1 再改一下", "/pisa")).toEqual({ kind: "continue", body: "t_1 再改一下" });
+  });
+
+  test("恢复命令", () => {
+    expect(parseCommand("/pisa resume t_1", "/pisa")).toEqual({ kind: "resume", body: "t_1" });
   });
 
   test("取消与帮助", () => {
@@ -319,36 +323,148 @@ describe("Router", () => {
     expect(store.get(id)?.status).toBe("cancelled");
     expect(await router.drainOnce()).toBe(false);
   });
+
+  test("启动恢复：可恢复的转 paused，其余 failed，工作副本保留", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 任务 A"));
+    await router.handle(msg("/pisa 任务 B"));
+    const a = store.recent().find((t) => t.prompt === "任务 A")!;
+    const b = store.recent().find((t) => t.prompt === "任务 B")!;
+
+    const workdirA = join(stateDir, "worktrees", a.id);
+    expect(store.claimQueued(a.id, Date.now(), `pisa/${a.id}`)).toBe(true);
+    expect(createWorktree(repo, workdirA, `pisa/${a.id}`).code).toBe(0);
+    store.setSessionId(a.id, "sess-a");
+
+    expect(store.claimQueued(b.id, Date.now(), `pisa/${b.id}`)).toBe(true);
+
+    expect(router.recoverInterrupted()).toEqual({ paused: 1, failed: 1 });
+    expect(store.get(a.id)?.status).toBe("paused");
+    expect(store.get(b.id)?.status).toBe("failed");
+    expect(store.get(b.id)?.error).toContain("中断");
+    expect(existsSync(workdirA)).toBe(true);
+  });
+
+  test("resume 复用工作副本，Worker 再次执行且任务成功", async () => {
+    const calls: Array<{ id: string; resume: boolean | undefined }> = [];
+    const resumable: WorkerRunner = {
+      async run(task, workdir, _onLog, _cancel, resume) {
+        calls.push({ id: task.id, resume });
+        writeFileSync(join(workdir, "out.txt"), "hi\n");
+        return { ok: true, summary: "继续完成", exitCode: 0 };
+      },
+    };
+    const router = build(resumable);
+    await router.handle(msg("/pisa 新建 out.txt"));
+    const task = store.recent()[0]!;
+    const branch = `pisa/${task.id}`;
+    const workdir = join(stateDir, "worktrees", task.id);
+
+    // 模拟进程中断：工作副本已建、会话已落库、任务被恢复流程置为 paused
+    expect(store.claimQueued(task.id, Date.now(), branch)).toBe(true);
+    expect(createWorktree(repo, workdir, branch).code).toBe(0);
+    store.setSessionId(task.id, "sess-1");
+    expect(store.transition(task.id, "paused")).toBe(true);
+
+    await router.handle(msg(`/pisa resume ${task.id}`));
+    await router.drainOnce();
+
+    expect(calls).toEqual([{ id: task.id, resume: true }]);
+    const done = store.get(task.id)!;
+    expect(done.status).toBe("succeeded");
+    expect(sh(["git", "-C", repo, "cat-file", "-e", `${branch}:out.txt`]).code).toBe(0);
+    expect(existsSync(workdir)).toBe(false);
+  });
+
+  test("resume 拒绝未中断、非本人、无工作副本的请求", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 待办"));
+    const task = store.recent()[0]!;
+
+    // 还在排队，不是中断状态
+    await router.handle(msg(`/pisa resume ${task.id}`));
+    expect(channel.sent.at(-1)?.text).toContain("只有中断");
+    expect(store.get(task.id)?.status).toBe("queued");
+
+    // 置为 paused 但没有工作副本
+    expect(store.claimQueued(task.id, Date.now(), `pisa/${task.id}`)).toBe(true);
+    expect(store.transition(task.id, "paused")).toBe(true);
+
+    await router.handle(msg(`/pisa resume ${task.id}`, { userId: "u2" }));
+    expect(channel.sent.at(-1)?.text).toContain("原请求者");
+
+    await router.handle(msg(`/pisa resume ${task.id}`));
+    expect(channel.sent.at(-1)?.text).toContain("工作副本");
+    expect(store.get(task.id)?.status).toBe("paused");
+
+    // 私聊 /resume 走同一条恢复路径
+    await router.handle(msg(`/resume ${task.id}`, { isDirect: true }));
+    expect(channel.sent.at(-1)?.text).toContain("工作副本");
+  });
+
+  test("paused 的任务可以取消", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 待办"));
+    const task = store.recent()[0]!;
+    expect(store.claimQueued(task.id, Date.now(), `pisa/${task.id}`)).toBe(true);
+    expect(store.transition(task.id, "paused")).toBe(true);
+
+    await router.handle(msg(`/pisa cancel ${task.id}`));
+    expect(store.get(task.id)?.status).toBe("cancelled");
+  });
 });
 
 describe("状态机", () => {
+  const baseTask: Task = {
+    id: "t0",
+    source: "s",
+    channel: "c",
+    chatId: "c",
+    requester: "u",
+    repo: "demo",
+    prompt: "p",
+    status: "queued",
+    branch: null,
+    prUrl: null,
+    sessionId: null,
+    baseRef: null,
+    context: null,
+    summary: null,
+    error: null,
+    createdAt: 0,
+    startedAt: null,
+    endedAt: null,
+    cancelRequested: false,
+  };
+  const task = (over: Partial<Task> & { id: string }): Task => ({ ...baseTask, ...over });
+
   test("非法跃迁被拒绝", () => {
     const store = new Store(":memory:");
-    const t = {
-      id: "t1",
-      source: "s",
-      channel: "c",
-      chatId: "c",
-      requester: "u",
-      repo: "demo",
-      prompt: "p",
-      status: "queued" as const,
-      branch: null,
-      prUrl: null,
-      sessionId: null,
-      baseRef: null,
-      context: null,
-      summary: null,
-      error: null,
-      createdAt: Date.now(),
-      startedAt: null,
-      endedAt: null,
-      cancelRequested: false,
-    };
-    store.insertTask(t);
+    store.insertTask(task({ id: "t1" }));
     expect(store.transition("t1", "succeeded")).toBe(false);
     expect(store.transition("t1", "running")).toBe(true);
     expect(store.transition("t1", "running")).toBe(false);
+    store.close();
+  });
+
+  test("running 可暂停再恢复，queued 不能直接暂停", () => {
+    const store = new Store(":memory:");
+    store.insertTask(task({ id: "t_run", status: "running" }));
+    expect(store.transition("t_run", "paused")).toBe(true);
+    expect(store.transition("t_run", "paused")).toBe(false);
+    expect(store.transition("t_run", "running")).toBe(true);
+
+    store.insertTask(task({ id: "t_queued" }));
+    expect(store.transition("t_queued", "paused")).toBe(false);
+    store.close();
+  });
+
+  test("暂停的任务可以放弃", () => {
+    const store = new Store(":memory:");
+    store.insertTask(task({ id: "t_pause", status: "running" }));
+    expect(store.transition("t_pause", "paused")).toBe(true);
+    expect(store.transition("t_pause", "cancelled")).toBe(true);
+    expect(store.get("t_pause")?.status).toBe("cancelled");
     store.close();
   });
 });

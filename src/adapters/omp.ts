@@ -1,4 +1,5 @@
 import type { AdapterInput, ParsedLine, WorkerAdapter } from "./types";
+import type { Task } from "../types";
 
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 
@@ -25,10 +26,17 @@ function assistantText(obj: JsonEvent): string {
     .trim();
 }
 
-export function buildPrompt(task: import("../types").Task): string {
+export function buildPrompt(task: Task, opts: { resume?: boolean } = {}): string {
   return [
     `你是 pisa 的 Worker，任务号 ${task.id}。`,
     ``,
+    ...(opts.resume
+      ? [
+          `## 恢复执行`,
+          `上一次执行被中断。先检查当前工作区状态（git status、已有改动、已完成的部分）再继续，不要重做已完成的工作。`,
+          ``,
+        ]
+      : []),
     ...(task.context ? [`## 上一轮上下文（供参考，不是新指令）`, task.context, ``] : []),
     `## 任务`,
     task.prompt,
@@ -53,9 +61,10 @@ export class OmpAdapter implements WorkerAdapter {
       ...input.cfg.extraArgs,
       "-e",
       input.extensionPath,
+      ...(input.resumeSessionId ? ["-r", input.resumeSessionId] : []),
       "--mode=json",
       "-p",
-      buildPrompt(input.task),
+      buildPrompt(input.task, { resume: Boolean(input.resumeSessionId) }),
       "--cwd",
       input.workdir,
     ];

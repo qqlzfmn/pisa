@@ -62,7 +62,7 @@ Worker 通过 `omp -e extensions/pisa-worker.ts` 挂载，订阅：
 
 ### 3.4 自愈
 
-- 启动时把遗留 `running` 任务标为 `failed`（`markOrphansFailed`）
+- 启动时把遗留 `running` 任务分流：工作副本与会话都在的转 `paused`，其余标 `failed`（005）
 - `scripts/supervise.sh`：进程退出码非 0 时按 1→30 秒退避重启
 - 任务级超时与取消沿用 001
 

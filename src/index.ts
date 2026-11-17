@@ -14,8 +14,6 @@ async function main(): Promise<void> {
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
 
   const store = new Store(join(cfg.stateDir, "pisa.db"));
-  const orphans = store.markOrphansFailed("进程重启，任务中断");
-  if (orphans > 0) console.log(`[pisa] ${orphans} 个中断任务已标记为 failed`);
 
   let channel: ChannelAdapter;
   if (wantCli) {
@@ -42,6 +40,13 @@ async function main(): Promise<void> {
     deliverer: new GitDeliverer(cfg),
     channel,
   });
+
+  const recovered = router.recoverInterrupted();
+  if (recovered.paused > 0 || recovered.failed > 0) {
+    console.log(
+      `[pisa] 中断任务：${recovered.paused} 个可恢复（paused），${recovered.failed} 个标记 failed`,
+    );
+  }
 
   const proactive = new Proactive(cfg, (m) => router.handle(m));
   await channel.start((m) => {

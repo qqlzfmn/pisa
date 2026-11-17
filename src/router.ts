@@ -53,6 +53,33 @@ export class Router {
     ]);
   }
 
+  /**
+   * 进程重启后的分流：工作副本仍在且有会话 id 的 running 任务转 paused，
+   * 其余 running 任务标 failed。工作副本一律保留，交给恢复者复用。
+   */
+  recoverInterrupted(): { paused: number; failed: number } {
+    const { cfg, store } = this.deps;
+    const result = { paused: 0, failed: 0 };
+    for (const task of store.listRunning()) {
+      const workdir = resolve(cfg.stateDir, "worktrees", task.id);
+      if (task.sessionId && existsSync(workdir)) {
+        if (store.transition(task.id, "paused")) result.paused += 1;
+      } else if (store.transition(task.id, "failed", { error: "进程重启，任务中断", endedAt: this.now() })) {
+        result.failed += 1;
+      }
+    }
+    return result;
+  }
+
+  /** 立即执行一个已进入 running 的任务；不等待完成 */
+  private launch(task: Task): void {
+    const branch = task.branch ?? `pisa/${task.id}`;
+    const p = this.runTask(task, branch)
+      .catch(() => {})
+      .finally(() => this.active.delete(task.id));
+    this.active.set(task.id, p);
+  }
+
   /** 按并发上限补位；不等待任务完成 */
   private async fill(): Promise<void> {
     if (this.stopped) return;
@@ -62,10 +89,7 @@ export class Router {
       if (!task) break;
       const branch = `pisa/${task.id}`;
       if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
-      const p = this.runTask(task, branch)
-        .catch(() => {})
-        .finally(() => this.active.delete(task.id));
-      this.active.set(task.id, p);
+      this.launch({ ...task, branch, status: "running" });
     }
   }
 
@@ -90,6 +114,7 @@ export class Router {
       if (t === "/start" || t === "/help" || t === "帮助") cmd = { kind: "help", body: "" };
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
+      else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
       else if (t && !t.startsWith("/")) cmd = { kind: "task", body: t };
     }
     if (!cmd) return;
@@ -103,6 +128,7 @@ export class Router {
           "pisa · 命令",
           `${cfg.trigger} <需求>        接一个任务（私聊可直接说需求）`,
           `${cfg.trigger} cancel [任务号]  取消（私聊可用 /cancel）`,
+          `${cfg.trigger} resume <任务号>  恢复被进程重启中断的任务`,
           `${cfg.trigger} continue <任务号> <新要求>  接着上一轮的分支做`,
           `${cfg.trigger} merge <任务号>     合并到主干（自举）`,
           `${cfg.trigger} help           本帮助（私聊可用 /help）`,
@@ -113,6 +139,11 @@ export class Router {
 
     if (cmd.kind === "cancel") {
       await this.handleCancel(msg, cmd.body);
+      return;
+    }
+
+    if (cmd.kind === "resume") {
+      await this.handleResume(msg, cmd.body);
       return;
     }
 
@@ -309,7 +340,10 @@ export class Router {
     const { store, channel } = this.deps;
     let id = body.trim();
     if (!id) {
-      const mine = store.recent(20).find((t) => t.chatId === msg.chatId && (t.status === "running" || t.status === "queued"));
+      const mine = store.recent(20).find(
+        (t) =>
+          t.chatId === msg.chatId && (t.status === "running" || t.status === "queued" || t.status === "paused"),
+      );
       if (!mine) {
         await this.reply(msg.chatId, "没有可取消的任务。");
         return;
@@ -325,7 +359,7 @@ export class Router {
       await this.reply(msg.chatId, "只有原请求者可以取消。");
       return;
     }
-    if (task.status === "queued") {
+    if (task.status === "queued" || task.status === "paused") {
       store.transition(id, "cancelled", { endedAt: this.now() });
       await this.reply(msg.chatId, `已取消 · ${id}`);
       return;
@@ -336,6 +370,42 @@ export class Router {
     }
     store.requestCancel(id);
     await this.reply(msg.chatId, `取消中 · ${id}`);
+  }
+
+  /** 恢复被进程重启中断的任务：复用原工作副本与会话再次执行 */
+  private async handleResume(msg: IncomingMessage, body: string): Promise<void> {
+    const { cfg, store } = this.deps;
+    const id = body.trim();
+    const task = id ? store.get(id) : null;
+    if (!task) {
+      await this.reply(msg.chatId, `找不到任务 ${id || ""}`);
+      return;
+    }
+    if (task.requester !== msg.userId) {
+      await this.reply(msg.chatId, "只有原请求者可以恢复。");
+      return;
+    }
+    if (task.status !== "paused") {
+      await this.reply(msg.chatId, `任务 ${id} 不是中断状态（${task.status}），只有中断的任务可以恢复。`);
+      return;
+    }
+    if (!existsSync(resolve(cfg.stateDir, "worktrees", id))) {
+      await this.reply(msg.chatId, `任务 ${id} 的工作副本已不存在，无法恢复。`);
+      return;
+    }
+    const limit = Math.max(1, cfg.worker.concurrency ?? 1);
+    if (this.active.size >= limit) {
+      await this.reply(msg.chatId, `当前并发已满（${limit}），稍后再恢复 ${id}。`);
+      return;
+    }
+
+    const startedAt = this.now();
+    if (!store.transition(id, "running", { startedAt, error: null })) {
+      await this.reply(msg.chatId, `恢复失败 · ${id}`);
+      return;
+    }
+    await this.reply(msg.chatId, `恢复执行 · ${id}\n分支 ${task.branch ?? `pisa/${id}`}`, id);
+    this.launch({ ...task, status: "running", startedAt });
   }
 
   /** 取一个排队任务执行；返回是否真的执行了 */
@@ -411,14 +481,20 @@ export class Router {
     // 必须是绝对路径：omp 的 --cwd 按相对路径解析会二次拼接
     const workdir = resolve(cfg.stateDir, "worktrees", task.id);
     const log = new TaskLogger(cfg.stateDir, task.id);
+    // 恢复中断任务：工作副本已存在，直接在其上继续，不重建也不重置分支
+    const resuming = existsSync(workdir);
     log.write("start", `${repo.alias} ${branch}`);
 
-    const wt = createWorktree(repo.path, workdir, branch, task.baseRef ?? repo.baseBranch ?? "HEAD");
-    if (wt.code !== 0) {
-      log.write("worktree", wt.err);
-      store.transition(task.id, "failed", { error: `创建工作副本失败：${wt.err}`, endedAt: this.now() });
-      await this.reply(task.chatId, `失败 · ${task.id}\n创建工作副本失败`);
-      return;
+    if (resuming) {
+      log.write("resume", "复用已有工作副本");
+    } else {
+      const wt = createWorktree(repo.path, workdir, branch, task.baseRef ?? repo.baseBranch ?? "HEAD");
+      if (wt.code !== 0) {
+        log.write("worktree", wt.err);
+        store.transition(task.id, "failed", { error: `创建工作副本失败：${wt.err}`, endedAt: this.now() });
+        await this.reply(task.chatId, `失败 · ${task.id}\n创建工作副本失败`);
+        return;
+      }
     }
 
     await this.reply(task.chatId, `开始执行 · ${task.id}\n分支 ${branch}`, task.id);
@@ -426,8 +502,12 @@ export class Router {
     const stopWatch = this.watchProgress(task);
     let result: WorkerResult;
     try {
-      result = await worker.run(task, workdir, (line) => log.write("worker", line), () =>
-        store.isCancelRequested(task.id),
+      result = await worker.run(
+        task,
+        workdir,
+        (line) => log.write("worker", line),
+        () => store.isCancelRequested(task.id),
+        resuming,
       );
     } catch (err) {
       result = { ok: false, summary: "", error: (err as Error).message, exitCode: -1 };
