@@ -35,15 +35,13 @@ export function buildTriggers({ cfg, deliver }: BuildTriggersOptions): TriggerHu
   const feishu = triggers.feishu;
   if (feishu?.enabled) {
     const encryptKey = process.env[feishu.encryptKeyEnv];
+    const verificationToken = feishu.verificationTokenEnv ? process.env[feishu.verificationTokenEnv] : undefined;
     if (!encryptKey) {
-      console.error(`[pisa] 飞书入口已启用但缺少环境变量 ${feishu.encryptKeyEnv}`);
+      console.error(`[pisa] 飞书入口已启用但缺少环境变量 ${feishu.encryptKeyEnv}，已跳过`);
+    } else if (feishu.verificationTokenEnv && !verificationToken) {
+      // 配了验证令牌却读不到：跳过来源而不是跳过校验，否则 URL 校验会被无条件放行
+      console.error(`[pisa] 飞书入口已启用但缺少环境变量 ${feishu.verificationTokenEnv}，已跳过`);
     } else {
-      const verificationToken = feishu.verificationTokenEnv
-        ? process.env[feishu.verificationTokenEnv]
-        : undefined;
-      if (feishu.verificationTokenEnv && !verificationToken) {
-        console.error(`[pisa] 飞书入口缺少 ${feishu.verificationTokenEnv}，URL 校验会拒绝请求`);
-      }
       adapters.push(new FeishuTrigger(feishu, cfg.trigger, encryptKey, verificationToken));
     }
   }

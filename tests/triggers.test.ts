@@ -568,6 +568,7 @@ describe("buildTriggers", () => {
     rmSync(repo, { recursive: true, force: true });
     delete process.env.PISA_TEST_GH_SECRET;
     delete process.env.PISA_TEST_FEISHU_ENC;
+    delete process.env.PISA_TEST_FEISHU_TOKEN;
   });
 
   test("未启用时不启动任何入口", () => {
@@ -581,13 +582,19 @@ describe("buildTriggers", () => {
   });
 
   test("缺凭据时跳过该来源", () => {
-    const cfg = baseCfg(repo, { triggers: { enabled: true, githubActions: ghCfg } });
-    expect(buildTriggers({ cfg, deliver: () => {} })).toBeNull();
+    const gh = baseCfg(repo, { triggers: { enabled: true, githubActions: ghCfg } });
+    expect(buildTriggers({ cfg: gh, deliver: () => {} })).toBeNull();
+
+    // 配了验证令牌却读不到环境变量：来源整个跳过，URL 校验不能被无条件放行
+    process.env.PISA_TEST_FEISHU_ENC = FEISHU_ENC;
+    const feishu = baseCfg(repo, { triggers: { enabled: true, feishu: feishuCfg } });
+    expect(buildTriggers({ cfg: feishu, deliver: () => {} })).toBeNull();
   });
 
   test("凭据齐全时挂载适配器", async () => {
     process.env.PISA_TEST_GH_SECRET = GH_SECRET;
     process.env.PISA_TEST_FEISHU_ENC = FEISHU_ENC;
+    process.env.PISA_TEST_FEISHU_TOKEN = FEISHU_TOKEN;
     const cfg = baseCfg(repo, {
       triggers: { enabled: true, githubActions: ghCfg, feishu: feishuCfg },
     });
@@ -597,6 +604,11 @@ describe("buildTriggers", () => {
     expect(unsigned.status).toBe(403);
     const signed = await hub!.receive("github-actions", ghRequest(runPayload()));
     expect(signed.status).toBe(200);
+    const handshake = await hub!.receive("feishu", {
+      headers: {},
+      body: JSON.stringify({ type: "url_verification", challenge: "c", token: "wrong" }),
+    });
+    expect(handshake.status).toBe(403);
   });
 
   test("HTTP 层：方法、路径与体积限制", async () => {

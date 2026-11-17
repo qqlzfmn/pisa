@@ -70,12 +70,12 @@ export function obj(value: unknown, ...path: string[]): Record<string, unknown> 
   return cursor as Record<string, unknown>;
 }
 
-/** 按路径读数字字段（JSON 数字），整数值才返回 */
+/** 按路径读整数数字字段（JSON 数字），非整数一律返回 undefined */
 export function num(value: unknown, ...path: string[]): number | undefined {
   let cursor: unknown = value;
   for (const key of path) {
     if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) return undefined;
     cursor = (cursor as Record<string, unknown>)[key];
   }
-  return typeof cursor === "number" && Number.isFinite(cursor) ? cursor : undefined;
+  return typeof cursor === "number" && Number.isInteger(cursor) ? cursor : undefined;
 }

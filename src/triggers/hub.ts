@@ -44,7 +44,7 @@ export class TriggerHub {
     });
     for (const source of this.opts.sources) source.start();
     const adapters = this.opts.adapters.map((a) => a.path).join(", ");
-    console.log(`[pisa] triggers listening on ${hostname}:${this.opts.port} · ${adapters || "(无 HTTP 适配器)"}`);
+    console.log(`[pisa] triggers listening on ${hostname}:${this.server.port} · ${adapters || "(无 HTTP 适配器)"}`);
   }
 
   stop(): void {

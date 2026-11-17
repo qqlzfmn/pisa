@@ -19,7 +19,7 @@
 | 文件监听 | `watch(dir, { recursive: true })` 目录、`watch(dirname(file))` 单文件；去抖合并；`sha256` 前 64KB…1MB 内容摘要进 `dedupeKey` | `recursive` 在 macOS/Linux 的 Node 20+ 都可用；内容摘要保证「同内容重写」键不变（FR-009/FR-011） |
 | 文件消息 | `channel=files`，正文列路径 + `prompt`（缺省给操作指令），补触发词前缀 | 与系统类事件一致：`isDirect` + 触发词前缀，不依赖 `dmWithoutTrigger`（FR-009） |
 | HTTP 分发 | `TriggerHub.receive(path, { headers, body })` 纯函数式入口，`Bun.serve` 只做方法/路径/体积检查后调用它 | 测试直接调 `receive`，不占端口不联网（测试策略） |
-| 装配 | `buildTriggers` 读环境变量：缺失 `secretEnv` / `encryptKeyEnv` 时告警并跳过该适配器；没有任何可用来源时返回 null | 凭据缺失不该让进程起不来；与 `webhook` 的告警方式一致（FR-001/FR-014） |
+| 装配 | `buildTriggers` 读环境变量：缺失 `secretEnv` / `encryptKeyEnv`，或配置了 `verificationTokenEnv` 却读不到时，告警并跳过该适配器；没有任何可用来源时返回 null | 凭据缺失不该让进程起不来，也不能让校验被静默跳过；与 `webhook` 的告警方式一致（FR-001/FR-007/FR-014） |
 | 鉴权 | 不在适配层复制权限：消息交给 Router，白名单、仓库校验、单英文词防误触全部沿用现有逻辑 | 单一真相源（FR-015） |
 
 ## 2. 影响面
