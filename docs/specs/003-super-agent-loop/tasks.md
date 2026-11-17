@@ -8,4 +8,4 @@
 - [x] T6 webhook 事件入口
 - [x] T7 看护脚本 `scripts/supervise.sh`
 - [x] T8 测试：19 个用例通过
-- [ ] T9 真实 omp 验证进度输出与拦截（进行中）
+- [x] T9 真实 omp 验证：进度上报、会话 id、continue 分支续跑
