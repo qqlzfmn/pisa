@@ -1,7 +1,7 @@
 // Worker 边界判定：纯函数，不执行 git、不读文件系统、不注册扩展。
 // pisa-worker.ts 只负责事件接线；测试直接 import 本模块。
 
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 
 /** path 解析后落在 workdir 之外时返回原因，否则 null */
 export function outsideWorkdir(p: string, workdir: string): string | null {
@@ -195,7 +195,9 @@ function commandStart(tokens: string[]): number {
 function checkSegment(tokens: string[], workdir: string, depth: number): string | null {
   const at = commandStart(tokens);
   const rest = tokens.slice(at);
-  const head = rest[0] ?? "";
+  const raw = rest[0] ?? "";
+  // `/usr/bin/git push`、`./bin/sudo ls`：按路径调用时只看可执行文件名
+  const head = raw.includes("/") ? basename(raw) : raw;
   const args = rest.slice(1);
 
   if (head === "sudo") return "禁止 sudo";

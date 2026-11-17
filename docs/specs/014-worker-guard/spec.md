@@ -67,3 +67,4 @@ Worker 的边界有两套说法：提示词（`src/adapters/omp.ts`）写「不�
 - 读取仓库状态（当前分支、远端地址）：guard 是纯函数，不执行 git，因此拦截所有分支切换而不区分当前分支
 - 完整的 shell 语法解析：只切分隔符与引号，不做 AST
 - 网络、进程、环境变量的沙箱
+- 经第三方程序间接执行（`xargs git push`、`find -exec git push`）、git alias 指向 push、`bash -c'…'` 这类引号与 `-c` 紧贴的写法：guard 只按分隔符与引号切词，不复原 shell 与 alias 语义

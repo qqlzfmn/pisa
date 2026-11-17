@@ -43,6 +43,16 @@ describe("blockBash · git push", () => {
     expect(blocked("env -i sudo ls")).not.toBeNull();
     expect(blocked("nice -n 5 git status")).toBeNull();
   });
+
+  test("按路径调用可执行文件也不能绕过", () => {
+    expect(blocked("/usr/bin/git push")).toContain("push");
+    expect(blocked("./bin/git -c user.name=x push origin main")).toContain("push");
+    expect(blocked("/usr/bin/sudo ls")).toContain("sudo");
+    expect(blocked("/bin/rm -rf /")).not.toBeNull();
+    expect(blocked("/bin/chmod 777 /etc/passwd")).not.toBeNull();
+    expect(blocked("/usr/bin/git status")).toBeNull();
+    expect(blocked("./scripts/deploy.sh")).toBeNull();
+  });
 });
 
 describe("blockBash · 仓库路径越界", () => {
