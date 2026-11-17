@@ -595,11 +595,14 @@ describe("Router", () => {
     expect(store.claimQueued(task.id, Date.now(), branch)).toBe(true);
     expect(createWorktree(repo, workdir, branch).code).toBe(0);
     store.setSessionId(task.id, "sess-1");
+    // 上一轮取消没来得及落库：残留的取消标记不能让恢复后的任务立刻自杀
+    expect(store.requestCancel(task.id)).toBe(true);
     expect(store.transition(task.id, "paused")).toBe(true);
 
     await router.handle(msg(`/pisa resume ${task.id}`));
     await router.drainOnce();
 
+    expect(store.isCancelRequested(task.id)).toBe(false);
     expect(calls).toEqual([{ id: task.id, resume: true }]);
     const done = store.get(task.id)!;
     expect(done.status).toBe("succeeded");

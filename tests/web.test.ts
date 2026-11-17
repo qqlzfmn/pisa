@@ -258,6 +258,11 @@ describe("Web 控制台", () => {
       const { status } = await call<{ error: string }>("/api/tasks/t_missing");
       expect(status).toBe(404);
     });
+
+    test("畸形百分号编码按未知任务处理，不是 500", async () => {
+      const { status } = await call<{ error: string }>("/api/tasks/%E0%A4%A");
+      expect(status).toBe(404);
+    });
   });
 
   describe("派活", () => {
@@ -411,6 +416,29 @@ describe("Web 控制台", () => {
       }
     });
 
+    test("上次合并残留的验证副本不影响重试", async () => {
+      const supervised = process.env.PISA_SUPERVISED;
+      delete process.env.PISA_SUPERVISED;
+      try {
+        const created = await call<DispatchBody>("/api/tasks", {
+          method: "POST",
+          body: JSON.stringify({ prompt: "新建 out.txt" }),
+        });
+        await router.drainOnce();
+        const id = created.body.task.id;
+        // 模拟上次合并中途被 kill：验证分支与副本都还在
+        const stale = join(stateDir, "verify", id);
+        expect(sh(["git", "-C", demo, "worktree", "add", "-b", `verify/${id}`, stale, "main"]).code).toBe(0);
+
+        const { status, body } = await call<ActionBody>(`/api/tasks/${id}/merge`, { method: "POST", body: "{}" });
+        expect(status).toBe(200);
+        expect(body.ok).toBe(true);
+        expect(sh(["git", "-C", demo, "cat-file", "-e", "main:out.txt"]).code).toBe(0);
+      } finally {
+        if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+      }
+    });
+
     test("未知任务 404", async () => {
       const { status } = await call<{ error: string }>("/api/tasks/t_none/merge", { method: "POST", body: "{}" });
       expect(status).toBe(404);
@@ -474,7 +502,7 @@ describe("resolveWebToken", () => {
       delete process.env.PISA_WEB_TOKEN;
       const cfg = makeCfg(dir, dir, dir);
       const token = resolveWebToken(cfg);
-      expect(token).toMatch(/^[0-9a-f]{48}$/);
+      expect(token).toMatch(/^[0-9a-f]{64}$/);
       expect(resolveWebToken(cfg)).toBe(token);
     } finally {
       rmSync(dir, { recursive: true, force: true });

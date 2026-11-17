@@ -384,8 +384,9 @@ export class Router {
     const denied = this.checkAccess(msg, repo);
     if (denied) {
       const last = this.deniedAt.get(msg.userId) ?? 0;
-      if (this.now() - last > 24 * 3600 * 1000) {
-        this.deniedAt.set(msg.userId, this.now());
+      // 节流只针对 IM 的重复拒绝；网页等受信入口每次都要原因，否则 HTTP 调用方拿到空回执
+      if (msg.admin || this.now() - last > 24 * 3600 * 1000) {
+        if (!msg.admin) this.deniedAt.set(msg.userId, this.now());
         await this.reply(msg.chatId, denied);
       }
       return;
@@ -488,6 +489,9 @@ export class Router {
 
     const verifyBranch = `verify/${task.id}`;
     const verifyDir = resolve(cfg.stateDir, "verify", task.id);
+    // 上次合并被中断会留下副本与分支，不做幂等重置就会永久「创建失败」
+    removeWorktree(repo.path, verifyDir);
+    deleteBranch(repo.path, verifyBranch);
     const wt = createWorktree(repo.path, verifyDir, verifyBranch, task.branch);
     if (wt.code !== 0) return fail(`验证副本创建失败：${wt.err.slice(0, 300)}`);
 
@@ -576,6 +580,7 @@ export class Router {
     }
 
     const startedAt = this.now();
+    store.clearCancel(id);
     if (!store.transition(id, "running", { startedAt, error: null })) {
       await this.reply(msg.chatId, `恢复失败 · ${id}`);
       return;

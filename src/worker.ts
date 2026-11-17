@@ -5,6 +5,20 @@ import type { Task, WorkerResult } from "./types";
 import { redact } from "./log";
 import { getAdapter, type WorkerAdapter } from "./adapters";
 
+/** 正在执行的 Worker 进程组（pgid = 子进程 pid）；关停时统一终止，避免留下孤儿继续改工作副本 */
+const liveGroups = new Set<number>();
+
+/** 终止所有在跑的 Worker 进程组；守护进程关停时调用，等价于前台 Ctrl-C 打到整个进程组 */
+export function killRunningWorkers(signal: "SIGTERM" | "SIGKILL" = "SIGTERM"): void {
+  for (const pgid of liveGroups) {
+    try {
+      process.kill(-pgid, signal);
+    } catch {
+      // 组已退出
+    }
+  }
+}
+
 export interface WorkerRunner {
   run(
     task: Task,
@@ -53,6 +67,7 @@ export class Worker implements WorkerRunner {
       // 独立进程组：取消/超时要连子孙一起杀，否则子进程占着输出管道会让 run() 永远不返回
       detached: true,
     });
+    liveGroups.add(proc.pid);
 
     // 杀掉整个进程组；组不存在时（子进程已退出）退回单个进程
     const killTree = (signal: "SIGTERM" | "SIGKILL") => {
@@ -69,17 +84,25 @@ export class Worker implements WorkerRunner {
 
     let timedOut = false;
     let cancelled = false;
+    // 忽略 SIGTERM 的子孙会一直占着输出管道：兜底一次 SIGKILL，但句柄要能被清理
+    let hardKill: ReturnType<typeof setTimeout> | undefined;
+    const terminate = () => {
+      killTree("SIGTERM");
+      if (hardKill) return;
+      hardKill = setTimeout(() => {
+        hardKill = undefined;
+        killTree("SIGKILL");
+      }, 5000);
+    };
     const killTimer = setTimeout(() => {
       timedOut = true;
-      killTree("SIGTERM");
-      setTimeout(() => killTree("SIGKILL"), 10_000);
+      terminate();
     }, Math.max(1, this.cfg.timeoutSec) * 1000);
 
     const cancelPoll = setInterval(() => {
       if (isCancelled() && !cancelled) {
         cancelled = true;
-        killTree("SIGTERM");
-        setTimeout(() => killTree("SIGKILL"), 5_000);
+        terminate();
       }
     }, 2000);
 
@@ -121,6 +144,10 @@ export class Worker implements WorkerRunner {
 
     clearTimeout(killTimer);
     clearInterval(cancelPoll);
+    clearTimeout(hardKill);
+    // 主动终止后补刀：忽略 SIGTERM 的子孙仍留在组里，组空时 kill 返回 ESRCH
+    if (cancelled || timedOut) killTree("SIGKILL");
+    liveGroups.delete(proc.pid);
 
     if (cancelled) return { ok: false, summary: "", error: "任务已取消", exitCode };
     if (timedOut) return { ok: false, summary: "", error: `执行超时（${this.cfg.timeoutSec}s）`, exitCode };

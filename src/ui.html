@@ -383,6 +383,7 @@ function paintHead(task) {
     ["开始", task.startedAt ? fmtTime(task.startedAt) : "—"],
     ["结束", task.endedAt ? fmtTime(task.endedAt) : "—"],
   ];
+  if (task.cancelRequested) rows.push(["取消", "已请求"]);
   for (const [key, value] of rows) {
     meta.append(el("dt", "", key), el("dd", "", String(value)));
   }
@@ -448,7 +449,16 @@ async function refreshDetail() {
   const data = await api("/api/tasks/" + encodeURIComponent(state.detail));
   if (state.detail !== data.task.id) return;
   const task = data.task;
-  const sig = [task.status, task.summary, task.error, task.branch, task.prUrl, task.endedAt].join("|");
+  const sig = [
+    task.status,
+    task.duration,
+    task.cancelRequested,
+    task.summary,
+    task.error,
+    task.branch,
+    task.prUrl,
+    task.endedAt,
+  ].join("|");
   if (sig !== state.detailSig) {
     state.detailSig = sig;
     paintHead(task);

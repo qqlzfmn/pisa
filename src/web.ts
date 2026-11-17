@@ -66,7 +66,7 @@ export function resolveWebToken(cfg: Config): string {
     const saved = readFileSync(file, "utf8").trim();
     if (saved) return saved;
   }
-  const token = randomBytes(24).toString("hex");
+  const token = randomBytes(32).toString("hex");
   ensureDir(file);
   writeFileSync(file, `${token}\n`, { mode: 0o600 });
   return token;
@@ -126,8 +126,18 @@ function authorized(req: Request, url: URL, token: string): boolean {
 }
 
 function readUi(html: string, token: string): string {
-  // 注入 token；转义 < 防止提前闭合 script
-  return html.replaceAll("__PISA_TOKEN__", JSON.stringify(token).replace(/</g, "\\u003c"));
+  // 注入 token；转义 < 防止提前闭合 script。用 split/join 避免 $& 之类的替换模式
+  const injected = JSON.stringify(token).replace(/</g, "\\u003c");
+  return html.split("__PISA_TOKEN__").join(injected);
+}
+
+/** 路径段解码：畸形百分号编码按「不存在」处理，不抛 500 */
+function safeDecode(seg: string): string {
+  try {
+    return decodeURIComponent(seg);
+  } catch {
+    return "";
+  }
 }
 
 /** 起控制台：只绑本机回环地址；端口占用由调用方决定是否告警 */
@@ -137,6 +147,10 @@ export function startWebServer(opts: WebOptions): WebServer {
   const userId = opts.userId ?? web.userId ?? opts.cfg.whitelist.users[0] ?? "web";
   const html = opts.html ?? readFileSync(UI_FILE, "utf8");
   const { cfg, store, router, channel } = opts;
+  // 白名单外身份派活会被 checkAccess 拒绝：启动时就说明，免得页面上只看到「任务未创建」
+  if (!cfg.whitelist.users.includes(userId)) {
+    console.warn(`[pisa] web 身份 ${userId} 不在 whitelist.users 里，网页派活会被拒绝；在配置里加 web.userId 或补白名单`);
+  }
 
   const result = (out: CommandOutcome, task: Task | null): Response =>
     json(out.ok ? 200 : 409, {
@@ -240,7 +254,7 @@ export function startWebServer(opts: WebOptions): WebServer {
       return json(405, { error: "method not allowed" });
     }
 
-    const id = seg[2] ? decodeURIComponent(seg[2]) : "";
+    const id = seg[2] ? safeDecode(seg[2]) : "";
     if (seg.length === 3) {
       if (req.method !== "GET") return json(405, { error: "method not allowed" });
       const task = store.get(id);

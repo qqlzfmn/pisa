@@ -59,12 +59,18 @@ export function readLogTail(stateDir: string, taskId: string, limit = TAIL_LINES
     try {
       const { size } = fstatSync(fd);
       const length = Math.min(size, TAIL_BYTES);
+      // 多读前一个字节：起点前若正好是换行，也能判断出「起始落点在行首」
       const start = size - length;
-      const buf = Buffer.alloc(length);
-      readSync(fd, buf, 0, length, start);
+      const from = start > 0 ? start - 1 : 0;
+      const buf = Buffer.alloc(size - from);
+      readSync(fd, buf, 0, size - from, from);
       raw = buf.toString("utf8");
-      // 起点落在行中间时丢掉第一段残行
-      if (start > 0) raw = raw.slice(raw.indexOf("\n") + 1);
+      if (start > 0) {
+        // 起点落在行中间时丢掉第一段残行；整段没有换行说明只有一个残片，直接丢弃
+        const at = raw.indexOf("\n");
+        if (at === -1) return [];
+        raw = raw.slice(at + 1);
+      }
     } finally {
       closeSync(fd);
     }

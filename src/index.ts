@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { BOT_COMMANDS, githubRepos, loadConfig, webConfig } from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
-import { Worker } from "./worker";
+import { Worker, killRunningWorkers } from "./worker";
 import { GitDeliverer } from "./deliver";
 import { Proactive } from "./proactive";
 import { GithubWatcher } from "./github-watcher";
@@ -144,6 +144,8 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     await router.stop(3000);
+    // Worker 是独立进程组，不随本进程退出：显式终止，免得孤儿继续改工作副本
+    killRunningWorkers();
     proactive.stop();
     githubWatcher.stop();
     scheduler.stop();

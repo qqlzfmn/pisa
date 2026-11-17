@@ -270,6 +270,11 @@ export class Store {
     return res.changes > 0;
   }
 
+  /** 恢复中断任务前清掉取消标记：上一轮取消未落库时，残留的 1 会让 Worker 立刻自杀 */
+  clearCancel(id: string): void {
+    this.db.run("UPDATE tasks SET cancel_requested = 0 WHERE id = ?", [id]);
+  }
+
   isCancelRequested(id: string): boolean {
     const row = this.db.query("SELECT cancel_requested FROM tasks WHERE id = ?").get(id) as { cancel_requested: number } | null;
     return row?.cancel_requested === 1;
