@@ -18,6 +18,7 @@
 - [为什么做](#为什么做)
 - [它是什么](#它是什么)
 - [架构](#架构)
+- [文档](#文档)
 - [与 pi 的关系](#与-pi-的关系)
 - [目录结构](#目录结构)
 - [常驻（launchd）](#常驻launchd)
@@ -74,6 +75,15 @@ PISA 要把这层限制从人身上移到系统里：会话管理、上下文同
 - **存算分离**：会话状态与执行环境解耦，设备掉线可恢复。
 - **Watchdog**：外部看护进程，负责超时、卡死、重启。
 
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [架构](docs/architecture.md) | 模块职责、数据流、任务生命周期、持久化与关键约束 |
+| [领域模型](docs/domain.md) | 术语表、Task 字段、状态迁移、消息契约、副作用台账 |
+| [部署与排障](docs/deployment.md) | 安装、配置、launchd、升级、退出码、故障表 |
+| [扩展指南](docs/extending.md) | 新增 Source、Worker 适配器、通道的完整步骤与测试 |
+
 ## 与 pi 的关系
 
 pi 提供的是**单体 Agent 运行时**：会话、工具调用、扩展机制、模型适配。
@@ -96,8 +106,11 @@ pisa/
 ├── SDD.md                 # 规格驱动开发流程
 ├── README.md
 ├── docs/
-│   ├── constitution.md    # 项目宪法：不可协商的架构与质量约束
-│   └── specs/             # 每个 feature 一个目录：spec / plan / tasks
+│   ├── architecture.md     # 架构与数据流
+│   ├── domain.md           # 术语、状态机与数据模型
+│   ├── deployment.md       # 安装、常驻、升级与排障
+│   ├── extending.md        # 新增 Source / Adapter / Channel
+│   └── specs/              # 每个 feature 一个目录：spec / plan / tasks
 ├── src/                   # Router、任务调度、事件总线
 ├── extensions/            # pi 扩展：进度上报 + 策略拦截
 ├── scripts/supervise.sh   # 崩溃自动重启
@@ -367,7 +380,7 @@ specify → plan → tasks → implement → converge
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 89 个全绿；`tsc --noEmit` 无报错
+- 测试 133 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：
