@@ -102,6 +102,32 @@ pisa/
 └── tests/
 ```
 
+## 快速开始
+
+```bash
+bun install
+cp pisa.config.example.json pisa.config.json   # 改成你的仓库与白名单
+bun run src/index.ts --channel cli             # 本地通道
+```
+
+Telegram：
+
+```bash
+export PISA_TELEGRAM_TOKEN="<bot token>"
+# pisa.config.json 里把 channels.telegram.enabled 设为 true
+bun run src/index.ts
+```
+
+用法：
+
+```
+/pisa <需求>            接一个任务
+/pisa cancel [任务号]   取消
+/pisa help              帮助
+```
+
+执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
+
 ## 开发方式
 
 本项目使用 **规格驱动开发（SDD）**，流程见 [SDD.md](./SDD.md)：
@@ -131,9 +157,11 @@ specify → plan → tasks → implement → converge
 
 ## 当前状态
 
-**规格阶段，尚无实现代码。**
+**P0 已实现并通过端到端验证。**
 
-下一步是 `docs/specs/001-router-worker/`：先写 `spec.md`，确认 Router 与 Worker 的职责边界、消息契约和验收场景，再进入 `plan.md`。
+- 单元/集成测试 10 个全绿；`tsc --noEmit` 无报错
+- 真实 omp Worker 跑通：改文件 → 提交到 `pisa/<任务号>` → 主分支零改动
+- 待办：Telegram 通道联调（需要 bot token）
 
 ## 致谢
 

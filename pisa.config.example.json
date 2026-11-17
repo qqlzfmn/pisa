@@ -1,0 +1,30 @@
+{
+  "trigger": "/pisa",
+  "whitelist": {
+    "users": ["7355434308"],
+    "repos": ["pisa"]
+  },
+  "repos": [
+    {
+      "alias": "pisa",
+      "path": "/Volumes/MateMini/OpenClaw/workspace/pisa",
+      "baseBranch": "main"
+    }
+  ],
+  "worker": {
+    "command": "omp",
+    "timeoutSec": 3600,
+    "extraArgs": []
+  },
+  "delivery": {
+    "push": false,
+    "pr": false,
+    "commitName": "pisa",
+    "commitEmail": "pisa@localhost"
+  },
+  "channels": {
+    "cli": true,
+    "telegram": { "enabled": false, "tokenEnv": "PISA_TELEGRAM_TOKEN" }
+  },
+  "stateDir": ".pisa"
+}
