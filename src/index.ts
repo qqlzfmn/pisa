@@ -22,11 +22,20 @@ import { ReplyBus, startWebServer, type WebServer } from "./web";
 import { AuditLog } from "./audit";
 import { webhookHandler } from "./webhook";
 import { startTriggers, type TriggersRuntime } from "./triggers";
+import { loadProjectPrompts, type PromptSet } from "./prompts";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
   const configPath = resolveConfigPath();
   const cfg = loadConfig(configPath);
+  // 提示词在启动时一次加载：覆盖文件有错就拒绝启动，不在任务执行中途抛错
+  let prompts: PromptSet;
+  try {
+    prompts = loadProjectPrompts(cfg);
+  } catch (err) {
+    console.error(`[pisa] 提示词配置无效：${(err as Error).message}`);
+    process.exit(1);
+  }
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
   // `--web` 强制开启控制台；没有可用通道时回落到 CLI 通道，只当服务宿主
   const web: WebConfig = { ...(cfg.web ?? DEFAULT_WEB), enabled: cfg.web?.enabled === true || process.argv.includes("--web") };
@@ -74,9 +83,10 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, prompts),
       deliverer: new GitDeliverer(cfg),
       channel: bus,
+      prompts,
     });
     if (!cfg.whitelist.users.includes(web.userId)) {
       console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
@@ -86,9 +96,10 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, prompts),
       deliverer: new GitDeliverer(cfg),
       channel,
+      prompts,
     });
   }
 
@@ -100,7 +111,7 @@ async function main(): Promise<void> {
   }
 
   const proactive = new Proactive(cfg, (m) => router.handle(m), { store });
-  const githubWatcher = new GithubWatcher({ cfg, store, enqueue: (m) => router.handle(m) });
+  const githubWatcher = new GithubWatcher({ cfg, store, enqueue: (m) => router.handle(m), prompts });
   const scheduler = new Scheduler({ cfg, store, enqueue: (m) => router.handle(m) });
   const retention = new Retention({ cfg, store });
   router.start();
@@ -158,6 +169,13 @@ async function main(): Promise<void> {
   } catch (err) {
     console.error(`[pisa] 触发适配层启动失败：${(err as Error).message}`);
   }
+  const promptVersions = prompts.ids
+    .map((id) => {
+      const prompt = prompts.get(id);
+      return prompt.teamVersion === null ? `${id} v${prompt.version}` : `${id} v${prompt.version}→${prompt.teamVersion}`;
+    })
+    .join(" · ");
+  console.log(`[pisa] 提示词 · ${promptVersions}${prompts.teamActive ? ` · 团队目录=${prompts.teamDir}` : ""}`);
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
   // 通道放在最后启动：CLI 通道会一直等 stdin 结束，放前面会堵住调度、HTTP 入口与 ready 日志

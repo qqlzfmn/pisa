@@ -160,6 +160,8 @@ export interface Config {
   schedules?: ScheduleJob[];
   /** events 与 progress 的保留天数；≤ 0 关闭每日清理，默认 30 */
   retentionDays?: number;
+  /** 提示词团队层：目录按提示词 id 覆盖 prompts/ 里的段落；相对配置文件所在目录 */
+  prompts?: { dir?: string };
   proactive?: {
     keywords?: { enabled: boolean; words: string[]; cooldownSec?: number; chatId?: string; userId?: string; prompt?: string };
     probe?: {
@@ -244,6 +246,7 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
   }
   // 相对路径以配置文件所在目录为基准：守护进程与 CLI 从不同工作目录启动时指向同一份状态
   if (!isAbsolute(cfg.stateDir)) cfg.stateDir = resolve(baseDir, cfg.stateDir);
+  if (cfg.prompts?.dir && !isAbsolute(cfg.prompts.dir)) cfg.prompts = { ...cfg.prompts, dir: resolve(baseDir, cfg.prompts.dir) };
   cfg = {
     ...cfg,
     repos: cfg.repos.map((r) => ({
@@ -334,7 +337,8 @@ export type CommandKind =
   | "confirm"
   | "verbose"
   | "gc"
-  | "reconcile";
+  | "reconcile"
+  | "prompts";
 
 /** 帮助分组：派活（新任务与续跑）、查询（状态与用法）、维护（改撤合）、集成（不经 IM 的入口） */
 export type HelpGroup = "派活" | "查询" | "维护" | "集成";
@@ -360,6 +364,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "status", alias: "状态", description: "查看任务看板", group: "查询", menu: true },
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
+  { command: "prompts", alias: "提示词", description: "查看提示词版本与团队覆盖差异", args: "[<提示词> [diff]]", group: "查询", menu: true },
   { command: "verbose", alias: "进度", description: "过程消息开关（on/off）", args: "[on|off]", group: "查询", menu: true },
   { command: "gc", alias: "清理", description: "清理已结束任务的分支/工作副本/PR", args: "[天数] [--dry]", group: "维护", menu: true },
   { command: "reconcile", alias: "对账", description: "对比任务记录与分支/工作副本/PR", args: "[任务号] [--fix]", group: "维护", menu: true },

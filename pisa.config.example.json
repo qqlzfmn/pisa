@@ -165,6 +165,9 @@
   },
   "stateDir": ".pisa",
   "retentionDays": 30,
+  "prompts": {
+    "dir": "prompts.local"
+  },
   "notifications": {
     "progress": false
   }

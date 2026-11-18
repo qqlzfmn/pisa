@@ -11,6 +11,7 @@ import {
   type Runner,
 } from "./github";
 import { buildReviewPrompt, reviewEventId, reviewThreadKey } from "./pr-review";
+import { defaultPromptSet, type PromptSet } from "./prompts";
 
 type Enqueue = (m: IncomingMessage) => Promise<void> | void;
 
@@ -21,6 +22,8 @@ export interface GithubWatcherDeps {
   /** 默认走真实 gh 命令，测试注入假实现 */
   runner?: Runner;
   now?: () => number;
+  /** 提示词分层；缺省用内置 */
+  prompts?: PromptSet;
 }
 
 /** 每个仓库的增量游标落库键：重启后从上次整轮成功的位置继续 */
@@ -41,10 +44,12 @@ export class GithubWatcher {
   private polling = false;
   private readonly now: () => number;
   private readonly runner: Runner;
+  private readonly prompts: PromptSet;
 
   constructor(private deps: GithubWatcherDeps) {
     this.now = deps.now ?? Date.now;
     this.runner = deps.runner ?? defaultRunner;
+    this.prompts = deps.prompts ?? defaultPromptSet();
     // 游标是进度状态：旧库没有记录才用启动时刻初始化，之后跨重启续用
     const startedAt = new Date(this.now()).toISOString();
     for (const target of githubRepos(deps.cfg.github)) {
@@ -163,7 +168,7 @@ export class GithubWatcher {
         channel: "github",
         chatId,
         userId,
-        text: prefix + buildReviewPrompt(repo, pr, diff.value),
+        text: prefix + buildReviewPrompt(this.prompts, repo, pr, diff.value),
         mode: "review",
         replyRepo: repo,
         replyPr: pr.number,
