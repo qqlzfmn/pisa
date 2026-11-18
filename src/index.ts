@@ -11,6 +11,7 @@ import { Retention } from "./retention";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import { ReplyBus, startWebServer, type WebServer } from "./web";
+import { webhookHandler } from "./webhook";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
@@ -110,31 +111,12 @@ async function main(): Promise<void> {
       Bun.serve({
         port: cfg.webhook.port,
         hostname: "127.0.0.1",
-        async fetch(req) {
-          if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
-          if (req.headers.get("x-pisa-token") !== token) return new Response("forbidden", { status: 403 });
-          let body: { prompt?: string; repo?: string; eventId?: string; threadKey?: string; version?: string };
-          try {
-            body = (await req.json()) as typeof body;
-          } catch {
-            return new Response("bad json", { status: 400 });
-          }
-          if (!body.prompt) return new Response("prompt required", { status: 400 });
-          const eventId = body.eventId ?? `webhook:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-          await router.handle({
-            eventId,
-            channel: "webhook",
-            chatId: cfg.webhook!.chatId,
-            userId: cfg.webhook!.userId,
-            text: body.prompt,
-            repo: body.repo,
-            isDirect: true,
-            // 调用方带上业务单号就能跨入口命中同一个任务
-            threadKey: body.threadKey,
-            version: body.version,
-          });
-          return Response.json({ ok: true, eventId });
-        },
+        fetch: webhookHandler({
+          token,
+          chatId: cfg.webhook.chatId,
+          userId: cfg.webhook.userId,
+          handle: (m) => router.handle(m),
+        }),
       });
       console.log(`[pisa] webhook listening on 127.0.0.1:${cfg.webhook.port}`);
     }

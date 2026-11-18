@@ -44,7 +44,7 @@
 - `src/trigger.ts`（新）：`makeTrigger`、`threadKeyOf`、`payloadHash`
 - `src/types.ts`：`IncomingMessage` 增加 `threadKey` / `messageKey` / `version` / `actor`
 - `src/store.ts`：`triggers` 表与索引、`triggerByMessage`、`createTaskFromTrigger`（重复投递 / 编辑判定同事务）、`attachThreadNote`、`updatePrompt`、`openTaskByThread`、旧库补齐；删除 `taskByEvent`、`insertTaskOnce`
-- `src/router.ts`：解析线程、触发器去重、编辑挂载、同线程无命令消息并进上下文；`claimEvent` 退出建任务路径
+- `src/router.ts`：解析线程、触发器去重、编辑挂载、同线程无命令消息并进上下文；`claimEvent` 只做事件账本，排到鉴权与正文校验之后、任务落库之前，返回值不拦截建任务（去重由 `triggers` 决定）
 - `src/cli.ts`、`src/web.ts`：改走触发器 API
 - `src/channels/telegram.ts`：`edited_message` 与论坛话题线程、版本、actor
 - `src/github-watcher.ts`、`src/github.ts`：评论 `updated_at` 作为版本，线程为 `github:<repo>:issue:<n>`，actor 为评论作者

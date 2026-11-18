@@ -10,6 +10,7 @@
 - **编辑被静默丢弃**。Telegram 事件号是 `telegram:<chatId>:<messageId>`，编辑消息后消息 id 不变，第二次投递被 `claimEvent` 判为重复直接 `return`：新正文既没进任务，也没留下任何痕迹。复现：同一会话先发 `/pisa 修登录`、再编辑成 `/pisa 修登录并补测试`，库里仍只有 1 个任务，`prompt` 是旧正文。
 - **跨入口拆单**。同一件事从 GitHub 评论（`github:comment:<repo>:<id>`）与 webhook（`webhook:<ts>:<rand>`）各来一次就是两个事件号，各建一个任务，跑两遍。
 - **任务不知道自己在哪个会话**。`tasks` 没有线程、版本、载荷指纹，无法回答「这个任务属于哪个会话」「这条消息改过几次」，回复续跑只能绑定在 bot 发出的消息 id 上。
+- **事件号跨通道串用**。`events` 以 `event_id` 为主键，`webhook:` / `cron:` / `github:comment:` / `telegram:` 挤在同一张表。webhook 接受调用方自带的任意 `eventId`（`src/index.ts`），持有 token 的一方可以先占 `cron:<job>:<minute>` 或 `github:comment:<repo>:<id>`；占位若排在鉴权之前，被拒的投递还会静默吃掉后来者的 `eventId`。webhook 的 token 用 `!==` 比较，请求体也没有上限。
 
 证据：`src/router.ts` 建任务前 `store.claimEvent(msg.eventId, taskId)`；`src/store.ts` 的 `events(event_id PK)` 与 `taskByEvent`；`src/github-watcher.ts` 注释「去重靠投递时的稳定 eventId … 由 Router 的 claimEvent 落库」。
 
@@ -53,6 +54,9 @@
 | FR-008 | 同一线程里的不同消息仍各建任务（显式新需求），只在触发器里共用 `thread_key` |
 | FR-009 | 入口可以把触发者（`actor`）与需求方（`requester`）分开声明，GitHub 评论按评论作者记 `actor` |
 | FR-010 | 同一线程里不带命令的后续消息并进该线程未结束任务（`queued`/`paused`）的上下文，不建任务；重复投递同一句不重复追加 |
+| FR-011 | `events` 是按 `event_id` 主键的跨通道共享表，命名空间即权限边界：webhook 只接受 `webhook:` 开头的 `eventId`，其它前缀返回 400；省略时自动生成 `webhook:<ts>:<rand>` |
+| FR-012 | 事件占位排在鉴权与正文校验之后、任务落库之前；被拒的投递不写 `events`，同 `eventId` 的合法投递不受影响。去重仍由 `triggers` 决定，占位结果不拦截建任务（同 `eventId` 的编辑要继续进入触发器路径） |
+| FR-013 | webhook 的 token 用常量时间比较（长度不等直接 403），正文上限 64 KiB，超过返回 413 |
 
 ## 5. 验收
 
@@ -65,6 +69,10 @@
 | 旧库打开 | 任务行数不变，每个任务有触发器；重放旧事件不建新任务 |
 | 回复某条任务消息续跑 | 子任务触发器 `thread_key` 为 `task:<父任务号>` |
 | 同线程再发一句不带命令的话 | 仍是 1 个任务，任务 `context` 追加一条「补充说明：…」，触发器多一行 `kind=context` |
+| 非白名单用户投递 `eventId=E` 被拒后再以白名单身份投递同一 `E` | 任务成立并回「已接单」；`events` 里 `E` 只对应这一个任务 |
+| webhook 投递 `eventId=cron:morning:2026-11-18T09:00` | 400，`events` 无该键，不建任务 |
+| webhook 省略 `eventId` | 自动生成 `webhook:<ts>:<rand>`，回执里带回 |
+| 伪造 `Content-Length` 超过 64 KiB | 413，不读正文、不建任务 |
 
 ## 6. 非目标
 
