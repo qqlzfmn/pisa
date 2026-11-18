@@ -6,6 +6,7 @@ import { DEFAULT_WEB, type Config, type WebConfig } from "./config";
 import type { Store } from "./store";
 import type { ChannelAdapter, DeliveryReceipt, IncomingMessage, Task } from "./types";
 import { daemonState, taskJson, type TaskJson } from "./status";
+import { computeWindowMetrics, METRICS_WINDOW_MS } from "./metrics";
 import { readTail, tailLines } from "./log";
 import { WEB_UI } from "./web-ui";
 
@@ -59,6 +60,8 @@ export interface WebDeps {
   /** 已解析的访问 token */
   token: string;
   now?: () => number;
+  /** 进程启动时间（毫秒）；缺省取创建 Web 应用的时刻，作为 /health 的 uptime 起点 */
+  startedAt?: number;
 }
 
 /** Web 只依赖 Router 的一个能力；Router 结构化满足它 */
@@ -189,6 +192,7 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
   const { cfg, store, router, bus, token } = deps;
   const web: WebConfig = cfg.web ?? { ...DEFAULT_WEB, enabled: true, userId: "web" };
   const now = deps.now ?? Date.now;
+  const startedAt = deps.startedAt ?? now();
   // 写操作串行：回执总线按 chatId 收集，并发派活会互相偷走回复；合并也需要独占仓库
   let lock: Promise<unknown> = Promise.resolve();
   const serialize = <T,>(fn: () => Promise<T>): Promise<T> => {
@@ -218,8 +222,50 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
     return { taskId: task?.id ?? "", ...result, ok: result.ok && Boolean(task) };
   }
 
+  /**
+   * 健康快照：只给本机监控用，不上鉴权（不含任务正文），
+   * 但要求服务只监听 127.0.0.1；ok 取守护进程心跳，心跳停了即使 HTTP 还能应答也算不健康。
+   */
+  function healthResponse(): Response {
+    const at = now();
+    const daemon = daemonState(store, at);
+    const counts = store.countByStatus();
+    const finished = store.finishedBetween(at - METRICS_WINDOW_MS, at);
+    const metrics = computeWindowMetrics(finished);
+    const perRepo = new Map<string, { running: number; queued: number; finished24h: number }>();
+    const ensure = (repo: string) => {
+      const cur = perRepo.get(repo) ?? { running: 0, queued: 0, finished24h: 0 };
+      perRepo.set(repo, cur);
+      return cur;
+    };
+    // 配置里的仓库先占位，任务数全为 0 也要出现在健康视图里
+    for (const r of cfg.repos) ensure(r.alias);
+    for (const { repo, counts: c } of store.countByRepo()) {
+      const cur = ensure(repo);
+      cur.running = c.running;
+      cur.queued = c.queued;
+    }
+    for (const t of finished) ensure(t.repo).finished24h += 1;
+    return json(
+      {
+        ok: daemon.alive,
+        uptimeSec: Math.max(0, Math.floor((at - startedAt) / 1000)),
+        queue: counts.queued,
+        running: counts.running,
+        last24h: metrics,
+        repos: [...perRepo].map(([repo, c]) => ({ repo, ...c })),
+        daemon,
+      },
+      daemon.alive ? 200 : 503,
+    );
+  }
+
   async function route(req: Request): Promise<Response> {
     const url = new URL(req.url);
+    if (url.pathname === "/health") {
+      if (req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
+      return healthResponse();
+    }
     const credential = requestToken(req, url);
     if (!credential || !safeEqual(credential.token, token)) {
       return json({ ok: false, error: "未授权" }, 401, { "www-authenticate": "Bearer" });

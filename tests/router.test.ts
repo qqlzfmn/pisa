@@ -304,6 +304,7 @@ describe("Router", () => {
     const text = channel.sent.at(-1)!.text;
     expect(text).toContain("运行中\n(无)");
     expect(text).toContain("汇总：0 个任务 · 成功 0 · 失败 0 · 暂停 0");
+    expect(text).toContain("最近 24h：无完成");
   });
 
   test("非白名单用户被拒，且不建任务", async () => {
@@ -591,6 +592,7 @@ describe("Router", () => {
     expect(text).toContain("t_queued · working/queued（等空闲槽位） · demo · 排队中的事");
     expect(text).toContain("成功 · person/review（等你评审） · 4m0s · demo · 加一条校验 · https://github.com/o/r/pull/12");
     expect(text).toContain("汇总：3 个任务 · 成功 1 · 失败 0 · 暂停 0");
+    expect(text).toContain("最近 24h：完成 1 · 成功 1 · 失败 0 · 成功率 100% · P50 4m0s · P95 4m0s");
   });
 
   test("recentTasks 限制数量并按创建时间倒序", () => {

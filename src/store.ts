@@ -234,6 +234,11 @@ function toTask(r: Row): Task {
   };
 }
 
+/** 状态计数的零值：所有计数查询都从同一份状态全集起算 */
+function zeroCounts(): Record<TaskStatus, number> {
+  return { queued: 0, running: 0, paused: 0, succeeded: 0, failed: 0, cancelled: 0, rewound: 0 };
+}
+
 export class Store {
   readonly db: Database;
 
@@ -727,23 +732,42 @@ export class Store {
     return rows.map(toTask);
   }
 
+  /** 窗口内已结束（成功/失败）的任务，按结束时间（缺失时用创建时间）判定；指标聚合的唯一查询入口 */
+  finishedBetween(from: number, to: number): Task[] {
+    const rows = this.db
+      .query(
+        `SELECT * FROM tasks WHERE status IN ('succeeded','failed')
+           AND COALESCE(ended_at, created_at) BETWEEN ? AND ? ORDER BY created_at`,
+      )
+      .all(from, to) as Row[];
+    return rows.map(toTask);
+  }
+
   /** 各状态任务数；看板汇总行用 */
   countByStatus(): Record<TaskStatus, number> {
     const rows = this.db.query("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").all() as Array<{
       status: TaskStatus;
       n: number;
     }>;
-    const counts: Record<TaskStatus, number> = {
-      queued: 0,
-      running: 0,
-      paused: 0,
-      succeeded: 0,
-      failed: 0,
-      cancelled: 0,
-      rewound: 0,
-    };
+    const counts = zeroCounts();
     for (const r of rows) counts[r.status] = r.n;
     return counts;
+  }
+
+  /** 各仓库各状态任务数；健康检查的每仓库视图用 */
+  countByRepo(): Array<{ repo: string; counts: Record<TaskStatus, number> }> {
+    const rows = this.db.query("SELECT repo, status, COUNT(*) AS n FROM tasks GROUP BY repo, status").all() as Array<{
+      repo: string;
+      status: TaskStatus;
+      n: number;
+    }>;
+    const byRepo = new Map<string, Record<TaskStatus, number>>();
+    for (const r of rows) {
+      const counts = byRepo.get(r.repo) ?? zeroCounts();
+      counts[r.status] = r.n;
+      byRepo.set(r.repo, counts);
+    }
+    return [...byRepo].map(([repo, counts]) => ({ repo, counts }));
   }
 
   close(): void {
