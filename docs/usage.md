@@ -62,6 +62,13 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 - **定时、探针、关键词**：都用配置里的身份开单，同样走白名单；触发不了的根因通常是身份不在白名单或缺少 `scheduler` 配置。
 - **密钥**：Telegram bot token、webhook token 只从环境变量或 `~/.pisa/` 下的文件读取，不写入配置文件与 launchd plist。
 
+## 消息太多怎么办
+
+默认只发生命周期消息：已接单、开始执行、完成/失败、取消。执行过程（工具调用、中间输出）默认不推送。
+
+- `/pisa verbose on` 打开过程消息，`/pisa verbose off` 关闭
+- 启动默认值在 `pisa.config.json` 的 `notifications.progress`（默认 `false`）
+
 ## 任务卡住了怎么办
 
 pisa 自己兜底，不需要手工改数据库：

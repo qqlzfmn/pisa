@@ -54,6 +54,8 @@ export class Router {
   private timer: ReturnType<typeof setInterval> | null = null;
   /** 上次孤儿任务巡检时间 */
   private lastReconcile = 0;
+  /** 过程消息开关：默认关，只发生命周期消息 */
+  private progressOn: boolean;
   private readonly now: () => number;
   /** 拒绝提示节流：同一用户 24h 只提示一次 */
   private deniedAt = new Map<string, number>();
@@ -62,6 +64,7 @@ export class Router {
 
   constructor(private deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
+    this.progressOn = deps.cfg.notifications?.progress ?? false;
   }
 
   start(intervalMs = 800): void {
@@ -277,6 +280,17 @@ export class Router {
 
     if (cmd.kind === "rewind") {
       await this.handleRewind(msg, cmd.body);
+      return;
+    }
+
+    if (cmd.kind === "verbose") {
+      const v = cmd.body.trim().toLowerCase();
+      if (v === "on" || v === "开") this.progressOn = true;
+      else if (v === "off" || v === "关") this.progressOn = false;
+      await this.reply(
+        msg.chatId,
+        `过程消息：${this.progressOn ? "开（执行细节会逐条推送）" : "关（只发接单/执行/完成）"}`,
+      );
       return;
     }
 
@@ -868,7 +882,7 @@ export class Router {
 
     await this.reply(task.chatId, `开始执行 · ${task.id}\n分支 ${branch}`, task.id);
 
-    const stopWatch = this.watchProgress(task);
+    const stopWatch = this.progressOn ? this.watchProgress(task) : () => {};
     let result: WorkerResult;
     try {
       result = await worker.run(

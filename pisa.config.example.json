@@ -117,5 +117,8 @@
     }
   },
   "stateDir": ".pisa",
-  "retentionDays": 30
+  "retentionDays": 30,
+  "notifications": {
+    "progress": false
+  }
 }

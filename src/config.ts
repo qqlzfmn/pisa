@@ -69,6 +69,8 @@ export interface Config {
     idleTimeoutSec?: number;
   };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
+  /** 通知详细程度；progress=false 时只发接单/执行/完成等生命周期消息 */
+  notifications?: { progress?: boolean };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string; proxy?: string } };
   /** 本机 Web 控制台；缺省值见 DEFAULT_WEB */
   web?: WebConfig;
@@ -135,6 +137,7 @@ export const DEFAULT_CONFIG: Config = {
     idleTimeoutSec: 900,
   },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
+  notifications: { progress: false },
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
   web: DEFAULT_WEB,
   retentionDays: DEFAULT_RETENTION_DAYS,
@@ -230,7 +233,8 @@ export type CommandKind =
   | "merge"
   | "resume"
   | "rewind"
-  | "confirm";
+  | "confirm"
+  | "verbose";
 
 /** 帮助分组：派活（新任务与续跑）、查询（状态与用法）、维护（改撤合）、集成（不经 IM 的入口） */
 export type HelpGroup = "派活" | "查询" | "维护" | "集成";
@@ -256,6 +260,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "status", alias: "状态", description: "查看任务看板", group: "查询", menu: true },
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
+  { command: "verbose", alias: "进度", description: "过程消息开关（on/off）", args: "[on|off]", group: "查询", menu: true },
   { command: "help", alias: "帮助", description: "查看命令帮助", group: "查询", menu: true },
   { command: "cancel", alias: "取消", description: "取消任务", args: "[任务号]", group: "维护", menu: true },
   { command: "resume", alias: "恢复", description: "恢复被中断的任务", args: "<任务号>", group: "维护", menu: true },

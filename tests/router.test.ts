@@ -944,6 +944,14 @@ describe("执行器丢失与合并门禁", () => {
     store.close();
   });
 
+  test("过程消息默认关闭，可开关", async () => {
+    const { router, channel } = mk();
+    await router.handle(msg("/pisa verbose"));
+    expect(channel.sent.at(-1)!.text).toContain("过程消息：关");
+    await router.handle(msg("/pisa verbose on"));
+    expect(channel.sent.at(-1)!.text).toContain("过程消息：开");
+  });
+
   test("有任务在跑时拒绝合并", async () => {
     const { store, router, channel } = mk();
     store.insertTask({ ...base("t_done"), status: "succeeded", branch: "pisa/t_done", startedAt: 1, endedAt: 2 });
