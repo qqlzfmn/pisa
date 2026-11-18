@@ -189,9 +189,16 @@ export class Store {
 
   /** 守护进程心跳：CLI 用它判断任务是否真的会被执行 */
   beat(at = Date.now()): void {
-    this.db.run("INSERT INTO meta(key, value) VALUES ('heartbeat', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [
-      String(at),
-    ]);
+    this.setMeta("heartbeat", String(at));
+  }
+
+  getMeta(key: string): string | null {
+    const row = this.db.query("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | null;
+    return row ? row.value : null;
+  }
+
+  setMeta(key: string, value: string): void {
+    this.db.run("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [key, value]);
   }
 
   lastBeat(): number | null {

@@ -94,6 +94,8 @@ export interface Config {
     };
   };
   stateDir: string;
+  /** 实际加载的配置文件路径；健康检查据此重新读盘判断是否需要重启 */
+  configPath?: string;
 }
 
 /**
@@ -173,7 +175,7 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
   if (process.env.PISA_TRIGGER) cfg.trigger = process.env.PISA_TRIGGER;
   if (process.env.PISA_USERS) cfg.whitelist.users = process.env.PISA_USERS.split(",").map((s) => s.trim()).filter(Boolean);
   if (process.env.PISA_STATE_DIR) cfg.stateDir = resolve(process.env.PISA_STATE_DIR);
-  return cfg;
+  return { ...cfg, configPath: abs };
 }
 
 /** 从 start 向上查找配置文件；找不到时回落到 start 下的默认文件名 */

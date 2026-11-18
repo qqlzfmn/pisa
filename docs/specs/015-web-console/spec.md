@@ -47,8 +47,8 @@ pisa core 的全部能力目前只能经聊天通道使用：定位任务、看�
 | --- | --- |
 | FR-001 | 守护进程启动时，若 `web.enabled` 为真，在 `127.0.0.1:<web.port>` 提供 HTTP 服务；`bun run web` 以同样的默认值直接启动带 Web 控制台的守护进程 |
 | FR-002 | `GET /ui` 返回单页控制台 HTML；`GET /` 重定向到 `/ui` |
-| FR-003 | 所有路由要求 token：请求携带 `?token=`、`Authorization: Bearer`、`x-pisa-token` 头或 `pisa_web` cookie 之一；缺失或不匹配返回 401 |
-| FR-004 | `GET /ui?token=<token>` 用 `Set-Cookie` 记住 token，之后的同源请求不再需要 URL 参数 |
+| FR-003 | `/api/*` 只接受 `Authorization: Bearer` 或 `x-pisa-token` 请求头，缺失或不匹配返回 401；`/ui` 是不含数据的静态壳，公开返回（016 起不再使用 cookie，也不接受查询参数凭证） |
+| FR-004 | `GET /ui?token=<token>` 返回页面；页面把 token 存进 `sessionStorage`，之后用请求头调用 `/api/*`，地址栏 token 由 `history.replaceState` 抹掉，刷新后从存储里取回 |
 | FR-005 | `GET /api/tasks?repo=<别名>` 返回 `{ daemon, counts, total, repos, running, queued, finished }`；`repo` 只过滤三个列表，不过滤汇总计数 |
 | FR-006 | 任务 JSON 字段：`id`、`status`、`repo`、`prompt`、`branch`、`prUrl`、`createdAt`、`startedAt`、`endedAt`、`duration`（人类可读，运行中按当前时间算）、`summary`、`error` |
 | FR-007 | `GET /api/tasks/<id>` 返回 `{ task, logTail }`；日志尾部取 `.pisa/logs/<id>.log` 的最后 200 行，`{ts,stage,msg}` 行格式化为 `HH:MM:SS stage msg`，解析失败原样保留；任务不存在返回 404 |
@@ -63,8 +63,8 @@ pisa core 的全部能力目前只能经聊天通道使用：定位任务、看�
 
 ## 5. 验收
 
-1. `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:<port>/ui`（无 token）→ `401`
-2. 带正确 token 打开 `/ui` → 200，返回 HTML，并下发 `pisa_web` cookie
+1. `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:<port>/api/state`（无请求头）→ `401`；`/ui`（无 token）→ `200`，页面不含 token
+2. 带正确 token 打开 `/ui` → 200，返回 HTML，不下发 cookie
 3. `GET /api/tasks` 返回三组列表与计数；带 `repo=<别名>` 时列表只剩该仓库
 4. 对一个有日志的任务 `GET /api/tasks/<id>` → 返回 prompt、分支、PR、耗时与日志尾部
 5. `POST /api/tasks {prompt:"修一下登录"}` → 任务落库为 `queued`，响应带 `taskId`

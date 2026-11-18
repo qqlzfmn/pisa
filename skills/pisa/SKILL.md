@@ -74,11 +74,13 @@ pisa wait <id> --timeout 900 --json      # 阻塞到终态，退出码 0/1/4/5
 | 码 | 含义 | 你的动作 |
 | --- | --- | --- |
 | 0 | 成功 | 读 `summary` / `prUrl`，做自己的验收 |
-| 1 | 任务失败 | 读 `error` 与日志，判断是 brief 问题还是环境问题 |
-| 2 | 用法或配置错误 | 修参数/配置，不要原样重试 |
-| 3 | 找不到任务 | 检查任务号；不要假设任务存在 |
-| 4 | 任务不可运行 | paused / cancelled / rewound，交给人处理 |
+| 1 | 任务失败，或系统需人工处理（配置改了要重启、管理接口不可达） | 读 `error` 与日志；`status --json` 看 `health.issues` |
+| 2 | 用法或配置错误，或管理动作失败 | 修参数/配置，不要原样重试 |
+| 3 | 找不到任务，或待配置（如 token 未设置） | 检查任务号；`status --json` 看缺哪项 |
+| 4 | 任务状态不允许 | paused / cancelled / rewound，或终态再取消/重试，交给人处理 |
 | 5 | 等待超时 | 任务可能仍在跑；用 `pisa status` 继续观察，不要重复提交 |
+
+`pisa status` 的退出码就是健康结论：0 正常、1 需重启、2 部件错误、3 待配置。脚本可以先用 `pisa status --json` 判断环境，再决定是否派活。
 
 ## 常用命令速查
 
@@ -88,9 +90,13 @@ pisa wait <id> --timeout 600 --json
 pisa status --json
 pisa list --repo demo --status succeeded --limit 10 --json
 pisa show <id> --json
-pisa logs <id> --tail 120
+pisa logs <id> --tail 120 --json
+pisa retry <id>                # 失败任务重新排队，重复调用幂等
 pisa cancel <id>
 pisa continue <id> "按评论第 2 点改" --json
+pisa merge <id> --json         # 需要守护进程开着 web
+pisa rewind <id> --yes --json
+pisa executor pause | resume
 ```
 
 完整参数与 JSON 字段见 [references/commands.md](references/commands.md)。

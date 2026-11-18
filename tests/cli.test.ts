@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli";
 import { loadConfig } from "../src/config";
+import { CONFIG_HASH_KEY } from "../src/health";
 import { Store } from "../src/store";
 import { sh } from "../src/git";
 import { newTaskId } from "../src/ids";
@@ -29,9 +30,9 @@ function writeConfig(over: Record<string, unknown> = {}): void {
     cfgPath,
     JSON.stringify({
       repos: [{ alias: "demo", path: repo, baseBranch: "main" }],
-      whitelist: { users: [], repos: ["demo"] },
+      whitelist: { users: ["tester"], repos: ["demo"] },
       stateDir: ".pisa",
-      worker: { adapter: "omp", command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1 },
+      worker: { adapter: "omp", command: "bun", timeoutSec: 5, extraArgs: [], concurrency: 1 },
       ...over,
     }),
   );
@@ -313,5 +314,71 @@ describe("查询与操作", () => {
   test("未知命令与未知选项", async () => {
     expect((await cli(...base("nope"))).code).toBe(2);
     expect((await cli(...base("task", "x", "--bogus"))).code).toBe(2);
+  });
+});
+
+describe("管理命令与退出码", () => {
+  test("status 退出码反映健康：配置变更 1、待配置 3", async () => {
+    const store = new Store(join(stateDir, "pisa.db"));
+    store.setMeta(CONFIG_HASH_KEY, "stale");
+    store.close();
+    const stale = await cli(...base("status", "--json"));
+    expect(stale.code).toBe(1);
+    expect(parse<{ health: { issues: Array<{ kind: string }> } }>(stale).health.issues[0]!.kind).toBe("restart");
+
+    writeConfig({ whitelist: { users: [], repos: ["demo"] } });
+    const unconfigured = await cli(...base("status"));
+    expect(unconfigured.code).toBe(3);
+    expect(unconfigured.out).toContain("whitelist.users 为空");
+  });
+
+  test("接口未启用时管理动作退出 1", async () => {
+    const failed = seed({ status: "failed" });
+    const retry = await cli(...base("retry", failed.id));
+    expect(retry.code).toBe(1);
+    expect(retry.err).toContain("管理接口未启用");
+    expect((await cli(...base("merge", failed.id))).code).toBe(1);
+    expect((await cli(...base("rewind", failed.id, "--yes"))).code).toBe(1);
+    expect((await cli(...base("executor", "pause"))).code).toBe(1);
+  });
+
+  test("接口启用但缺 token 退出 3", async () => {
+    const failed = seed({ status: "failed" });
+    writeConfig({
+      web: { enabled: true, port: 18999, tokenEnv: "PISA_CLI_TEST_MISSING_TOKEN", userId: "tester", chatId: "web" },
+    });
+    delete process.env.PISA_CLI_TEST_MISSING_TOKEN;
+    const r = await cli(...base("retry", failed.id));
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("PISA_CLI_TEST_MISSING_TOKEN");
+  });
+
+  test("executor 用法错误退出 2", async () => {
+    expect((await cli(...base("executor"))).code).toBe(2);
+    expect((await cli(...base("executor", "stop"))).code).toBe(2);
+  });
+
+  test("run 是 task 的别名", async () => {
+    const r = await cli(...base("run", "跑一下", "--json"));
+    expect(r.code).toBe(0);
+    expect(parse<TaskJson>(r).prompt).toBe("跑一下");
+  });
+
+  test("logs --json 输出行数组", async () => {
+    const task = seed();
+    mkdirSync(join(stateDir, "logs"), { recursive: true });
+    writeFileSync(join(stateDir, "logs", `${task.id}.log`), "a\nb\n");
+    const body = parse<{ id: string; lines: string[] }>(await cli(...base("logs", task.id, "--json")));
+    expect(body).toEqual({ id: task.id, lines: ["a", "b"] });
+  });
+
+  test("接口不可达时 cancel 回退本地：没有执行器就直接取消运行中任务", async () => {
+    const task = seed({ status: "running", startedAt: Date.now() - 1000 });
+    const r = await cli(...base("cancel", task.id, "--json"));
+    expect(r.code).toBe(0);
+    expect(parse<{ message: string }>(r).message).toContain("无活跃执行器");
+    const store = new Store(join(stateDir, "pisa.db"));
+    expect(store.get(task.id)!.status).toBe("cancelled");
+    store.close();
   });
 });

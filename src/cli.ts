@@ -9,14 +9,22 @@ import type { Task, TaskStatus } from "./types";
 import { newTaskId } from "./ids";
 import { continuationContext } from "./task-context";
 import { readTail, tailLines } from "./log";
+import { HEALTH_LABEL, healthOf } from "./health";
+import { mgmtAction, mgmtState, MgmtUnauthorized, MgmtUnreachable, type MgmtState } from "./mgmt";
+import type { ActionOutcome } from "./router";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
 
-/** 退出码：脚本据此分支，不要在版本间随意改语义 */
+/**
+ * 退出码：脚本据此分支，不要在版本间随意改语义。
+ * 1 同时用于「任务失败」与「系统需要人工处理」（重启守护进程 / 管理接口不可达）。
+ */
 const EXIT = {
   ok: 0,
   taskFailed: 1,
   usage: 2,
   notFound: 3,
+  /** 缺配置：token 未设置等，数字与 notFound 相同但语义不同 */
+  needConfig: 3,
   notRunnable: 4,
   timeout: 5,
 } as const;
@@ -41,7 +49,7 @@ interface ParsedArgs {
   flags: Map<string, string | true>;
 }
 
-const BOOL_FLAGS = new Set(["json", "wait", "help"]);
+const BOOL_FLAGS = new Set(["json", "wait", "help", "yes", "force"]);
 const VALUE_FLAGS = new Set([
   "config",
   "repo",
@@ -232,23 +240,74 @@ export function helpText(): string {
   return `pisa CLI：向本地 pisa 守护进程提交任务并查询结果
 
 用法：
+  pisa run <需求> [--repo 别名] [--wait] [--json]     同 pisa task
   pisa task <需求> [--repo 别名] [--wait] [--json]
   pisa continue <任务号> <新要求> [--wait] [--json]
   pisa wait <任务号> [--timeout 秒] [--json]
   pisa status [--json]
   pisa list [--repo 别名] [--status 状态] [--limit N] [--pr 编号] [--json]
   pisa show <任务号> [--json]
-  pisa logs <任务号> [--tail N]
+  pisa logs <任务号> [--tail N] [--json]
   pisa cancel <任务号>
+  pisa retry <任务号>
+  pisa merge <任务号> [--force]
+  pisa rewind <任务号> [--yes]
+  pisa executor pause|resume
   pisa repos [--json]
+
+管理命令（status/retry/cancel/merge/rewind/executor）走本机 127.0.0.1 的管理接口，
+与 Web 控制台是同一套路径；接口不可达时 status/cancel 回退到本地数据库。
 
 全局选项：
   --config <path>   配置文件；默认 PISA_CONFIG，否则从当前目录向上找 pisa.config.json
 
 退出码：
-  0 成功    1 任务失败或命令被拒    2 用法/配置错误
-  3 找不到任务    4 任务不可运行（暂停/取消/撤销）    5 等待超时
+  0 正常    1 任务失败，或系统需重启/管理接口不可达    2 用法、配置或操作失败
+  3 找不到任务，或缺少配置（如 token 未设置）    4 任务状态不允许    5 等待超时
 `;
+}
+
+/** status/cancel 在接口不可达或凭证不匹配时回退本地库；返回 null 表示要回退 */
+async function tryState(cfg: Config): Promise<MgmtState | null> {
+  try {
+    return await mgmtState(cfg);
+  } catch (err) {
+    if (err instanceof MgmtUnreachable || err instanceof MgmtUnauthorized) return null;
+    throw err;
+  }
+}
+
+function emitOutcome(io: Io, args: ParsedArgs, outcome: ActionOutcome): number {
+  if (args.flags.get("json")) {
+    json(io, {
+      ok: outcome.ok,
+      code: outcome.code,
+      taskId: outcome.taskId ?? null,
+      message: outcome.message,
+    });
+  } else if (outcome.message) {
+    (outcome.ok ? io.out : io.err)(outcome.message);
+  }
+  return outcome.code;
+}
+
+/** 没有管理接口（web 未启用）时按 Router 的同一套规则在库里处理取消 */
+function localCancel(store: Store, task: Task, daemonAlive: boolean): ActionOutcome {
+  if (task.status === "queued" || task.status === "paused") {
+    if (!store.transition(task.id, "cancelled", { endedAt: Date.now() })) {
+      return { ok: false, code: 4, message: `任务状态已变化，取消失败：${task.id}` };
+    }
+    return { ok: true, code: 0, message: `已取消 · ${task.id}`, taskId: task.id };
+  }
+  if (task.status !== "running") {
+    return { ok: false, code: 4, message: `任务 ${task.id} 已结束（${task.status}）`, taskId: task.id };
+  }
+  if (daemonAlive) {
+    store.requestCancel(task.id);
+    return { ok: true, code: 0, message: `取消中 · ${task.id}\nWorker 在下一个检查点退出`, taskId: task.id };
+  }
+  store.transition(task.id, "cancelled", { endedAt: Date.now() });
+  return { ok: true, code: 0, message: `已取消（无活跃执行器）· ${task.id}`, taskId: task.id };
 }
 
 async function dispatch(io: Io, argv: string[]): Promise<number> {
@@ -266,6 +325,7 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
   const { cfg, store } = openState(configPath);
   try {
     switch (command) {
+      case "run":
       case "task": {
         const brief = args.positional.slice(1).join(" ").trim();
         if (!brief) throw new UsageError("task 需要需求正文");
@@ -310,23 +370,36 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
       }
 
       case "status": {
-        const daemon = daemonState(store);
+        const remote = await tryState(cfg);
+        const health = remote?.health ?? healthOf(cfg, store);
+        const executor = remote?.executor ?? null;
+        const daemon = remote?.daemon ?? daemonState(store);
         if (args.flags.get("json")) {
-          const snapshot = statusSnapshot(store);
-          json(io, {
-            daemon,
-            counts: snapshot.counts,
-            total: snapshot.total,
-            running: snapshot.running.map(taskJson),
-            queued: snapshot.queued.map(taskJson),
-            finished: snapshot.finished.map(taskJson),
-          });
-          return EXIT.ok;
+          if (remote) {
+            json(io, { source: "api", ...remote });
+          } else {
+            const snapshot = statusSnapshot(store);
+            json(io, {
+              source: "local",
+              daemon,
+              executor,
+              health,
+              counts: snapshot.counts,
+              total: snapshot.total,
+              running: snapshot.running.map(taskJson),
+              queued: snapshot.queued.map(taskJson),
+              finished: snapshot.finished.map(taskJson),
+            });
+          }
+          return health.code;
         }
         io.out(formatStatusBoard(store));
         const beat = daemon.ageMs === null ? "无心跳记录" : `最后心跳 ${formatDuration(daemon.ageMs)} 前`;
         io.out(`守护进程：${daemon.alive ? "运行中" : "未运行"}（${beat}）`);
-        return EXIT.ok;
+        if (executor) io.out(`执行器：${executor.paused ? "已暂停" : "调度中"}（运行 ${executor.active}/${executor.concurrency}）`);
+        io.out(`健康：${HEALTH_LABEL[health.code]}`);
+        for (const issue of health.issues) io.out(`  - ${issue.message}`);
+        return health.code;
       }
 
       case "list": {
@@ -363,12 +436,13 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
 
       case "logs": {
         const id = args.positional[1];
-        if (!id) throw new UsageError("用法：pisa logs <任务号> [--tail N]");
+        if (!id) throw new UsageError("用法：pisa logs <任务号> [--tail N] [--json]");
         const path = join(cfg.stateDir, "logs", `${id}.log`);
         if (!existsSync(path)) throw new NotFoundError(`任务 ${id} 还没有日志：${path}`);
         const count = Math.max(1, Math.floor(flagNumber(args, "tail") ?? 80));
         const lines = tailLines(readTail(path), Math.max(1, count));
-        io.out(lines.length > 0 ? lines.join("\n") : "(日志为空)");
+        if (args.flags.get("json")) json(io, { id, lines });
+        else io.out(lines.length > 0 ? lines.join("\n") : "(日志为空)");
         return EXIT.ok;
       }
 
@@ -377,19 +451,40 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
         if (!id) throw new UsageError("用法：pisa cancel <任务号>");
         const task = store.get(id);
         if (!task) throw new NotFoundError(`找不到任务 ${id}`);
-        if (task.status === "running") {
-          store.requestCancel(id);
-          io.out(`已请求取消：${id}（Worker 在下一个检查点退出）`);
-          return EXIT.ok;
+        let outcome: ActionOutcome;
+        try {
+          outcome = await mgmtAction(cfg, `/api/tasks/${encodeURIComponent(id)}/cancel`);
+        } catch (err) {
+          if (!(err instanceof MgmtUnreachable || err instanceof MgmtUnauthorized)) throw err;
+          outcome = localCancel(store, task, daemonState(store).alive);
         }
-        if (task.status !== "queued" && task.status !== "paused") {
-          throw new NotRunnableError(`任务已处于 ${task.status}，无法取消`);
-        }
-        if (!store.transition(id, "cancelled", { endedAt: Date.now() })) {
-          throw new NotRunnableError(`任务状态已变化，取消失败：${id}`);
-        }
-        io.out(`已取消：${id}`);
-        return EXIT.ok;
+        return emitOutcome(io, args, outcome);
+      }
+
+      case "retry": {
+        const id = args.positional[1];
+        if (!id) throw new UsageError("用法：pisa retry <任务号>");
+        return emitOutcome(io, args, await mgmtAction(cfg, `/api/tasks/${encodeURIComponent(id)}/retry`));
+      }
+
+      case "merge": {
+        const id = args.positional[1];
+        if (!id) throw new UsageError("用法：pisa merge <任务号> [--force] [--json]");
+        const body = { confirm: true, force: args.flags.get("force") === true };
+        return emitOutcome(io, args, await mgmtAction(cfg, `/api/tasks/${encodeURIComponent(id)}/merge`, body));
+      }
+
+      case "rewind": {
+        const id = args.positional[1];
+        if (!id) throw new UsageError("用法：pisa rewind <任务号> [--yes] [--json]");
+        const body = { yes: args.flags.get("yes") === true };
+        return emitOutcome(io, args, await mgmtAction(cfg, `/api/tasks/${encodeURIComponent(id)}/rewind`, body));
+      }
+
+      case "executor": {
+        const action = args.positional[1];
+        if (action !== "pause" && action !== "resume") throw new UsageError("用法：pisa executor pause|resume");
+        return emitOutcome(io, args, await mgmtAction(cfg, "/api/executor/pause", { paused: action === "pause" }));
       }
 
       case "repos": {
@@ -415,7 +510,6 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
 }
 
 class NotFoundError extends Error {}
-class NotRunnableError extends Error {}
 
 export async function runCli(argv: string[], io: Partial<Io> = {}): Promise<number> {
   const merged: Io = { ...defaultIo, ...io };
@@ -426,13 +520,17 @@ export async function runCli(argv: string[], io: Partial<Io> = {}): Promise<numb
       merged.err(err.message);
       return EXIT.notFound;
     }
-    if (err instanceof NotRunnableError) {
-      merged.err(err.message);
-      return EXIT.notRunnable;
-    }
     if (err instanceof UsageError) {
       merged.err(err.message);
       return EXIT.usage;
+    }
+    if (err instanceof MgmtUnreachable) {
+      merged.err(err.message);
+      return EXIT.taskFailed;
+    }
+    if (err instanceof MgmtUnauthorized) {
+      merged.err(err.message);
+      return EXIT.needConfig;
     }
     merged.err(err instanceof Error ? err.message : String(err));
     return EXIT.usage;

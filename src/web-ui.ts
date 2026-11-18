@@ -87,18 +87,21 @@ export const WEB_UI = `<!doctype html>
 (function () {
   'use strict';
   var state = { repo: '', busy: false, detail: null };
+  var KEY = 'pisa.token';
   var token = new URLSearchParams(location.search).get('token');
-  if (token) history.replaceState(null, '', location.pathname);
+  if (token) {
+    // 地址栏 token 只用于首次打开：存进本标签页后立刻抹掉，刷新和自动刷新都不再依赖 URL
+    sessionStorage.setItem(KEY, token);
+    history.replaceState(null, '', location.pathname);
+  } else {
+    token = sessionStorage.getItem(KEY) || '';
+  }
 
   function el(tag, cls, text) {
     var node = document.createElement(tag);
     if (cls) node.className = cls;
     if (text !== undefined && text !== null) node.textContent = String(text);
     return node;
-  }
-  function withToken(path) {
-    if (!token) return path;
-    return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(token);
   }
   function toast(text, bad) {
     var box = document.getElementById('toast');
@@ -112,9 +115,11 @@ export const WEB_UI = `<!doctype html>
     document.getElementById('daemon').className = 'bad';
   }
   async function api(path, init) {
-    var opts = Object.assign({ credentials: 'same-origin', headers: {} }, init || {});
+    // 接口只认请求头：token 取自 URL（首次）或本标签页存储，绝不放进 cookie 或查询参数
+    var opts = Object.assign({ headers: {} }, init || {});
+    if (token) opts.headers.authorization = 'Bearer ' + token;
     if (opts.body) opts.headers['content-type'] = 'application/json';
-    var res = await fetch(withToken(path), opts);
+    var res = await fetch(path, opts);
     if (res.status === 401) { showAuth(); throw new Error('未授权'); }
     var data = await res.json().catch(function () { return {}; });
     if (!res.ok || data.ok === false) throw new Error(data.message || data.error || ('HTTP ' + res.status));
@@ -189,6 +194,8 @@ export const WEB_UI = `<!doctype html>
       var query = state.repo ? '?repo=' + encodeURIComponent(state.repo) : '';
       renderBoard(await api('/api/tasks' + query));
     } catch (err) {
+      // 401 已经由 showAuth 写好可操作的提示，不要再覆盖成「加载失败」
+      if (err.message === '未授权') return;
       document.getElementById('daemon').textContent = '加载失败：' + err.message;
       document.getElementById('daemon').className = 'bad';
     }

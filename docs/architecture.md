@@ -64,7 +64,9 @@ core 内部模块关系：
 | `scheduler.ts` | cron 到点开单 | 构造时注入 `enqueue` |
 | `proactive.ts` | 群聊关键词与定时探针 | 构造时注入 `enqueue` |
 | `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
-| `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机 | `createWebApp()`、`startWebServer()`、`ReplyBus` |
+| `web.ts` / `web-ui.ts` | 本机控制台与管理接口：HTTP 外壳 + 单页；派活转成 `IncomingMessage` 交给 `router.handle`，管理动作（取消/重试/合并/撤销/暂停调度）直接调 Router 的 `ActionOutcome` 方法；`/api/*` 只认请求头 | `createWebApp()`、`startWebServer()`、`ReplyBus` |
+| `mgmt.ts` | CLI → 管理接口的客户端：`/api/*` 请求、token 注入、超时与错误分类 | `mgmtState()`、`mgmtAction()`、`MgmtUnreachable`、`MgmtUnauthorized` |
+| `health.ts` | 本机就绪结论：配置指纹漂移、部件可用性、待配置项，给出 0/1/2/3 | `healthOf()`、`configHash()`、`CONFIG_HASH_KEY` |
 | `log.ts` / `config.ts` / `types.ts` | 日志脱敏、配置加载与默认值、共享类型与状态机表 | — |
 
 ## 2. 任务状态机与恢复语义
@@ -135,7 +137,7 @@ cancelled ─┘
 1. **事件进入**。六类触发源都产生 `IncomingMessage`，`eventId` 是唯一键：
    - IM：`channel.start(onMessage)` 回调里先喂 `Proactive.observe`，再 `router.handle`（`src/index.ts`）。
    - webhook：`Bun.serve` 只接 127.0.0.1 的 `POST /event`，校验 `x-pisa-token`，body `{prompt, repo?, eventId?}`，缺省 `eventId` 为 `webhook:<ts>:<rand>`（`src/index.ts`）。
-   - Web 控制台：`Bun.serve` 只接 127.0.0.1 的 `/ui` 与 `/api/*`，token 鉴权通过后把派活/取消/合并拼成 `IncomingMessage`（`admin: true`）交给 `router.handle`，回执经 `ReplyBus` 收集后回给页面（`src/web.ts`）。`admin` 让 Router 跳过单英文词误触防护与原请求者校验——浏览器里的操作由 token 直接认证，没有可回 `confirm` 的聊天。
+   - Web 控制台与管理接口：`Bun.serve` 只接 127.0.0.1 的 `/ui` 与 `/api/*`，请求头 token 通过后，派活拼成 `IncomingMessage`（`admin: true`）交给 `router.handle`；取消/重试/合并/撤销/暂停调度直接调 `Router` 的对应方法并返回 `{ok, code, message}`，`pisa` CLI 用 `src/mgmt.ts` 调同一批路径。回执经 `ReplyBus` 收集后回给页面（`src/web.ts`）。`admin` 让 Router 跳过单英文词误触防护与原请求者校验——浏览器与本地 CLI 都视为已认证操作者。
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。

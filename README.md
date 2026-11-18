@@ -191,18 +191,24 @@ curl -X POST http://127.0.0.1:8799/event \
 
 ```bash
 bun link                 # 把 pisa 命令链到 PATH；也可直接用 bun run src/cli.ts
-pisa task "修 CI：test 失败日志见 ci.log" --repo demo --json
+pisa run "修 CI：test 失败日志见 ci.log" --repo demo --json
 pisa wait <任务号> --timeout 900 --json
 pisa status --json
 pisa show <任务号>
-pisa logs <任务号> --tail 100
+pisa logs <任务号> --tail 100 --json
+pisa retry <任务号>        # 失败/取消/撤销的任务重新排队
 pisa cancel <任务号>
+pisa merge <任务号>        # 与 /pisa merge 同一条路径
+pisa rewind <任务号> --yes
+pisa executor pause | resume
 pisa continue <任务号> "按 PR 评论再改"
 ```
 
 - `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省从当前目录向上找 `pisa.config.json`
 - 相对 `stateDir` 与仓库路径以配置文件目录为基准，从子目录调用也指向同一份状态
-- 退出码：`0` 成功、`1` 任务失败、`2` 用法/配置、`3` 找不到、`4` 不可运行、`5` 等待超时
+- 管理命令（`status`/`retry`/`cancel`/`merge`/`rewind`/`executor`）走本机 `127.0.0.1` 的管理接口，与 Web 控制台同一套路径；接口没开时 `status` 与 `cancel` 回落本地库，`merge`/`rewind`/`retry`/`executor` 直接失败，避免出现两套状态机
+- 退出码是系统状态：`0` 正常、`1` 任务失败或系统需处理（配置已改要重启、管理接口不可达）、`2` 用法/配置/操作失败、`3` 找不到任务或待配置（如 token 未设置）、`4` 状态不允许、`5` 等待超时
+- `pisa status` 的退出码直接取健康结论：`3` 待配置 > `2` 部件错误 > `1` 需重启 > `0` 正常；`--json` 里带 `source`（`api`/`local`）、`health.issues` 与 `executor`
 - 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
 
 给 agent 的可复用说明在 `skills/pisa/`：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
@@ -216,8 +222,8 @@ PISA_WEB_TOKEN=<自定义 token> bun run web
 # Web 控制台：http://127.0.0.1:8787/ui?token=<token>
 ```
 
-- 只监听 `127.0.0.1`；`/ui` 与 `/api/*` 都要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、cookie 任一），缺失或错误一律 401
-- 用带 token 的 `/ui` 打开后下发 `HttpOnly` cookie，页面随即把地址栏里的 token 抹掉
+- 只监听 `127.0.0.1`；`/api/*` 只认 `Authorization: Bearer` 或 `x-pisa-token` 请求头，缺失或错误一律 401；`/ui` 是不含数据的静态页面，公开返回
+- 页面把 token 存进本标签页的 `sessionStorage`，随即把地址栏里的 token 抹掉；刷新后仍可用，不下发 cookie
 - 看板三段：运行中 / 排队 / 最近完成（最多 20 条），可按仓库筛选，5 秒自动刷新
 - 任务详情：prompt、状态、耗时、分支、PR、副作用与最后 200 行日志
 - 支持派活、取消、合并（浏览器二次确认）与复制任务号

@@ -38,9 +38,9 @@ web 由 token 直接认证操作者，IM 的「请求者」概念不适用。新
 
 ## D6 鉴权
 
-四种凭证：`?token=`、`Authorization: Bearer`、`x-pisa-token`、`pisa_web` cookie。比较用 `crypto.timingSafeEqual`（先比长度）。未授权一律 401，`/ui` 与 `/api/*` 同等对待，没有登录页。
+凭证只有请求头：`Authorization: Bearer` 或 `x-pisa-token`（016 起不使用 `?token=` 做接口凭证，也不再下发 cookie）。`/ui` 是不含数据的静态壳，公开返回；地址里的 `?token=` 只用于让页面把凭证存进 `sessionStorage`。比较用 `crypto.timingSafeEqual`（先比长度）。接口未授权一律 401，没有登录页。
 
-`/ui?token=` 成功时用 `Set-Cookie: HttpOnly; SameSite=Strict; Path=/` 记住，页面 `history.replaceState` 去掉地址栏里的 token。
+`/ui?token=` 打开后页面把 token 写进 `sessionStorage`，调用接口时放进 `Authorization` 头，并用 `history.replaceState` 去掉地址栏里的 token；刷新后从存储取回，不再需要 URL 参数。
 
 ## D7 页面
 
@@ -50,7 +50,7 @@ web 由 token 直接认证操作者，IM 的「请求者」概念不适用。新
 
 `tests/web.test.ts`（内存库 + 临时 git 仓库 + 假下游通道）：
 
-- 鉴权：无凭证 401；header / query / cookie 三种放行；`/ui?token=` 下发 cookie
+- 鉴权：接口无请求头 401；两种请求头放行；query 凭证与 cookie 一律拒绝；`/ui` 与 `/ui?token=` 返回不含 token 的页面且不下发 cookie
 - 列表：三组数据、计数、repo 过滤
 - 详情：prompt/分支/PR/耗时 + 日志尾部格式化；未知任务 404
 - 派活：落库 queued + 返回 taskId；空 prompt 400；单英文词不被拦

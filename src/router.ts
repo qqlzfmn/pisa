@@ -41,6 +41,28 @@ export interface RouterDeps {
 /** 单英文词任务的待确认正文，10 分钟过期 */
 const PENDING_TTL_MS = 10 * 60 * 1000;
 
+/** 管理动作的结论：code 直接复用进程退出码语义，接口与 CLI 不必各自翻译 */
+export interface ActionOutcome {
+  ok: boolean;
+  code: 0 | 2 | 3 | 4;
+  message: string;
+  /** retry 派生出的新任务号 */
+  taskId?: string;
+}
+
+/** 动作发起人：非 admin 只能操作自己的任务 */
+export interface Actor {
+  userId: string;
+  admin?: boolean;
+}
+
+/** 调度器状态：暂停只停止认领新任务，执行中的任务继续 */
+export interface ExecutorState {
+  paused: boolean;
+  active: number;
+  concurrency: number;
+}
+
 interface PendingTask {
   prompt: string;
   repo?: string;
@@ -51,6 +73,8 @@ export class Router {
   private active = new Map<string, Promise<void>>();
   /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
   private stopping = false;
+  /** 暂停调度：排队任务保留，执行中的任务继续；不持久化 */
+  private paused = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** 上次孤儿任务巡检时间 */
   private lastReconcile = 0;
@@ -143,7 +167,7 @@ export class Router {
 
   /** 按并发上限补位；不等待任务完成 */
   private async fill(): Promise<void> {
-    if (this.stopping) return;
+    if (this.stopping || this.paused) return;
     const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
     while (this.active.size < limit) {
       const task = this.deps.store.nextQueued();
@@ -152,6 +176,21 @@ export class Router {
       if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
       this.launch({ ...task, branch, status: "running" });
     }
+  }
+
+  executorState(): ExecutorState {
+    return {
+      paused: this.paused,
+      active: this.active.size,
+      concurrency: Math.max(1, this.deps.cfg.worker.concurrency ?? 1),
+    };
+  }
+
+  /** 暂停/恢复调度；恢复后立即补位，不必等下一个心跳 */
+  setPaused(paused: boolean): ExecutorState {
+    this.paused = paused;
+    if (!paused) void this.fill();
+    return this.executorState();
   }
 
   /**
@@ -437,57 +476,63 @@ export class Router {
     return null;
   }
 
-  /** 自举：把已完成任务的分支验证后合入主干 */
+  /** `/pisa merge <id> [--force]`：对话里只输出结论 */
   private async handleMerge(msg: IncomingMessage, body: string): Promise<void> {
-    const { cfg, store, channel } = this.deps;
     const force = /(^|\s)--force\s*$/.test(body);
     const id = body.replace(/(^|\s)--force\s*$/, "").trim();
-    const task = id ? store.get(id) : null;
-    if (!task) {
-      await this.reply(msg.chatId, `找不到任务 ${id || ""}`);
-      return;
+    const outcome = await this.mergeTask(id, { force, actor: { userId: msg.userId, admin: msg.admin } });
+    await this.reply(msg.chatId, outcome.message);
+  }
+
+  /** 自举：把已完成任务的分支验证后合入主干；成功后由看护进程拉起新代码 */
+  async mergeTask(id: string, opts: { force?: boolean; actor?: Actor } = {}): Promise<ActionOutcome> {
+    const outcome = await this.runMerge(id, opts);
+    if (!outcome.ok) return outcome;
+    // 自举：交给看护进程拉起新代码；延迟退出让调用方先拿到响应
+    if (process.env.PISA_SUPERVISED === "1") {
+      setTimeout(() => process.exit(1), 800);
+      return outcome;
     }
-    if (!msg.admin && task.requester !== msg.userId) {
-      await this.reply(msg.chatId, "只有原请求者可以合并。");
-      return;
+    return { ...outcome, message: `${outcome.message}\n当前不是看护模式，改动在重启后生效。` };
+  }
+
+  private async runMerge(id: string, opts: { force?: boolean; actor?: Actor }): Promise<ActionOutcome> {
+    const { cfg, store } = this.deps;
+    const task = id ? store.get(id) : null;
+    if (!task) return { ok: false, code: 3, message: `找不到任务 ${id || ""}` };
+    if (opts.actor && !opts.actor.admin && task.requester !== opts.actor.userId) {
+      return { ok: false, code: 3, message: "只有原请求者可以合并。" };
     }
     // 合并会重启服务；有任务在跑时先拒绝，避免把 worker 打断成 paused
-    if (!force && this.active.size > 0) {
-      await this.reply(
-        msg.chatId,
-        `还有 ${this.active.size} 个任务在执行，合并会重启服务并打断它们。等结束后再合并，或加 --force。`,
-      );
-      return;
+    if (!opts.force && this.active.size > 0) {
+      return {
+        ok: false,
+        code: 4,
+        message: `还有 ${this.active.size} 个任务在执行，合并会重启服务并打断它们。等结束后再合并，或加 --force。`,
+      };
     }
     if (task.status !== "succeeded" || !task.branch) {
-      await this.reply(msg.chatId, `任务 ${task.id} 没有可合并的分支（${task.status}）。`);
-      return;
+      return { ok: false, code: 4, message: `任务 ${task.id} 没有可合并的分支（${task.status}）。` };
     }
     const repo = repoByAlias(cfg, task.repo);
-    if (!repo) {
-      await this.reply(msg.chatId, `仓库未配置：${task.repo}`);
-      return;
-    }
+    if (!repo) return { ok: false, code: 3, message: `仓库未配置：${task.repo}` };
 
     const verifyBranch = `verify/${task.id}`;
     const verifyDir = resolve(cfg.stateDir, "verify", task.id);
     const base = repo.baseBranch ?? "main";
     const wt = createWorktree(repo.path, verifyDir, verifyBranch, task.branch);
-    if (wt.code !== 0) {
-      await this.reply(msg.chatId, `验证副本创建失败：${wt.err.slice(0, 300)}`);
-      return;
-    }
+    if (wt.code !== 0) return { ok: false, code: 2, message: `验证副本创建失败：${wt.err.slice(0, 300)}` };
 
     try {
       // 主干在任务执行期间可能已前进；先 rebase 到最新主干，否则 --ff-only 必然失败
       const rebase = sh(["git", "-C", verifyDir, "rebase", base]);
       if (rebase.code !== 0) {
         sh(["git", "-C", verifyDir, "rebase", "--abort"]);
-        await this.reply(
-          msg.chatId,
-          `未合并 · ${task.id}\n分支与 ${base} 冲突，需要在最新主干重做：\n${(rebase.err || rebase.out).slice(0, 500)}`,
-        );
-        return;
+        return {
+          ok: false,
+          code: 2,
+          message: `未合并 · ${task.id}\n分支与 ${base} 冲突，需要在最新主干重做：\n${(rebase.err || rebase.out).slice(0, 500)}`,
+        };
       }
 
       let ok = true;
@@ -498,36 +543,22 @@ export class Router {
         ok = test.code === 0;
         detail = ok ? "测试通过" : `测试失败：\n${(test.err || test.out).slice(-600)}`;
       }
-      if (!ok) {
-        await this.reply(msg.chatId, `未合并 · ${task.id}\n${detail}`);
-        return;
-      }
+      if (!ok) return { ok: false, code: 2, message: `未合并 · ${task.id}\n${detail}` };
 
       if (currentBranch(repo.path) !== base) {
-        await this.reply(msg.chatId, `主工作区当前不在 ${base}，请先切回再合并。`);
-        return;
+        return { ok: false, code: 4, message: `主工作区当前不在 ${base}，请先切回再合并。` };
       }
       const before = sh(["git", "-C", repo.path, "rev-parse", base]).out;
       // rebase 后 verify 分支已包含最新主干，可以安全快进
       const merge = sh(["git", "-C", repo.path, "merge", "--ff-only", verifyBranch]);
-      if (merge.code !== 0) {
-        await this.reply(msg.chatId, `合并失败：${(merge.err || merge.out).slice(0, 600)}`);
-        return;
-      }
+      if (merge.code !== 0) return { ok: false, code: 2, message: `合并失败：${(merge.err || merge.out).slice(0, 600)}` };
       const after = sh(["git", "-C", repo.path, "rev-parse", base]).out;
       store.effect(task.id, "merge", base, JSON.stringify({ base, from: before, to: after }));
 
-      await this.reply(msg.chatId, `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}`);
+      return { ok: true, code: 0, taskId: task.id, message: `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}` };
     } finally {
       removeWorktree(repo.path, verifyDir);
       deleteBranch(repo.path, verifyBranch);
-    }
-
-    // 自举：由看护进程拉起新代码
-    if (process.env.PISA_SUPERVISED === "1") {
-      setTimeout(() => process.exit(1), 800);
-    } else {
-      await this.reply(msg.chatId, "当前不是看护模式，改动在重启后生效。");
     }
   }
 
@@ -541,41 +572,36 @@ export class Router {
     };
   }
 
-  /**
-   * `/pisa rewind <任务号> [--yes]`：先给预览，带 --yes 才执行。
-   * 已合并的任务用 revert 提交回退；无法确认 PR 状态时不动分支，避免误删已合并成果。
-   */
+  /** `/pisa rewind <任务号> [--yes]`：对话里只输出结论 */
   private async handleRewind(msg: IncomingMessage, body: string): Promise<void> {
-    const { cfg, store } = this.deps;
     const words = body.split(/\s+/).filter(Boolean);
     const yes = words.includes("--yes");
     const id = words.find((w) => !w.startsWith("--")) ?? "";
     if (!id) {
-      await this.reply(msg.chatId, `用法：${cfg.trigger} rewind <任务号> [--yes]`);
+      await this.reply(msg.chatId, `用法：${this.deps.cfg.trigger} rewind <任务号> [--yes]`);
       return;
     }
+    const outcome = await this.rewindTask(id, { yes, actor: { userId: msg.userId, admin: msg.admin } });
+    await this.reply(msg.chatId, outcome.message);
+  }
+
+  /**
+   * 已合并的任务用 revert 提交回退；无法确认 PR 状态时不动分支，避免误删已合并成果。
+   * 不带 yes 只给预览，不改任何东西。
+   */
+  async rewindTask(id: string, opts: { yes?: boolean; actor?: Actor } = {}): Promise<ActionOutcome> {
+    const { cfg, store } = this.deps;
     const task = store.get(id);
-    if (!task) {
-      await this.reply(msg.chatId, `找不到任务 ${id}`);
-      return;
+    if (!task) return { ok: false, code: 3, message: `找不到任务 ${id}` };
+    if (opts.actor && !opts.actor.admin && task.requester !== opts.actor.userId) {
+      return { ok: false, code: 3, message: "只有原请求者可以撤销。" };
     }
-    if (!msg.admin && task.requester !== msg.userId) {
-      await this.reply(msg.chatId, "只有原请求者可以撤销。");
-      return;
-    }
-    if (task.status === "rewound") {
-      await this.reply(msg.chatId, `任务 ${id} 已撤销。`);
-      return;
-    }
+    if (task.status === "rewound") return { ok: true, code: 0, message: `任务 ${id} 已撤销。` };
     if (task.status === "queued" || task.status === "running" || task.status === "paused") {
-      await this.reply(msg.chatId, `任务 ${id} 还没结束（${task.status}），先 ${cfg.trigger} cancel ${id}。`);
-      return;
+      return { ok: false, code: 4, message: `任务 ${id} 还没结束（${task.status}），先 ${cfg.trigger} cancel ${id}。` };
     }
     const repo = repoByAlias(cfg, task.repo);
-    if (!repo) {
-      await this.reply(msg.chatId, `仓库未配置：${task.repo}`);
-      return;
-    }
+    if (!repo) return { ok: false, code: 3, message: `仓库未配置：${task.repo}` };
 
     const runner = this.deps.ghRunner ?? defaultRunner;
     const plan = planRewind(task, store.effectsOf(id), {
@@ -583,18 +609,14 @@ export class Router {
       baseBranch: repo.baseBranch ?? "main",
       probes: this.rewindProbes(runner),
     });
-    if (!yes) {
-      await this.reply(msg.chatId, formatRewindPlan(plan, cfg.trigger));
-      return;
-    }
+    if (!opts.yes) return { ok: true, code: 0, message: formatRewindPlan(plan, cfg.trigger) };
 
     if (plan.actions.length === 0) {
       if (plan.merge !== "unknown") store.transition(id, "rewound");
       const lines = [plan.merge === "unknown" ? `未完成撤销 · ${id}` : `已标记撤销 · ${id}`, "没有需要执行的撤销动作。"];
       if (plan.irreversible.length > 0) lines.push("", "不可撤销", ...plan.irreversible.map((s) => `- ${s}`));
       if (plan.notes.length > 0) lines.push("", "保留", ...plan.notes.map((s) => `- ${s}`));
-      await this.reply(msg.chatId, lines.join("\n"));
-      return;
+      return { ok: plan.merge !== "unknown", code: plan.merge === "unknown" ? 2 : 0, message: lines.join("\n") };
     }
 
     const results = applyRewind(plan, {
@@ -607,17 +629,18 @@ export class Router {
     for (const r of results) {
       if (r.ok && r.effect) store.removeEffect(id, r.effect.kind, r.effect.target);
     }
-    if (plan.merge !== "unknown" && results.every((r) => r.ok)) store.transition(id, "rewound");
-    await this.reply(msg.chatId, formatRewindResult(plan, results));
+    const complete = plan.merge !== "unknown" && results.every((r) => r.ok);
+    if (complete) store.transition(id, "rewound");
+    return { ok: complete, code: complete ? 0 : 2, message: formatRewindResult(plan, results) };
   }
 
+  /** `/pisa cancel [任务号]`：不带任务号时取消当前对话里最近的可取消任务 */
   private async handleCancel(msg: IncomingMessage, body: string): Promise<void> {
-    const { store, channel } = this.deps;
+    const { store } = this.deps;
     let id = body.trim();
     if (!id) {
       const mine = store.recentTasks(20).find(
-        (t) =>
-          t.chatId === msg.chatId && (t.status === "running" || t.status === "queued" || t.status === "paused"),
+        (t) => t.chatId === msg.chatId && (t.status === "running" || t.status === "queued" || t.status === "paused"),
       );
       if (!mine) {
         await this.reply(msg.chatId, "没有可取消的任务。");
@@ -625,32 +648,103 @@ export class Router {
       }
       id = mine.id;
     }
+    const outcome = await this.cancelTask(id, { userId: msg.userId, admin: msg.admin });
+    await this.reply(msg.chatId, outcome.message);
+  }
+
+  /** 停止：排队/中断的直接置 cancelled；运行中的登记取消请求，由执行器收尾 */
+  async cancelTask(id: string, actor: Actor): Promise<ActionOutcome> {
+    const { store } = this.deps;
     const task = store.get(id);
-    if (!task) {
-      await this.reply(msg.chatId, `找不到任务 ${id}`);
-      return;
-    }
-    if (!msg.admin && task.requester !== msg.userId) {
-      await this.reply(msg.chatId, "只有原请求者可以取消。");
-      return;
+    if (!task) return { ok: false, code: 3, message: `找不到任务 ${id}` };
+    if (!actor.admin && task.requester !== actor.userId) {
+      return { ok: false, code: 3, message: "只有原请求者可以取消。" };
     }
     if (task.status === "queued" || task.status === "paused") {
       store.transition(id, "cancelled", { endedAt: this.now() });
-      await this.reply(msg.chatId, `已取消 · ${id}`);
-      return;
+      return { ok: true, code: 0, message: `已取消 · ${id}` };
     }
-    if (task.status !== "running") {
-      await this.reply(msg.chatId, `任务 ${id} 已结束（${task.status}）`);
-      return;
-    }
+    if (task.status !== "running") return { ok: false, code: 4, message: `任务 ${id} 已结束（${task.status}）` };
     if (!this.active.has(id)) {
       // 进程重启后遗留的 running 行没有执行器，requestCancel 对它无效
       store.transition(id, "cancelled", { endedAt: this.now() });
-      await this.reply(msg.chatId, `已取消（无活跃执行器）· ${id}`);
-      return;
+      return { ok: true, code: 0, message: `已取消（无活跃执行器）· ${id}` };
     }
     store.requestCancel(id);
-    await this.reply(msg.chatId, `取消中 · ${id}`);
+    return { ok: true, code: 0, message: `取消中 · ${id}` };
+  }
+
+  /** 同一任务的重试事件 id：首次 `retry:<id>`，之后 `retry:<id>:2`…，避免覆盖事件日志 */
+  /**
+   * 重试：从失败的同一需求派生新任务，重新在最新主干上开工。
+   * 同一任务已有未结束的重试时重复调用返回那个任务，避免一次失败派出一串。
+   */
+  async retryTask(id: string, actor: Actor): Promise<ActionOutcome> {
+    const { cfg, store } = this.deps;
+    const task = store.get(id);
+    if (!task) return { ok: false, code: 3, message: `找不到任务 ${id}` };
+    if (!actor.admin && task.requester !== actor.userId) {
+      return { ok: false, code: 3, message: "只有原请求者可以重试。" };
+    }
+    if (task.status !== "failed" && task.status !== "cancelled" && task.status !== "rewound") {
+      return {
+        ok: false,
+        code: 4,
+        message: `任务 ${id} 是 ${task.status}，只有失败、取消或撤销的任务可以重试。`,
+      };
+    }
+    const repo = repoByAlias(cfg, task.repo);
+    if (!repo) return { ok: false, code: 3, message: `仓库未配置：${task.repo}` };
+
+    // 幂等键固定：同一任务重复重试只会有一条新任务，并发下由 insertTaskOnce 决出胜者
+    const eventId = `retry:${id}`;
+    const existing = store.taskByEvent(eventId);
+    if (existing) {
+      return {
+        ok: true,
+        code: 0,
+        taskId: existing.id,
+        message: `已有重试任务 · ${existing.id}\n原任务 ${id}（${task.status}）`,
+      };
+    }
+
+    const now = this.now();
+    const retried: Task = {
+      id: newTaskId(now),
+      source: task.source,
+      channel: task.channel,
+      chatId: task.chatId,
+      requester: task.requester,
+      repo: task.repo,
+      prompt: task.prompt,
+      status: "queued",
+      branch: null,
+      prUrl: null,
+      sessionId: null,
+      // 重试从最新主干重新开始，不继承上一轮的分支与会话
+      baseRef: null,
+      context: null,
+      replyPr: task.replyPr,
+      replyIssue: task.replyIssue,
+      replyRepo: task.replyRepo,
+      summary: null,
+      error: null,
+      createdAt: now,
+      startedAt: null,
+      endedAt: null,
+      cancelRequested: false,
+    };
+    if (!store.insertTaskOnce(eventId, retried)) {
+      const winner = store.taskByEvent(eventId);
+      if (!winner) return { ok: false, code: 2, message: `重试任务写入冲突：${id}` };
+      return {
+        ok: true,
+        code: 0,
+        taskId: winner.id,
+        message: `已有重试任务 · ${winner.id}\n原任务 ${id}（${task.status}）`,
+      };
+    }
+    return { ok: true, code: 0, taskId: retried.id, message: `已重试 · ${retried.id}\n原任务 ${id}（${task.status}）` };
   }
 
   /** 恢复被进程重启中断的任务：复用原工作副本与会话再次执行 */

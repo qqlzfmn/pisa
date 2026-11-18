@@ -11,6 +11,7 @@ import { Retention } from "./retention";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import { ReplyBus, startWebServer, type WebServer } from "./web";
+import { CONFIG_HASH_KEY, configHash } from "./health";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
@@ -20,6 +21,8 @@ async function main(): Promise<void> {
   const web: WebConfig = { ...(cfg.web ?? DEFAULT_WEB), enabled: cfg.web?.enabled === true || process.argv.includes("--web") };
 
   const store = new Store(join(cfg.stateDir, "pisa.db"));
+  // 记录本次启动用的配置；`pisa status` 用它判断磁盘配置是否已变更，退出码 1 提示重启
+  store.setMeta(CONFIG_HASH_KEY, configHash(cfg));
 
   let channel: ChannelAdapter;
   if (wantCli) {

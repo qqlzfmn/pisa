@@ -82,7 +82,16 @@ interface DispatchResponse {
 interface ActionResponse {
   ok: boolean;
   status: string | null;
+  taskId: string | null;
   message: string;
+}
+
+interface StateResponse {
+  ok: boolean;
+  executor: { paused: boolean; active: number; concurrency: number } | null;
+  health: { code: number; issues: Array<{ message: string }> };
+  repos: string[];
+  queued: Array<{ id: string }>;
 }
 
 describe("web 控制台", () => {
@@ -160,15 +169,18 @@ describe("web 控制台", () => {
   }
 
   describe("鉴权", () => {
-    test("无凭证 401", async () => {
+    test("接口无凭证 401，页面壳公开", async () => {
       for (const [path, method] of [
-        ["/ui", "GET"],
+        ["/api/state", "GET"],
         ["/api/tasks", "GET"],
         ["/api/tasks", "POST"],
       ] as const) {
         const res = await call(path, { method, body: method === "POST" ? "{}" : undefined });
         expect(res.status).toBe(401);
       }
+      const shell = await call("/ui");
+      expect(shell.status).toBe(200);
+      expect(await shell.text()).not.toContain(TOKEN);
       expect(store.recentTasks()).toHaveLength(0);
     });
 
@@ -177,21 +189,28 @@ describe("web 控制台", () => {
       expect(res.status).toBe(401);
     });
 
-    test("Bearer、专用头、cookie 三种凭证都放行", async () => {
-      const variants: Array<Record<string, string>> = [auth, { "x-pisa-token": TOKEN }, { cookie: `pisa_web=${TOKEN}` }];
-      for (const headers of variants) {
+    test("Bearer 与专用头放行，cookie 不再作为凭证", async () => {
+      for (const headers of [auth, { "x-pisa-token": TOKEN }]) {
         const res = await call("/api/tasks", { headers });
         expect(res.status).toBe(200);
       }
+      const cookie = await call("/api/tasks", { headers: { cookie: `pisa_web=${TOKEN}` } });
+      expect(cookie.status).toBe(401);
     });
 
-    test("/ui?token= 下发 cookie 并返回页面", async () => {
+    test("/api/* 不接受查询参数凭证", async () => {
+      const res = await call(`/api/tasks?token=${TOKEN}`);
+      expect(res.status).toBe(401);
+    });
+
+    test("/ui?token= 返回页面且不下发 cookie，token 交给 sessionStorage", async () => {
       const res = await call(`/ui?token=${TOKEN}`);
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toContain("text/html");
-      expect(res.headers.get("set-cookie")).toContain(`pisa_web=${TOKEN}`);
-      expect(res.headers.get("set-cookie")).toContain("HttpOnly");
-      expect(await res.text()).toContain("pisa 控制台");
+      expect(res.headers.get("set-cookie")).toBeNull();
+      const html = await res.text();
+      expect(html).toContain("pisa 控制台");
+      expect(html).toContain("sessionStorage");
     });
 
     test("/ 跳转到 /ui 并保留 token", async () => {
@@ -319,22 +338,23 @@ describe("web 控制台", () => {
       expect(store.get("t_other_user")!.status).toBe("cancelled");
     });
 
-    test("任务不存在返回冲突", async () => {
+    test("任务不存在返回 404", async () => {
       const res = await post("/api/tasks/t_missing/cancel");
       const body = (await res.json()) as ActionResponse;
-      expect(res.status).toBe(409);
+      expect(res.status).toBe(404);
       expect(body.ok).toBe(false);
       expect(body.message).toContain("找不到任务");
     });
   });
 
-  describe("合并", () => {
-    async function finishedTask(): Promise<string> {
-      const body = (await (await post("/api/tasks", { prompt: "新建 out.txt" })).json()) as DispatchResponse;
-      await router.drainOnce();
-      return body.taskId!;
-    }
+  /** 跑完一条真实任务，拿到 succeeded + 分支的任务号 */
+  async function finishedTask(): Promise<string> {
+    const body = (await (await post("/api/tasks", { prompt: "新建 out.txt" })).json()) as DispatchResponse;
+    await router.drainOnce();
+    return body.taskId!;
+  }
 
+  describe("合并", () => {
     test("缺少 confirm 时 400，且不动主干", async () => {
       const id = await finishedTask();
       const res = await post(`/api/tasks/${id}/merge`, {});
@@ -363,6 +383,71 @@ describe("web 控制台", () => {
       const res = await post("/api/tasks/t_queued_merge/merge", { confirm: true });
       expect(res.status).toBe(409);
       expect(store.effectsOf("t_queued_merge")).toHaveLength(0);
+    });
+  });
+
+  describe("管理接口", () => {
+    test("状态接口同时给出健康与执行器", async () => {
+      const res = await call("/api/state", { headers: auth });
+      const body = (await res.json()) as StateResponse;
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(body.executor).toEqual({ paused: false, active: 0, concurrency: 1 });
+      // token 只注入 createWebApp，环境变量没设置，健康检查应指出这一项
+      expect(body.health.code).toBe(3);
+      expect(body.health.issues.some((i) => i.message.includes("PISA_WEB_TOKEN"))).toBe(true);
+      expect(body.repos).toEqual(["demo"]);
+      expect(body.queued).toEqual([]);
+    });
+
+    test("暂停与恢复调度", async () => {
+      const paused = await post("/api/executor/pause", { paused: true });
+      expect(paused.status).toBe(200);
+      expect(router.executorState().paused).toBe(true);
+      const state = (await (await call("/api/state", { headers: auth })).json()) as StateResponse;
+      expect(state.executor!.paused).toBe(true);
+
+      const resumed = await post("/api/executor/pause", { paused: false });
+      expect(resumed.status).toBe(200);
+      expect(router.executorState().paused).toBe(false);
+    });
+
+    test("pause 缺少布尔值 400", async () => {
+      const res = await post("/api/executor/pause", {});
+      expect(res.status).toBe(400);
+    });
+
+    test("失败任务可重试，重复请求返回同一任务", async () => {
+      seedTask({ id: "t_failed", status: "failed", prompt: "再试一次" });
+      const first = (await (await post("/api/tasks/t_failed/retry")).json()) as ActionResponse;
+      expect(first.ok).toBe(true);
+      expect(first.taskId).toBeTruthy();
+      expect(store.get(first.taskId!)!.status).toBe("queued");
+
+      const second = (await (await post("/api/tasks/t_failed/retry")).json()) as ActionResponse;
+      expect(second.taskId).toBe(first.taskId);
+      expect(store.listTasks({}).filter((t) => t.prompt === "再试一次")).toHaveLength(2);
+    });
+
+    test("排队任务不能重试 409", async () => {
+      seedTask({ id: "t_running_retry", status: "running" });
+      const res = await post("/api/tasks/t_running_retry/retry");
+      expect(res.status).toBe(409);
+    });
+
+    test("撤销先给预览，状态不变", async () => {
+      const id = await finishedTask();
+      const res = await post(`/api/tasks/${id}/rewind`, { yes: false });
+      const body = (await res.json()) as ActionResponse;
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(store.get(id)!.status).toBe("succeeded");
+    });
+
+    test("未结束的任务不能撤销 409", async () => {
+      seedTask({ id: "t_queued_rewind", status: "queued" });
+      const res = await post("/api/tasks/t_queued_rewind/rewind", { yes: true });
+      expect(res.status).toBe(409);
     });
   });
 });
