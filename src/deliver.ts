@@ -8,6 +8,7 @@ import {
   createPr,
   findPr,
   hasGh,
+  headSha,
   pushedBranch,
   pushBranch,
   remoteUrl,
@@ -84,7 +85,9 @@ export class GitDeliverer implements Deliverer {
 
     let pushed = false;
     if (this.cfg.delivery.push && remote) {
-      await effects.exec("push", `${task.id}:${branch}`, task.id, { taskId: task.id, repoPath: repo.path, branch });
+      // 键带 HEAD：续跑同一 task/分支产生新提交时要再推一次，不能被上一轮的 done 行吞掉
+      const head = headSha(workdir);
+      await effects.exec("push", `${task.id}:${branch}:${head}`, task.id, { taskId: task.id, repoPath: repo.path, branch });
       pushed = true;
     }
 

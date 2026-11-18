@@ -160,12 +160,17 @@ export class EffectQueue {
   private async run(kind: OutboxKind, row: EffectRow): Promise<unknown> {
     const handler = this.handlers.get(kind);
     if (!handler) throw new Error(`没有注册 ${kind} 处理器`);
+    // flush 拿的是行快照：排队期间同一行可能已被 exec 完成、或随任务取消被删，不能再执行一次
+    const current = this.store.effectRow(kind, row.key);
+    if (!current || current.status !== "pending") {
+      return current && current.result !== null ? JSON.parse(current.result) : null;
+    }
     try {
-      const result = await handler(JSON.parse(row.payload));
+      const result = await handler(JSON.parse(current.payload));
       this.store.completeEffect(kind, row.key, JSON.stringify(result ?? null), this.now());
       return result;
     } catch (err) {
-      const attempts = row.attempts + 1;
+      const attempts = current.attempts + 1;
       this.store.failEffect(
         kind,
         row.key,

@@ -1066,6 +1066,23 @@ describe("GitDeliverer 更新既有 PR", () => {
     expect(sh(["git", "--git-dir", bare, "rev-parse", "--verify", "pisa/parent"]).code).toBe(0);
   });
 
+  test("续跑同一 task/分支时新提交会再次推送", async () => {
+    const workdir = setup();
+    const deliverer = new GitDeliverer(cfg, { hasGh: () => false });
+    const queue = outbox(deliverer);
+    const task = { ...baseTask, id: "t_resume", branch: "pisa/parent" };
+
+    expect((await deliverer.deliver(task, workdir, cfg.repos[0]!, queue)).pushed).toBe(true);
+    const firstTip = sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out;
+
+    writeFileSync(join(workdir, "again.txt"), "again\n");
+    expect((await deliverer.deliver(task, workdir, cfg.repos[0]!, queue)).pushed).toBe(true);
+    const secondTip = sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out;
+
+    expect(secondTip).not.toBe(firstTip);
+    expect(secondTip).toBe(sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out);
+  });
+
   test("没有 prUrl 时按原有逻辑创建 PR", async () => {
     const workdir = setup();
     const calls: string[] = [];

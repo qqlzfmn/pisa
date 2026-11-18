@@ -58,6 +58,31 @@ describe("EffectQueue", () => {
     store.close();
   });
 
+  test("flush 排队期间同一行已被 exec 完成时不再执行第二遍", async () => {
+    const store = new Store(":memory:");
+    const queue = new EffectQueue(store, { now: () => 1_000, onError: () => {} });
+    const runs: string[] = [];
+    const gate = Promise.withResolvers<void>();
+    queue.register("push", async (p) => {
+      runs.push(p.taskId);
+      if (p.taskId === "t1") await gate.promise;
+      return null;
+    });
+    const payload = (taskId: string) => ({ taskId, repoPath: "/repo", branch: `pisa/${taskId}` });
+    store.enqueueEffect({ kind: "push", key: "a", taskId: "t1", payload: JSON.stringify(payload("t1")), at: 0 });
+    store.enqueueEffect({ kind: "push", key: "b", taskId: "t2", payload: JSON.stringify(payload("t2")), at: 0 });
+
+    const flushing = queue.flush();
+    // 第一行卡在 handler 里时，第二行被 exec 直接完成；flush 的快照里它仍是 pending
+    await queue.exec("push", "b", "t2", payload("t2"));
+    gate.resolve();
+    await flushing;
+
+    expect(runs).toEqual(["t1", "t2"]);
+    expect(store.effectRow("push", "b")?.status).toBe("done");
+    store.close();
+  });
+
   test("失败后留在库里，2s 退避，到期才重试", async () => {
     const store = new Store(":memory:");
     let clock = 1_000;

@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS effects (
 CREATE INDEX IF NOT EXISTS idx_effects_due ON effects(status, next_at);
 ```
 
-`key` 由调用方按语义给：推送 `push:<taskId>:<branch>`、PR `pr:<taskId>:<branch>`、回帖 `comment:<purpose>:<repo>#<n>:<taskId>`。同一逻辑动作在不同任务/分支下互不干扰。
+`key` 由调用方按语义给：推送 `push:<taskId>:<branch>:<headSha>`（续跑同一分支的新提交是另一个动作）、PR `pr:<taskId>:<branch>`、回帖 `comment:<purpose>:<repo>#<n>:<taskId>`。同一逻辑动作在不同任务/分支下互不干扰。
 
 ## D2 `EffectQueue` 持有 Store，不进 Store 内部
 
