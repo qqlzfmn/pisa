@@ -15,7 +15,8 @@
 | 恢复执行 | `paused → running` 后直接进入 `runTask`，注册到 `active` 表 | 复用并发与取消机制；`drainOnce` 仍能等到它（FR-005/008） |
 | 工作副本复用 | `runTask` 先看目录是否存在，存在则跳过 `createWorktree` | 工作副本与分支都要保留原状（FR-005） |
 | 会话恢复 | `AdapterInput.resumeSessionId`，`OmpAdapter` 在 `--mode=json` 之前插入 `-r <id>` | 参数顺序与现有 omp 调用约定一致，适配器之外不出现 omp 细节（FR-006） |
-| 提示词 | `buildPrompt` 新增恢复段落，按 `resume` 开关追加 | 提示词属于适配器职责（FR-006） |
+| 恢复标记 | `AdapterInput.resume` 独立于 `resumeSessionId`，由 `runTask` 是否复用工作副本决定 | 没有会话 id 的 paused 任务同样要拿到核对提示（FR-006） |
+| 提示词 | `buildPrompt` 按 `resume` 开关追加固定核对段：目录与 `git status`/`git log`、分支推送与 PR 存在性、外部动作去重 | 提示词属于适配器职责（FR-006） |
 | 放弃中断任务 | `cancel` 命令接受 `paused` 状态 | 状态机允许 `paused → cancelled`，不另开命令（FR-001） |
 
 ## 2. 影响面

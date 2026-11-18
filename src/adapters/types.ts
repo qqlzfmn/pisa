@@ -7,6 +7,8 @@ export interface AdapterInput {
   extensionPath: string;
   progressFile: string;
   cfg: Config["worker"];
+  /** 是否恢复中断任务；决定提示词是否带核对段落，与会话 id 是否存在无关 */
+  resume?: boolean;
   /** 恢复中断任务时的原会话 id；新任务为 null */
   resumeSessionId?: string | null;
 }

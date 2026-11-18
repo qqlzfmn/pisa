@@ -43,6 +43,7 @@ export class Worker implements WorkerRunner {
       extensionPath,
       progressFile: join(progressDir, `${task.id}.jsonl`),
       cfg: this.cfg,
+      resume,
       resumeSessionId: resume ? task.sessionId : null,
     };
     const proc = Bun.spawn(this.adapter.buildArgs(input), {
