@@ -1,3 +1,4 @@
+import type { RuntimeManifest } from "../capabilities";
 import type { Config } from "../config";
 import type { Task } from "../types";
 
@@ -7,6 +8,8 @@ export interface AdapterInput {
   extensionPath: string;
   progressFile: string;
   cfg: Config["worker"];
+  /** 任务生效的能力清单：决定子进程环境、PISA_CAPABILITIES 与提示词里的约束段 */
+  capabilities: RuntimeManifest;
   /** 是否恢复中断任务；决定提示词是否带核对段落，与会话 id 是否存在无关 */
   resume?: boolean;
   /** 恢复中断任务时的原会话 id；新任务为 null */

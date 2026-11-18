@@ -311,7 +311,7 @@ interface ChannelAdapter {
 
 ### 5.2 已知限制
 
-1. **无沙箱**。agent 进程以当前用户身份运行，能读写工作副本之外的文件；环境变量只继承 `worker.envAllow` 白名单里的键（默认 `PATH`、`HOME`、`LANG`、`LC_ALL`、`TERM`、`TMPDIR`、`SHELL`、`USER`），其余不进子进程。`extensions/pisa-worker.ts` 的拦截是按 bash 命令文本首段匹配的正则 denylist（`git push`、`git reset --hard`、带 `f` 的 `git clean`、`rm -rf /`（`/tmp` 除外）、`sudo`、改 `/etc` 的 `chmod/chown`），`/usr/bin/git push`、`git -c … push`、脚本包装、非 bash 工具写文件都不在覆盖范围。worktree 只隔离同一仓库的分支，不是文件系统隔离。
+1. **能力声明，不是沙箱**。worker 以当前用户身份运行；可读写目录、可访问域名、是否允许 GUI、额外禁止命令由 `worker.capabilities` 与 `repos[].capabilities` 声明（默认全拒，只放行任务工作副本；`env` 与 `worker.envAllow` 取并集）。建任务时算成 manifest 存进 `tasks.capabilities`，随 `PISA_CAPABILITIES` 交给 `extensions/guard.ts`，越界命令返回 block 并写任务日志的 `guard` 行；清单本身也写一条 `capabilities` 日志。拦截基于 bash 命令文本：脚本内部的读写、解释器里发起的网络、`make` 之类间接调用的外部命令都绕得过，需要真正的隔离得上容器或 OS 级沙箱。worktree 只隔离同一仓库的分支，不是文件系统隔离。
 2. **单机**。SQLite、worktree、日志、agent 会话都在本机 `.pisa` 与 agent 自己的存储里。`supervise.sh` 在本机按 1→30s 退避重启，机器下线即系统下线；没有跨机器接管。
 3. **并发**。上限是 `worker.concurrency`（默认 2），以进程内活跃 Promise 计；多任务共享同一 `.git` 对象库，交付只 `git add -A` 自己的工作副本；同一分支不能有两个 worktree，续跑同一分支的第二个任务会直接失败；`merge` 要求主工作区停在 base 分支，并先 rebase 到最新主干（否则历史前进后快进必然失败）。
 4. **信号只到直接子进程**：超时与取消对 agent 进程 `SIGTERM`→`SIGKILL`，它派生的孙进程可能残留。

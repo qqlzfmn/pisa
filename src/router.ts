@@ -1,6 +1,7 @@
 import { join, resolve, sep } from "node:path";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { capabilitiesFor, describeCapabilities, runtimeManifest, type RuntimeManifest } from "./capabilities";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import {
   DEFAULT_ENV_ALLOW,
@@ -516,8 +517,9 @@ export class Router {
       text: prompt,
       version: msg.version,
     });
+    const id = newTaskId(this.now());
     const task: Task = {
-      id: newTaskId(this.now()),
+      id,
       source: msg.eventId,
       channel: msg.channel,
       chatId: msg.chatId,
@@ -534,6 +536,7 @@ export class Router {
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
       mode: msg.mode,
+      capabilities: this.manifestFor(repo, resolve(cfg.stateDir, "worktrees", id)),
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -1083,8 +1086,8 @@ export class Router {
     return buf.lastIndexOf("\n") + 1;
   }
 
-  /** 轮询 pi 扩展写出的进度文件，节流后转发到对话；start 为已转发过的位置 */
-  private watchProgress(task: Task, start: number): () => void {
+  /** 轮询 pi 扩展写出的进度文件：拦截记录写任务日志，过程消息按 progressOn 节流转发 */
+  private watchProgress(task: Task, start: number, log: TaskLogger): () => void {
     const file = join(resolve(this.deps.cfg.stateDir), "progress", `${task.id}.jsonl`);
     let size = start;
     let lastSentAt = 0;
@@ -1117,7 +1120,14 @@ export class Router {
           continue;
         }
         if (o.type === "session" && o.sessionId) this.deps.store.setSessionId(task.id, String(o.sessionId));
-        if (o.type === "blocked") push(`⛔ 拦下一条命令：${String(o.detail ?? "").slice(0, 120)}`);
+        if (o.type === "blocked") {
+          const detail = String(o.detail ?? "").slice(0, 200);
+          const reason = String(o.reason ?? "未记录原因").slice(0, 300);
+          log.write("guard", `拦下 ${String(o.tool ?? "")}：${detail} — ${reason}`);
+          if (this.progressOn) push(`⛔ 拦下一条命令：${detail.slice(0, 120)}`);
+          continue;
+        }
+        if (!this.progressOn) continue;
         if (o.type !== "tool") continue;
         const tool = String(o.tool ?? "");
         const detail = String(o.detail ?? "").slice(0, 120);
@@ -1182,6 +1192,20 @@ export class Router {
     this.deps.store.removeEffect(task.id, "worktree", workdir);
   }
 
+  /** 部署默认 + 仓库声明的能力清单 */
+  private manifestFor(repo: RepoConfig | undefined, workdir: string): RuntimeManifest {
+    const { cfg } = this.deps;
+    return runtimeManifest(capabilitiesFor(cfg.worker.capabilities, repo?.capabilities), {
+      workdir,
+      env: cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW,
+    });
+  }
+
+  /** 任务快照优先；旧库任务没有快照时按当前配置与工作目录现算 */
+  private capabilitiesOf(task: Task, repo: RepoConfig | undefined, workdir: string): RuntimeManifest {
+    return task.capabilities ?? this.manifestFor(repo, workdir);
+  }
+
   /**
    * 评审任务：在空的临时目录里执行，只靠提示词里的 diff 评审。
    * 不建 worktree / 分支，不交付；成功后才把摘要回帖到 PR。
@@ -1192,13 +1216,15 @@ export class Router {
     const log = new TaskLogger(cfg.stateDir, task.id);
     const target = `${task.replyRepo ?? ""}#${task.replyPr ?? ""}`;
     const cleanup = () => rmSync(workdir, { recursive: true, force: true });
+    const capabilities = this.capabilitiesOf(task, repoByAlias(cfg, task.repo), workdir);
     log.write("start", `review ${target}`);
+    log.write("capabilities", describeCapabilities(capabilities));
 
     await this.reply(task.chatId, `开始评审 · ${task.id}\nPR ${target}`, task.id);
 
     let result: WorkerResult;
     try {
-      result = await worker.run(task, workdir, (line) => log.write("worker", line), () =>
+      result = await worker.run({ ...task, capabilities }, workdir, (line) => log.write("worker", line), () =>
         store.isCancelRequested(task.id),
       );
     } catch (err) {
@@ -1253,9 +1279,11 @@ export class Router {
     // 必须是绝对路径：omp 的 --cwd 按相对路径解析会二次拼接
     const workdir = resolve(cfg.stateDir, "worktrees", task.id);
     const log = new TaskLogger(cfg.stateDir, task.id);
+    const capabilities = this.capabilitiesOf(task, repo, workdir);
     // 恢复中断任务：工作副本已存在，直接在其上继续，不重建也不重置分支
     const resuming = existsSync(workdir);
     log.write("start", `${repo.alias} ${branch}`);
+    log.write("capabilities", describeCapabilities(capabilities));
 
     if (resuming) {
       log.write("resume", "复用已有工作副本");
@@ -1279,13 +1307,12 @@ export class Router {
 
     await this.reply(task.chatId, `开始执行 · ${task.id}\n分支 ${branch}`, task.id);
 
-    const stopWatch = this.progressOn
-      ? this.watchProgress(task, resuming ? this.progressSeen(task.id) : 0)
-      : () => {};
+    // 进度监听始终启动：拦截记录要进任务日志；对话推送由 progressOn 决定
+    const stopWatch = this.watchProgress(task, resuming ? this.progressSeen(task.id) : 0, log);
     let result: WorkerResult;
     try {
       result = await worker.run(
-        task,
+        { ...task, capabilities },
         workdir,
         (line) => log.write("worker", line),
         () => store.isCancelRequested(task.id),

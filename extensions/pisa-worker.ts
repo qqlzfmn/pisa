@@ -1,39 +1,59 @@
 // pisa Worker 扩展：把 pi 生命周期事件写给 Router，并在 agent 内部执行策略。
 // 判定逻辑在 guard.ts（纯函数、可单测），这里只做事件接线。
 // 由 Router 通过 `omp -e extensions/pisa-worker.ts` 挂载。
+//
+// 能力清单从 PISA_CAPABILITIES 读；缺失或损坏时按默认全拒：只读写工作目录，不联网，不开 GUI。
 
 import { appendFileSync } from "node:fs";
-import { blockBash, outsideWorkdir } from "./guard";
+import { parseManifest } from "../src/capabilities";
+import { blockBash, outsideReadable, outsideWritable, type GuardPolicy } from "./guard";
 
-const FILE = process.env.PISA_PROGRESS_FILE;
-const WORKDIR = process.env.PISA_WORKDIR ?? "";
+/** 环境变量 → 策略；清单缺失或损坏时按默认全拒 */
+export function policyFromEnv(env: NodeJS.ProcessEnv): GuardPolicy {
+  const manifest = parseManifest(env.PISA_CAPABILITIES ?? null);
+  return {
+    workdir: manifest?.workdir || env.PISA_WORKDIR || "",
+    readDirs: manifest?.readDirs ?? [],
+    writeDirs: manifest?.writeDirs ?? [],
+    domains: manifest?.domains ?? [],
+    gui: manifest?.gui ?? false,
+    blockedCommands: manifest?.blockedCommands ?? [],
+  };
+}
+
+const POLICY = policyFromEnv(process.env);
 
 /** 文件工具的路径参数名，四者同等对待 */
 const PATH_KEYS = ["path", "file_path", "filePath", "target"];
 
+/** 会写文件的工具；其余按只读校验 */
+const WRITE_TOOLS: Record<string, true> = { write: true, edit: true, ast_edit: true };
+
 /** pi 扩展 API 的最小形状（上游没有发布类型） */
-interface WorkerEvent {
+export interface WorkerEvent {
   toolName?: unknown;
   input?: Record<string, unknown>;
   sessionId?: unknown;
 }
 
-interface WorkerContext {
+export interface WorkerContext {
   sessionManager?: { getSessionId?: () => unknown };
   cwd?: unknown;
 }
 
-type Block = { block: true; reason: string };
-type Handler = (event: WorkerEvent, ctx: WorkerContext) => void | Block;
+export type Block = { block: true; reason: string };
+export type Handler = (event: WorkerEvent, ctx: WorkerContext) => void | Block;
 
-interface Pi {
+/** pi 只要求 on()，测试用同一个形状挂假 pi */
+export interface Pi {
   on(name: string, handler: Handler): void;
 }
 
 function emit(obj: Record<string, unknown>): void {
-  if (!FILE) return;
+  const file = process.env.PISA_PROGRESS_FILE;
+  if (!file) return;
   try {
-    appendFileSync(FILE, JSON.stringify({ ts: Date.now(), ...obj }) + "\n");
+    appendFileSync(file, JSON.stringify({ ts: Date.now(), ...obj }) + "\n");
   } catch {
     // 进度上报失败不影响任务
   }
@@ -44,7 +64,7 @@ function bashDetail(cmd: string): string {
 }
 
 function denied(tool: string, detail: string, reason: string): Block {
-  emit({ type: "blocked", tool, detail: detail.slice(0, 200) });
+  emit({ type: "blocked", tool, detail: detail.slice(0, 200), reason });
   return { block: true, reason: `pisa guard：${reason}` };
 }
 
@@ -56,7 +76,7 @@ export default async function (pi: Pi) {
     } catch {
       sid = "";
     }
-    emit({ type: "session", sessionId: sid, cwd: ctx?.cwd ?? WORKDIR });
+    emit({ type: "session", sessionId: sid, cwd: ctx?.cwd ?? POLICY.workdir });
   });
 
   pi.on("tool_call", (event) => {
@@ -65,16 +85,17 @@ export default async function (pi: Pi) {
 
     if (name === "bash") {
       const cmd = String(input.command ?? "");
-      const reason = blockBash(cmd, WORKDIR);
+      const reason = blockBash(cmd, POLICY);
       if (reason) return denied(name, bashDetail(cmd), reason);
       emit({ type: "tool", tool: "bash", detail: bashDetail(cmd) });
       return;
     }
 
+    const writable = WRITE_TOOLS[name] === true;
     for (const key of PATH_KEYS) {
       const value = input[key];
       if (typeof value !== "string") continue;
-      const reason = outsideWorkdir(value, WORKDIR);
+      const reason = writable ? outsideWritable(value, POLICY) : outsideReadable(value, POLICY);
       if (reason) return denied(name, value, reason);
     }
 

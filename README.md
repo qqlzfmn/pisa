@@ -225,7 +225,10 @@ curl -X POST http://127.0.0.1:8799/event \
 不会。每任务一个 git worktree 与独立分支。同一分支被别的 worktree 占用时任务直接失败，不会另建同名分支顶替；续跑才会刻意共享父任务的分支。
 
 **Q：密钥会不会被 agent 读走？**
-Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、LANG、LC_ALL、TERM、TMPDIR、SHELL、USER），其余变量不进子进程。但 pisa 不是沙箱：进程能读写整台机器，别在不可信仓库上开自动推送。
+Worker 只拿到 `worker.envAllow` 与 `worker.capabilities.env` 列出的环境变量（默认 PATH、HOME、LANG、LC_ALL、TERM、TMPDIR、SHELL、USER），其余变量不进子进程。
+
+**Q：agent 能碰什么？**
+默认只能读写任务的工作副本，不联网、不开 GUI。`worker.capabilities` 与 `repos[].capabilities` 显式放行：`readDirs`/`writeDirs`（工作副本之外的目录）、`env`（额外的环境变量）、`domains`（可访问域名，包管理器按注册表映射）、`gui`（GUI 应用开关）、`blockedCommands`（额外禁止的命令，可写 `bun publish` 这样的多词前缀）。放行只做并集，仓库层不能收窄部署层。越界命令被 `extensions/guard.ts` 拦下并写进任务日志；能力清单在任务创建时算好存进任务记录，随 `PISA_CAPABILITIES` 交给扩展。但这不是沙箱：拦截只看命令文本，脚本内部的读写、`make` 里调的 curl 都绕得过。
 
 **Q：能跑在 Linux 服务器上吗？**
 代码里没有 macOS 专有依赖；常驻脚本只提供了 macOS launchd 版本（`scripts/install-launchd.sh`），Linux 用 systemd/pm2 之类托管 `bun run src/index.ts` 即可。
@@ -238,7 +241,7 @@ Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、
 
 ## 已知限制
 
-- **无沙箱**：Worker 以你的身份运行，能访问整机与网络；只在你信任的仓库上开自动执行
+- **能力声明不是沙箱**：Worker 以你的身份运行，声明之外的目录、域名、GUI 会被命令文本层面的拦截挡住，但脚本内部读写与间接调用都绕得过；只在你信任的仓库上开自动执行
 - **回滚不完整**：账本只覆盖分支、push、PR；任务期间调用的 API、发的消息、改的数据库不会撤销
 - **单机单进程**：没有分布式调度，并发受本机 CPU 与 agent 进程数限制
 - **没有真正的会话持久化**：续跑靠「上一轮分支 + 上下文注入」，不是恢复 token 流

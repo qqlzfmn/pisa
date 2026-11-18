@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
+import { parseManifest } from "./capabilities";
 import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_issue      INTEGER,
   reply_repo       TEXT,
   mode             TEXT NOT NULL DEFAULT 'work',
+  capabilities     TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -163,6 +165,7 @@ interface Row {
   reply_issue: number | null;
   reply_repo: string | null;
   mode: string | null;
+  capabilities: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -228,6 +231,7 @@ function toTask(r: Row): Task {
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
     mode: r.mode === "review" ? "review" : "work",
+    capabilities: parseManifest(r.capabilities ?? null) ?? undefined,
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -272,6 +276,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "mode")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'work'");
+    }
+    if (!cols.some((c) => c.name === "capabilities")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN capabilities TEXT");
     }
     this.backfillTriggers();
   }
@@ -560,8 +567,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mode)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mode, capabilities)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -580,6 +587,7 @@ export class Store {
         t.replyIssue,
         t.replyRepo,
         t.mode ?? "work",
+        t.capabilities ? JSON.stringify(t.capabilities) : null,
       ],
     );
   }

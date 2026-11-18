@@ -13,7 +13,14 @@
     {
       "alias": "pisa",
       "path": "/absolute/path/to/repo",
-      "baseBranch": "main"
+      "baseBranch": "main",
+      "capabilities": {
+        "readDirs": ["../datasets"],
+        "writeDirs": ["/tmp/pisa-out"],
+        "domains": ["registry.npmjs.org"],
+        "gui": false,
+        "blockedCommands": []
+      }
     }
   ],
   "worker": {
@@ -33,7 +40,15 @@
       "USER"
     ],
     "idleTimeoutSec": 900,
-    "verifyTimeoutSec": 600
+    "verifyTimeoutSec": 600,
+    "capabilities": {
+      "readDirs": [],
+      "writeDirs": [],
+      "env": ["GH_TOKEN"],
+      "domains": ["github.com"],
+      "gui": false,
+      "blockedCommands": []
+    }
   },
   "delivery": {
     "push": false,

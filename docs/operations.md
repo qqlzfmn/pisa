@@ -410,8 +410,42 @@ rm ~/Library/LaunchAgents/ai.pisa.supervisor.plist
 
 token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.pisa/telegram_token` 与 `~/.pisa/webhook_token`。
 
+## 运行时能力（capabilities）
+
+默认拒绝：任务只能读写自己的工作副本，不联网，不开 GUI。要放宽就在 `worker.capabilities`（全部署）或 `repos[].capabilities`（单仓库）里显式写：
+
+```json
+{
+  "worker": { "capabilities": { "env": ["GH_TOKEN"], "domains": ["github.com", "registry.npmjs.org"] } },
+  "repos": [
+    {
+      "alias": "demo",
+      "path": "/abs/demo",
+      "capabilities": { "readDirs": ["../datasets"], "writeDirs": ["/tmp/demo-out"], "gui": true }
+    }
+  ]
+}
+```
+
+| 键 | 含义 |
+| --- | --- |
+| `readDirs` | 工作副本之外可读的目录；相对配置文件所在目录，支持 `~/` |
+| `writeDirs` | 工作副本之外可写的目录（写包含读） |
+| `env` | 额外放行的环境变量名，与 `worker.envAllow` 取并集 |
+| `domains` | 可访问的域名；按后缀匹配（放行 `example.com` 即放行 `api.example.com`）。回环地址始终可用 |
+| `gui` | `true` 才放行 `open`/`osascript`/`xdg-open` |
+| `blockedCommands` | 额外禁止的命令：写命令名（`bun`）或前几个词（`bun publish`） |
+
+叠加规则：部署默认 → 仓库声明依次取并集，声明只能加不能收窄；`worker.envAllow` 是 `env` 的基础层。任务工作副本永远可写，不存在把它关掉的写法。
+
+网络判定：`curl`/`wget` 取 URL 或主机名，`ssh`/`nc`/`dig` 等取目标主机，`gh` 固定按 `github.com`；`npm i`、`pip install`、`cargo add`、`go get`、`npx`/`bunx` 映射到对应注册表域名，`--registry=` 可覆盖。`git fetch`/`pull`/`ls-remote` 的远端写在仓库配置里，命令看不出目标，一律拒绝；联网请显式写 URL 的 `git clone`。
+
+生效与审计：启动日志按仓库打印一行「能力 <alias> · 可写 … · 可读 … · 密钥 … · 域名 … · GUI 开|关 · 禁止命令 …」；建任务时算成 manifest 写进任务记录的 `capabilities` 列（旧任务没有该列，按默认全拒执行），任务日志里 `capabilities` 行记录同样内容；越界命令被拦时扩展写 `blocked` 事件，任务日志出现 `guard` 行（命令与原因），开了 `notifications.progress` 还会推一条对话消息。
+
+边界：拦截依据是 bash 命令文本，脚本内部的读写、解释器里发起的网络、`make` 等间接调用都绕得过。需要真正的隔离得上容器或系统级沙箱。
+
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`（含 `capabilities`）、`repos[].capabilities`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
 
 解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。

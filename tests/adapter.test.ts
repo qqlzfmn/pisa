@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { getAdapter } from "../src/adapters";
+import type { RuntimeManifest } from "../src/capabilities";
 import type { Task } from "../src/types";
 
 const task: Task = {
@@ -27,9 +28,20 @@ const task: Task = {
   cancelRequested: false,
 };
 
+const capabilities: RuntimeManifest = {
+  workdir: "/tmp/wt",
+  readDirs: ["/tmp/wt", "/tmp/data"],
+  writeDirs: ["/tmp/wt"],
+  env: ["PATH", "HOME"],
+  domains: ["example.com"],
+  gui: false,
+  blockedCommands: ["frobnicate"],
+};
+
 const input = {
   task,
   workdir: "/tmp/wt",
+  capabilities,
   extensionPath: "/tmp/ext.ts",
   progressFile: "/tmp/p.jsonl",
   cfg: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1 },
@@ -87,6 +99,16 @@ describe("WorkerAdapter", () => {
     );
     expect(user.text).toBeUndefined();
     expect(a.parseLine("not json").raw).toBe("not json");
+  });
+
+  test("能力清单进提示词，也进子进程环境", () => {
+    const a = getAdapter("omp");
+    const prompt = a.buildArgs(input)[a.buildArgs(input).indexOf("-p") + 1]!;
+    expect(prompt).toContain("能力清单");
+    expect(prompt).toContain("/tmp/data");
+    expect(prompt).toContain("example.com");
+    expect(prompt).toContain("GUI 关");
+    expect(JSON.parse(a.buildEnv(input).PISA_CAPABILITIES!)).toEqual(capabilities);
   });
 
   test("未知适配器直接报错", () => {
