@@ -1,7 +1,16 @@
 import { githubRepos, type Config } from "./config";
 import type { Store } from "./store";
 import type { IncomingMessage } from "./types";
-import { defaultRunner, isPullRequest, listComments, prNumberFromIssueUrl, type Runner } from "./github";
+import {
+  defaultRunner,
+  isPullRequest,
+  listComments,
+  listOpenPrs,
+  prDiff,
+  prNumberFromIssueUrl,
+  type Runner,
+} from "./github";
+import { buildReviewPrompt, reviewEventId, reviewThreadKey } from "./pr-review";
 
 type Enqueue = (m: IncomingMessage) => Promise<void> | void;
 
@@ -25,6 +34,7 @@ function sinceKey(repo: string): string {
  * 同一条评论被编辑后带上新版本，由 Router 挂回原任务而不是新建。
  * 每个仓库各自维护增量下界并落库（`meta` 表的 `github:since:<repo>`），一个仓库失败不影响其它仓库。
  * 编号是 PR 时接续该 PR 的任务并回帖到 PR；是普通 Issue 时从主干开新分支、回帖到 Issue。
+ * `github.review.enabled` 打开时，另按 head SHA 检查 open PR，未评审的版本投递只读评审任务。
  */
 export class GithubWatcher {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -67,6 +77,13 @@ export class GithubWatcher {
         } catch (err) {
           // 投递异常只影响本仓库：下界不推进，下一轮重试
           console.warn(`[pisa] GitHub 评论投递失败 · ${target.repo}：${String(err).slice(0, 300)}`);
+        }
+        if (gh.review?.enabled) {
+          try {
+            await this.pollReviews(target.repo, target.chatId, target.userId);
+          } catch (err) {
+            console.warn(`[pisa] PR 评审投递失败 · ${target.repo}：${String(err).slice(0, 300)}`);
+          }
         }
       }
     } finally {
@@ -118,5 +135,43 @@ export class GithubWatcher {
       }
     }
     if (complete) this.deps.store.setMeta(sinceKey(repo), startedAt);
+  }
+
+  /**
+   * 未评审的 PR 版本各投一单。去重键是 (评审线程, head SHA)，落 triggers 表，
+   * 重启后仍生效；同一 PR 的新提交是新的 messageKey，会重新评审。
+   */
+  private async pollReviews(repo: string, chatId: string, userId: string): Promise<void> {
+    const prs = listOpenPrs(this.runner, repo);
+    if (prs === null) {
+      console.warn(`[pisa] GitHub PR 列表拉取失败 · ${repo}`);
+      return;
+    }
+    const prefix = `${this.deps.cfg.trigger} `;
+    for (const pr of prs) {
+      if (!pr.headSha) continue;
+      const threadKey = reviewThreadKey(repo, pr.number);
+      if (this.deps.store.triggerByMessage(threadKey, pr.headSha)) continue;
+      const diff = prDiff(this.runner, repo, pr.number);
+      if (!diff.ok) {
+        // 不建半成品任务：下一轮重新拉 diff
+        console.warn(`[pisa] GitHub PR diff 拉取失败 · ${repo} #${pr.number}：${diff.error.slice(0, 300)}`);
+        continue;
+      }
+      await this.deps.enqueue({
+        eventId: reviewEventId(repo, pr.number, pr.headSha),
+        channel: "github",
+        chatId,
+        userId,
+        text: prefix + buildReviewPrompt(repo, pr, diff.value),
+        mode: "review",
+        replyRepo: repo,
+        replyPr: pr.number,
+        threadKey,
+        messageKey: pr.headSha,
+        version: pr.headSha,
+        actor: "pisa",
+      });
+    }
   }
 }

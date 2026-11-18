@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_pr         INTEGER,
   reply_issue      INTEGER,
   reply_repo       TEXT,
+  mode             TEXT NOT NULL DEFAULT 'work',
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -161,6 +162,7 @@ interface Row {
   reply_pr: number | null;
   reply_issue: number | null;
   reply_repo: string | null;
+  mode: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -225,6 +227,7 @@ function toTask(r: Row): Task {
     replyPr: r.reply_pr,
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
+    mode: r.mode === "review" ? "review" : "work",
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -266,6 +269,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "mode")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'work'");
     }
     this.backfillTriggers();
   }
@@ -554,8 +560,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -573,6 +579,7 @@ export class Store {
         t.replyPr,
         t.replyIssue,
         t.replyRepo,
+        t.mode ?? "work",
       ],
     );
   }
@@ -583,7 +590,7 @@ export class Store {
   }
 
   /** 原子占位：queued → running，失败说明已被别的槽位取走 */
-  claimQueued(id: string, startedAt: number, branch: string): boolean {
+  claimQueued(id: string, startedAt: number, branch: string | null): boolean {
     const res = this.db.run(
       "UPDATE tasks SET status = 'running', started_at = ?, branch = ? WHERE id = ? AND status = 'queued'",
       [startedAt, branch, id],

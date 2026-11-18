@@ -41,7 +41,17 @@ export function githubRepoSlug(remote: string): string | null {
 }
 
 /** 仓库里所有打开的 PR；查询失败返回 null，调用方不能据此判断「没有 PR」 */
-export function listOpenPrs(runner: Runner, repo: string): Array<{ number: number; head: string }> | null {
+export interface OpenPr {
+  number: number;
+  head: string;
+  /** head 提交；字段缺失时为空串 */
+  headSha: string;
+  title: string;
+  baseRefName: string;
+  url: string;
+}
+
+export function listOpenPrs(runner: Runner, repo: string): OpenPr[] | null {
   const res = runner([
     "gh",
     "pr",
@@ -53,18 +63,32 @@ export function listOpenPrs(runner: Runner, repo: string): Array<{ number: numbe
     "--limit",
     "200",
     "--json",
-    "number,headRefName",
+    "number,headRefName,headRefOid,title,baseRefName,url",
   ]);
   if (res.code !== 0) return null;
   try {
     const rows = JSON.parse(res.out) as Array<Record<string, unknown>>;
     if (!Array.isArray(rows)) return null;
     return rows
-      .map((row) => ({ number: Number(row["number"]), head: String(row["headRefName"] ?? "") }))
+      .map((row) => ({
+        number: Number(row["number"]),
+        head: String(row["headRefName"] ?? ""),
+        headSha: String(row["headRefOid"] ?? ""),
+        title: String(row["title"] ?? ""),
+        baseRefName: String(row["baseRefName"] ?? ""),
+        url: String(row["url"] ?? ""),
+      }))
       .filter((row) => Number.isSafeInteger(row.number) && row.number > 0);
   } catch {
     return null;
   }
+}
+
+/** PR 的完整 diff；失败返回错误，调用方下一轮重试 */
+export function prDiff(runner: Runner, repo: string, n: number): GhResult<string> {
+  const res = runner(["gh", "pr", "diff", String(n), "--repo", repo]);
+  if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
+  return { ok: true, value: res.out };
 }
 
 export interface PrState {
@@ -92,8 +116,8 @@ export function closePr(runner: Runner, repo: string, n: number): GhResult {
 }
 
 /** 回帖正文：摘要截断到 3000 字 */
-export function formatReply(summary: string): string {
-  return `**pisa** 任务完成\n\n${summary.trim().slice(0, 3000)}`;
+export function formatReply(summary: string, title = "任务完成"): string {
+  return `**pisa** ${title}\n\n${summary.trim().slice(0, 3000)}`;
 }
 
 /** 拉取 since 之后新增或更新的 Issue / PR 评论；逐行解析 `--jq '.[]'` 的输出 */

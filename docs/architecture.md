@@ -62,7 +62,8 @@ core 内部模块关系：
 | `effects.ts` | 外部动作 outbox：先落库再执行，按 `(kind,key)` 去重，失败指数退避，重启后重放 | `EffectQueue.exec()`、`start()/stop()`、`cancelTask()` |
 | `git.ts` | worktree、分支、提交、推送的封装 | `sh()` 之上的命令封装；`merge`、`rev-parse` 这类一次性命令在 `router.ts` 里直接调 `sh` |
 | `github.ts` | 所有 `gh` 调用与回帖去重标记 | 测试可注入 `Runner` |
-| `github-watcher.ts` | 轮询 GitHub 评论，把命中触发词的评论转成事件 | 构造时注入 `enqueue` |
+| `github-watcher.ts` | 轮询 GitHub 评论与 open PR，把命中触发词的评论、未评审的 PR 版本转成事件 | 构造时注入 `enqueue` |
+| `pr-review.ts` | 评审线程键、事件键与提示词（纯函数） | `reviewThreadKey`、`reviewEventId`、`buildReviewPrompt` |
 | `scheduler.ts` | cron 到点开单 | 构造时注入 `enqueue` |
 | `proactive.ts` | 群聊关键词与定时探针 | 构造时注入 `enqueue` |
 | `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
@@ -148,11 +149,12 @@ cancelled ─┘
    - 通用触发适配层：`src/triggers/` 下的 `TriggerAdapter` 把外部协议归一成 `IncomingMessage`，`/github/actions`、`/feishu/event`、`/wecom/event` 共用 127.0.0.1 上的一个端口（默认 8790），文件监听不走 HTTP。验签、白名单与去重键都在适配器内部，任务仍由 `router.handle` 建，回执走配置的 `triggers.chatId`（见 4.2）。
    - Web 控制台：`Bun.serve` 只接 127.0.0.1 的 `/ui` 与 `/api/*`，token 鉴权通过后把派活/取消/合并拼成 `IncomingMessage`（`admin: true`）交给 `router.handle`，回执经 `ReplyBus` 收集后回给页面（`src/web.ts`）。`admin` 让 Router 跳过单英文词误触防护与原请求者校验——浏览器里的操作由 token 直接认证，没有可回 `confirm` 的聊天。
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由触发身份去重，编辑按 `updated_at` 区分）。
+   - PR 自动评审：`github.review.enabled` 打开时，同一轮再列一次 open PR，对 `(仓库, PR, head SHA)` 没有触发器记录的版本拉 `gh pr diff`，投递 `mode: "review"` 的只读任务；去重键落在 `triggers` 表，diff 拉取失败不建任务。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 线程解析（`threadKeyOf`：入口声明 > 被回复任务 > 本条消息）→ 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
 3. **去重与鉴权**（`src/trigger.ts` 与 `checkAccess`，`src/router.ts`）。先 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库，再校验仓库与需求：被拦下的消息不写触发器，改完配置重发同一条即可。通过后 `makeTrigger` 算出触发身份，`store.triggerByMessage(threadKey, messageKey)` 命中同一条消息时，同版本同载荷即重复投递直接丢弃，版本不同即编辑（见 4.2）。
 4. **落库与回执**（`Router.handle`，`src/router.ts`）。`store.createTaskFromTrigger` 在同一事务里写触发器与任务（`status=queued`），立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
-5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
+5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。评审任务（`mode=review`）不取分支，执行走临时目录，不建 worktree、不交付。
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
 7. **执行**（`Worker.run`，`src/worker.ts`）。`adapter.buildArgs` 生成命令行（omp：`-e <extension> [-r <sessionId>] --mode=json -p <prompt> --cwd <workdir>`），`Bun.spawn` 的 cwd 就是工作副本，环境变量附带 `PISA_WORKDIR`、`PISA_PROGRESS_FILE`。超时按 `worker.timeoutSec`（默认 3600s）`SIGTERM`，10s 后 `SIGKILL`；取消每 2s 轮询一次，同样先礼后兵。stdout 按行交给 `adapter.parseLine`，最终 `summary` 与 `error` 都过 `redact`。
 8. **进度回传**。skill 把 `session`/`tool`/`blocked`/`done` 追加进 `.pisa/progress/<taskId>.jsonl`；`watchProgress`（`src/router.ts`）每 2s 读增量，节流 6s，转成 `🛠`/`✏️`/`⛔` 消息发到原对话。progress 只是旁路，丢了不影响任务结果。
@@ -234,6 +236,7 @@ id = hex(sha256(source, threadKey, messageKey, version, payloadHash))[:32]
 | webhook | `src/index.ts` | body 的 `threadKey`，缺省本条消息 | `eventId` / body 的 `version` |
 | Web 控制台 | `src/web.ts` | 本次提交 | `web:<uuid>` |
 | GitHub 评论 | `github-watcher.ts` | `github:<repo>:issue:<n>` | 评论 id / `updated_at` |
+| PR 自动评审 | `github-watcher.ts` | `github:<repo>:pull:<n>:review` | head SHA / head SHA |
 | cron | `scheduler.ts` | 本条消息 | 分钟键 |
 | 主动发现 | `proactive.ts` | 本条消息 | 事件号 |
 | GitHub Actions | `src/triggers/github-actions.ts` | `github-actions:<repo>:<branch>` | run id / `updated_at` |

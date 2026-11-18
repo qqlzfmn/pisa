@@ -6,6 +6,7 @@
 
 ### 新增
 
+- PR 自动评审：`github.review.enabled` 打开后，`GithubWatcher` 每轮列出 open PR，对未评审的 head SHA 拉取 diff 并投递只读评审任务（不建分支/worktree、不交付）；结论以评论回帖到 PR，同一 PR 同一 head SHA 只评审一次，新提交重新评审（`src/pr-review.ts`、`tests/github-review.test.ts`）
 - 通用触发适配层：`src/triggers/` 下定义 `TriggerAdapter`（验证、归一化、去重键）与 `dispatch`，新增 GitHub Actions（`X-Hub-Signature-256`）、飞书（`X-Lark-Signature` + 时间窗口）、企业微信（`msg_signature` + AES-256-CBC）三个 HTTP 入口与 `fs.watch` 文件监听，四个入口分别按仓库、群/发送者、发送者、路径白名单过滤；`triggers` 配置项控制启用、端口与密钥环境变量，密钥缺失时入口回 503 而不是退化免签
 - 健康与任务指标：`GET /health` 返回 `ok`、`uptimeSec`、队列深度、running 数与最近 24h 成功率/耗时分位/每仓库任务数；`ok` 取守护进程心跳，心跳停止时返回 503。看板与 `pisa status --json` 附带同一口径的 24h 汇总（`src/metrics.ts`）
 - `triggers` 表：任务创建改为按触发身份（`source` + 线程 + 消息 + 版本 + 载荷指纹）落库，触发器与任务同一事务；旧库在 `Store` 构造时按任务自身信息补齐，重放旧事件不会重复建单
