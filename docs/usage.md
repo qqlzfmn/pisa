@@ -1,6 +1,6 @@
 # 使用场景与能力边界
 
-安装见 [README](../README.md)，命令与配置见 [operations.md](./operations.md)，可直接粘贴的触发语句见 `/pisa examples`。
+安装见 [README](../README.md)，部署与排障见 [deployment.md](./deployment.md)，命令与配置见 [operations.md](./operations.md)，可直接粘贴的触发语句见 `/pisa examples`。
 
 ## 定位
 
@@ -78,7 +78,7 @@ pisa 自己兜底，不需要手工改数据库：
 3. **取消兜底**：`/pisa cancel <id>` 对没有执行器的 `running` 行直接结束，不会停在“取消中”。
 4. **合并门禁**：有任务在跑时 `/pisa merge` 会拒绝并说明原因；确实要打断就加 `--force`。
 
-排查顺序：`/pisa status` 看 `error` → `ps` 看 agent 进程是否还在 → `paused` 用 `/pisa resume <id>`，`failed` 重新投递。日志在 `stateDir/logs/<taskId>.log`。
+排查顺序：`/pisa status` 看 `error` → `ps` 看 agent 进程是否还在 → `paused` 用 `/pisa resume <id>`，`failed` 重新投递。日志在 `stateDir/logs/<taskId>.log`。逐项现象与处置见 [部署与排障 · 排障](./deployment.md#排障)。
 
 ## 不该交给它
 

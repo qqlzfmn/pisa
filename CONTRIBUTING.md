@@ -76,6 +76,9 @@ specify → plan → tasks → implement → converge
 | 想知道 | 看 |
 | --- | --- |
 | 项目是什么、怎么装 | [README.md](./README.md) |
+| 领域术语与状态、触发、交付概念 | [docs/domain.md](./docs/domain.md) |
+| 安装、升级、回滚、常驻、排障与退出码 | [docs/deployment.md](./docs/deployment.md) |
+| 加事件源、加 Worker 适配器 | [docs/extending.md](./docs/extending.md) |
 | 配置项、IM/CLI 命令、事件入口、常驻 | [docs/operations.md](./docs/operations.md) |
 | 场景、最佳实践、能力边界（无沙箱、回滚范围、鉴权面） | [docs/usage.md](./docs/usage.md) |
 | 分层、状态机、数据流、扩展点、失败模式 | [docs/architecture.md](./docs/architecture.md) |

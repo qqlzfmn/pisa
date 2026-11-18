@@ -24,7 +24,7 @@
 | 你是 | 从哪进 | 大约耗时 |
 | --- | --- | --- |
 | **使用者**：想让它替自己改代码 | [30 秒上手](#30-秒上手) → [配置与运维](./docs/operations.md) → [场景与边界](./docs/usage.md) | 10 分钟 |
-| **贡献者**：想改 pisa 本身 | [CONTRIBUTING](./CONTRIBUTING.md) → [SDD 流程](./SDD.md) → [架构文档](./docs/architecture.md) | 30 分钟 |
+| **贡献者**：想改 pisa 本身 | [CONTRIBUTING](./CONTRIBUTING.md) → [领域模型](./docs/domain.md) → [扩展指南](./docs/extending.md) → [架构文档](./docs/architecture.md) | 30 分钟 |
 | **好奇者**：想先看设计取舍 | [它是什么](#它是什么) → [架构](#架构) → [与云端 Agent 的边界](#与云端-agent-的边界) | 5 分钟 |
 
 ## 它是什么
@@ -249,6 +249,9 @@ Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、
 
 | 文档 | 内容 |
 | --- | --- |
+| [docs/domain.md](./docs/domain.md) | 术语表：任务、触发、执行隔离、交付与撤销 |
+| [docs/deployment.md](./docs/deployment.md) | 安装、升级、回滚、常驻、排障表、退出码 |
+| [docs/extending.md](./docs/extending.md) | 加事件源与 Worker 适配器的步骤与测试 |
 | [docs/operations.md](./docs/operations.md) | 全部配置项、IM/CLI 命令、事件入口、撤销、数据保留、常驻 |
 | [docs/usage.md](./docs/usage.md) | 使用场景、最佳实践、能力边界、卡住排查 |
 | [docs/architecture.md](./docs/architecture.md) | 分层、状态机、数据流、扩展点、失败模式与设计取舍 |

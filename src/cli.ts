@@ -15,7 +15,7 @@ import { windowMetrics } from "./metrics";
 import { stageText } from "./stage";
 
 /** 退出码：脚本据此分支，不要在版本间随意改语义 */
-const EXIT = {
+export const EXIT = {
   ok: 0,
   taskFailed: 1,
   usage: 2,

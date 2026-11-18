@@ -21,7 +21,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 
 ## 安装与配置
 
-安装命令在 [README 的 30 秒上手](../README.md#30-秒上手)。这里只说配置怎么定位、怎么生效。
+安装、升级、回滚与排障在 [部署与排障](./deployment.md)：安装命令、常驻、退出码表与故障处置都以那里为准。这里只说配置怎么定位、怎么生效。
 
 配置文件按以下顺序定位：`--config <路径>` → 环境变量 `PISA_CONFIG` → 从当前目录向上找 `pisa.config.json`。相对 `stateDir` 与仓库路径以配置文件所在目录为基准，从子目录调用也指向同一份状态。
 
@@ -132,7 +132,7 @@ pisa continue <任务号> "按 PR 评论再改"
 
 - `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省从当前目录向上找 `pisa.config.json`
 - 相对 `stateDir` 与仓库路径以配置文件目录为基准，从子目录调用也指向同一份状态
-- 退出码：`0` 成功、`1` 任务失败、`2` 用法/配置、`3` 找不到、`4` 不可运行、`5` 等待超时
+- 退出码含义与处置见 [部署与排障 · 退出码](./deployment.md#退出码)
 - 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
 
 给 agent 的可复用说明在 [`skills/pisa/`](../skills/pisa/)：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
@@ -322,31 +322,7 @@ pisa 可以改自己：
 
 ## 常驻（launchd）
 
-`scripts/supervise.sh` 交给 launchd 托管：开机自启，进程退出后自动拉起。
-
-安装（重复执行等于重装）：
-
-```bash
-./scripts/install-launchd.sh
-```
-
-脚本生成 `~/Library/LaunchAgents/ai.pisa.supervisor.plist` 并加载，工作目录是仓库根目录，日志写在 `~/Library/Logs/pisa.launchd.log`（外部卷上的路径 launchd 无权限写入）。多份 worktree 同时安装会互相覆盖，只保留一份。
-
-看日志：
-
-```bash
-tail -f ~/Library/Logs/pisa.launchd.log
-launchctl print gui/$(id -u)/ai.pisa.supervisor    # 状态
-```
-
-卸载：
-
-```bash
-launchctl bootout gui/$(id -u)/ai.pisa.supervisor
-rm ~/Library/LaunchAgents/ai.pisa.supervisor.plist
-```
-
-token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.pisa/telegram_token` 与 `~/.pisa/webhook_token`。
+安装、重装、重启、卸载与 token 文件见 [部署与排障 · 常驻（macOS launchd）](./deployment.md#常驻macos-launchd)。`scripts/supervise.sh` 负责拉起主进程并在非零退出后按指数退避重启；主进程正常退出（0）时不重启。
 
 ## 完整配置项
 

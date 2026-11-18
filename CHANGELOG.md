@@ -29,7 +29,9 @@
 
 - Outbox（`src/effects.ts` + `effects` 表）：外部动作先落库再执行，同一 `(kind,key)` 只执行一次，失败按 2s→60s 指数退避（最多 10 次），进程重启后继续重放；推送与建 PR 在仓库根目录执行，工作副本删掉后重试仍可用
 - `LICENSE`（MIT），徽章与 GitHub 仓库许可字段据此生效
-- `tests/docs-links.test.ts`：所有 Markdown 的相对链接必须有落点，README 的页内锚点必须落在真实标题上
+- `tests/docs-links.test.ts`：所有 Markdown 的相对链接必须有落点，页内与跨文件锚点必须落在真实标题上
+- 文档手册：[`docs/domain.md`](./docs/domain.md) 术语表、[`docs/deployment.md`](./docs/deployment.md) 安装/升级/回滚/常驻/排障/退出码、[`docs/extending.md`](./docs/extending.md) 加事件源与 WorkerAdapter 的步骤和测试；与 `architecture.md` 双向链接，README/CONTRIBUTING/operations/usage 的入口同步
+- `tests/docs-cookbook.test.ts`：CLI 退出码表等于 `EXIT`、守护进程退出码含 0/1/75、扩展指南的 `WorkerAdapter` 成员等于 `src/adapters/types.ts`、文档引用的仓库路径存在、三份文档与架构互链、launchd 标签与安装脚本一致、命令块通过 `bash -n`；`EXIT` 从 `src/cli.ts` 导出供测试使用
 
 ## [0.1.0] - 2026-11-18
 

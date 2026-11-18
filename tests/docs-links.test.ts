@@ -4,7 +4,7 @@ import { join, relative } from "node:path";
 
 /**
  * 文档是仓库门面，坏链接比代码 bug 更早被访客撞见。
- * 校验两件事：相对路径有落点；README 的页内锚点落在真实标题上。
+ * 校验三件事：相对路径有落点；页内锚点落在真实标题上；跨文件锚点落在目标标题上。
  */
 
 const ROOT = join(import.meta.dir, "..");
@@ -28,6 +28,15 @@ function slug(heading: string): string {
     .replace(/\s/g, "-");
 }
 
+function headingsOf(file: string): Set<string> {
+  const headings = new Set<string>();
+  for (const line of prose(readFileSync(file, "utf8")).split("\n")) {
+    const m = /^#{1,6}\s+(.*)$/.exec(line);
+    if (m) headings.add(slug(m[1] as string));
+  }
+  return headings;
+}
+
 const docs = readdirSync(ROOT, { recursive: true })
   .map(String)
   .filter((f) => f.endsWith(".md") && !f.split("/").some((part) => part === "node_modules" || part === ".pisa"))
@@ -46,17 +55,31 @@ describe("文档链接可用", () => {
     expect(missing).toEqual([]);
   });
 
-  test("README 页内锚点落在标题上", () => {
-    const md = readFileSync(join(ROOT, "README.md"), "utf8");
-    const headings = new Set<string>();
-    for (const line of prose(md).split("\n")) {
-      const m = /^#{1,6}\s+(.*)$/.exec(line);
-      if (m) headings.add(slug(m[1] as string));
-    }
-    const targets = links(md)
-      .filter((l) => l.startsWith("#"))
-      .map((l) => decodeURI(l.slice(1)));
-    expect(targets.length).toBeGreaterThan(3);
-    expect(targets.filter((a) => !headings.has(a))).toEqual([]);
+  test("页内锚点落在标题上", () => {
+    const broken = docs.flatMap((file) => {
+      const headings = headingsOf(file);
+      return links(readFileSync(file, "utf8"))
+        .filter((l) => l.startsWith("#"))
+        .map((l) => decodeURI(l.slice(1)))
+        .filter((anchor) => !headings.has(anchor))
+        .map((anchor) => `${relative(ROOT, file)} -> #${anchor}`);
+    });
+    expect(broken).toEqual([]);
+  });
+
+  test("跨文件锚点落在目标标题上", () => {
+    const broken = docs.flatMap((file) => {
+      const dir = join(file, "..");
+      return links(readFileSync(file, "utf8"))
+        .filter((l) => !/^(?:https?:|mailto:|#)/.test(l) && l.includes("#") && !l.includes("://"))
+        .flatMap((l) => {
+          const [path, anchor] = l.split("#") as [string, string];
+          const target = join(dir, decodeURI(path));
+          if (!path || !target.endsWith(".md") || !existsSync(target)) return [];
+          const has = headingsOf(target).has(decodeURI(anchor));
+          return has ? [] : [`${relative(ROOT, file)} -> ${l}`];
+        });
+    });
+    expect(broken).toEqual([]);
   });
 });

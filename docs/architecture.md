@@ -2,7 +2,7 @@
 
 面向两类读者：要改内核的贡献者，和半年后回来读代码的自己。内容只回答五个问题——层怎么分、任务怎么流转、数据怎么走、哪里能插东西、哪里会坏。
 
-代码是唯一事实源；本文给位置和约束，不复述实现。规格细节见 `docs/specs/`（尤其 001 状态机、003 事件入口、005 恢复语义、013 撤销）。
+代码是唯一事实源；本文给位置和约束，不复述实现。规格细节见 `docs/specs/`（尤其 001 状态机、003 事件入口、005 恢复语义、013 撤销）。术语见 [领域模型](./domain.md)，安装与排障见 [部署与排障](./deployment.md)，动手加事件源或适配器见 [扩展指南](./extending.md)。
 
 ## 1. 分层与职责
 
@@ -178,7 +178,7 @@ cancelled ─┘
 
 ### 4.1 WorkerAdapter：换 agent
 
-接口在 `src/adapters/types.ts`：
+接口在 `src/adapters/types.ts`；注册、配置、单测与假脚本集成的完整步骤见 [扩展指南 · 加 WorkerAdapter](./extending.md#加-workeradapter)。
 
 ```ts
 interface WorkerAdapter {
@@ -206,8 +206,10 @@ interface WorkerAdapter {
 契约两条：产出 `IncomingMessage` 并调用 `router.handle`；同一件事在重复投递、跨入口转发、编辑后重新投递时都落到同一个任务。身份由 `src/trigger.ts` 算出：
 
 ```
-id = hex(sha256(source, threadKey, messageKey, version, payloadHash))[:32]
+id = hex(sha256(长度前缀五元组))[:32]
 ```
+
+每段写成 `<长度>:<内容>` 再拼接，避免字段边界歧义。
 
 - `source`：入口名（`msg.channel`）。
 - `threadKey`：会话线程。入口能声明就声明（Telegram 论坛话题、GitHub Issue/PR、调用方的业务单号），否则 core 按「被回复的任务 → `task:<任务号>`」或「本条消息 → `<channel>:<chatId>:<eventId>`」成线程。
@@ -237,7 +239,7 @@ id = hex(sha256(source, threadKey, messageKey, version, payloadHash))[:32]
 
 触发记录不随保留策略清理：它是「这件事已经做过」的唯一凭据，删掉会让重放复活成新任务。
 
-新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。冷却与去重这类「触发源自己的节流」放在触发源内部（例如 `Proactive` 的 cooldown、`GithubWatcher` 的 `since` 下界，跨越重启的进度写进 `store` 的 `meta`），core 只负责按触发身份去重。
+新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。完整代码、去重测试与装配步骤见 [扩展指南 · 加事件源](./extending.md#加事件源source)。冷却与去重这类「触发源自己的节流」放在触发源内部（例如 `Proactive` 的 cooldown、`GithubWatcher` 的 `since` 下界，跨越重启的进度写进 `store` 的 `meta`），core 只负责按触发身份去重。
 
 ### 4.3 入口客户端：加通道
 
@@ -265,6 +267,8 @@ interface ChannelAdapter {
 ## 5. 失败模式与已知限制
 
 ### 5.1 失败模式
+
+按「现象 → 先看什么 → 处置」排好的运维入口见 [部署与排障 · 排障](./deployment.md#排障)；下表说明代码里为什么这样收口。
 
 | 失败点 | 检测方式 | 任务归宿 | 副作用处理 | 恢复路径 |
 | --- | --- | --- | --- | --- |
@@ -327,6 +331,9 @@ interface ChannelAdapter {
 
 | 想改什么 | 先读 |
 | --- | --- |
+| 术语、状态与触发概念 | [领域模型](./domain.md)、`src/types.ts`、`src/trigger.ts` |
+| 部署、升级、排障与退出码 | [部署与排障](./deployment.md) |
+| 加事件源或 Worker 适配器 | [扩展指南](./extending.md)、`src/adapters/`、`src/scheduler.ts` |
 | 任务状态与恢复 | `src/types.ts`、`src/store.ts`、`docs/specs/005-crash-resume/` |
 | 事件入口 | `src/router.ts` 的 `handle`、`src/index.ts`、`docs/specs/003-super-agent-loop/` |
 | 换 agent | `src/adapters/`、`src/worker.ts` |
