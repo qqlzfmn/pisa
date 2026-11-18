@@ -87,7 +87,7 @@ flowchart TB
         tg["Telegram 通道<br/>src/channels/telegram.ts"]
         hook["Webhook<br/>POST /event"]
         gh["GitHub 评论轮询<br/>src/github-watcher.ts"]
-        web["Web 控制台<br/>src/web.ts"]
+        web["本机管理接口与控制台<br/>src/web.ts · src/api.ts"]
     end
 
     subgraph core["Core：不认识通道，也不认识 agent"]

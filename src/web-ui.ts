@@ -49,6 +49,7 @@ export const WEB_UI = `<!doctype html>
 <header>
   <h1>pisa 控制台</h1>
   <span id="daemon" class="muted">连接中…</span>
+  <button id="executor">暂停执行器</button>
   <div class="spacer"></div>
   <label class="muted">仓库 <select id="repo"><option value="">全部</option></select></label>
   <button id="refresh">刷新</button>
@@ -96,9 +97,8 @@ export const WEB_UI = `<!doctype html>
     if (text !== undefined && text !== null) node.textContent = String(text);
     return node;
   }
-  function withToken(path) {
-    if (!token) return path;
-    return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(token);
+  function authHeaders() {
+    return token ? { 'x-pisa-token': token } : {};
   }
   function toast(text, bad) {
     var box = document.getElementById('toast');
@@ -112,9 +112,9 @@ export const WEB_UI = `<!doctype html>
     document.getElementById('daemon').className = 'bad';
   }
   async function api(path, init) {
-    var opts = Object.assign({ credentials: 'same-origin', headers: {} }, init || {});
+    var opts = Object.assign({ headers: authHeaders() }, init || {});
     if (opts.body) opts.headers['content-type'] = 'application/json';
-    var res = await fetch(withToken(path), opts);
+    var res = await fetch(path, opts);
     if (res.status === 401) { showAuth(); throw new Error('未授权'); }
     var data = await res.json().catch(function () { return {}; });
     if (!res.ok || data.ok === false) throw new Error(data.message || data.error || ('HTTP ' + res.status));
@@ -171,13 +171,16 @@ export const WEB_UI = `<!doctype html>
       ' · 运行 ' + data.counts.running + ' / 排队 ' + data.counts.queued + ' / 中断 ' + data.counts.paused;
     var select = document.getElementById('repo');
     if (select.options.length <= 1 && data.repos.length) {
-      data.repos.forEach(function (alias) {
-        var option = el('option', null, alias);
-        option.value = alias;
+      data.repos.forEach(function (repo) {
+        var option = el('option', null, repo.alias + (repo.allowed ? '' : '（未授权）'));
+        option.value = repo.alias;
         select.appendChild(option);
       });
       select.value = state.repo;
     }
+    var toggle = document.getElementById('executor');
+    toggle.textContent = data.executor.paused ? '恢复执行器' : '暂停执行器';
+    toggle.dataset.paused = data.executor.paused ? '1' : '0';
     document.getElementById('count-running').textContent = data.running.length + ' 条';
     document.getElementById('count-queued').textContent = data.queued.length + ' 条';
     document.getElementById('count-finished').textContent = data.finished.length + ' 条（最多 20）';
@@ -188,7 +191,7 @@ export const WEB_UI = `<!doctype html>
   async function loadBoard() {
     try {
       var query = state.repo ? '?repo=' + encodeURIComponent(state.repo) : '';
-      renderBoard(await api('/api/tasks' + query));
+      renderBoard(await api('/state' + query));
     } catch (err) {
       document.getElementById('daemon').textContent = '加载失败：' + err.message;
       document.getElementById('daemon').className = 'bad';
@@ -204,25 +207,25 @@ export const WEB_UI = `<!doctype html>
     dl.appendChild(dd);
   }
   function renderDetail(data) {
-    state.detail = data.task;
+    state.detail = data.ticket;
     var box = document.getElementById('detail');
     box.textContent = '';
     box.hidden = false;
     var head = el('h2');
-    head.appendChild(el('span', null, '任务 ' + data.task.id));
+    head.appendChild(el('span', null, '任务 ' + data.ticket.id));
     var headSpacer = el('span', 'spacer');
     head.appendChild(headSpacer);
     var copy = el('button', null, '复制任务号');
     copy.addEventListener('click', async function () {
       try {
-        await navigator.clipboard.writeText(data.task.id);
-        toast('已复制 ' + data.task.id);
+        await navigator.clipboard.writeText(data.ticket.id);
+        toast('已复制 ' + data.ticket.id);
       } catch (err) {
         toast('复制失败，请手动选择', true);
       }
     });
     var reload = el('button', null, '刷新');
-    reload.addEventListener('click', function () { openDetail(data.task.id); });
+    reload.addEventListener('click', function () { openDetail(data.ticket.id); });
     var close = el('button', null, '关闭');
     close.addEventListener('click', function () { box.hidden = true; state.detail = null; });
     head.appendChild(copy);
@@ -231,55 +234,63 @@ export const WEB_UI = `<!doctype html>
     box.appendChild(head);
 
     var dl = el('dl');
-    detailRow(dl, '状态', data.task.statusLabel);
-    detailRow(dl, '阶段', data.task.stage + '（' + data.task.stageLabel + '）');
-    detailRow(dl, '仓库', data.task.repo);
-    detailRow(dl, '耗时', data.task.duration);
-    detailRow(dl, '分支', data.task.branch);
-    if (data.task.prUrl) {
-      var pr = el('a', null, data.task.prUrl);
-      pr.href = data.task.prUrl;
+    detailRow(dl, '状态', data.ticket.statusLabel);
+    detailRow(dl, '阶段', data.ticket.stage + '（' + data.ticket.stageLabel + '）');
+    detailRow(dl, '仓库', data.ticket.repo);
+    detailRow(dl, '耗时', data.ticket.duration);
+    detailRow(dl, '分支', data.ticket.branch);
+    if (data.ticket.prUrl) {
+      var pr = el('a', null, data.ticket.prUrl);
+      pr.href = data.ticket.prUrl;
       pr.target = '_blank';
       pr.rel = 'noopener';
       detailRow(dl, 'PR', pr);
     }
-    detailRow(dl, '主干', data.task.baseRef);
-    detailRow(dl, '创建', timeText(data.task.createdAt));
-    detailRow(dl, '开始', timeText(data.task.startedAt));
-    detailRow(dl, '结束', timeText(data.task.endedAt));
-    detailRow(dl, '摘要', data.task.summary);
-    if (data.task.error) detailRow(dl, '错误', data.task.error);
+    detailRow(dl, '主干', data.ticket.baseRef);
+    detailRow(dl, '创建', timeText(data.ticket.createdAt));
+    detailRow(dl, '开始', timeText(data.ticket.startedAt));
+    detailRow(dl, '结束', timeText(data.ticket.endedAt));
+    detailRow(dl, '摘要', data.ticket.summary);
+    if (data.ticket.error) detailRow(dl, '错误', data.ticket.error);
     detailRow(dl, '副作用', data.effects.length ? data.effects.map(function (e) { return e.kind + ' ' + e.target; }).join('；') : '无');
     box.appendChild(dl);
 
     var actions = el('div', 'row');
-    var cancel = el('button', 'danger', '取消任务');
-    var cancellable = data.task.status === 'queued' || data.task.status === 'running' || data.task.status === 'paused';
-    cancel.disabled = !cancellable;
-    cancel.addEventListener('click', function () {
-      if (!confirm('取消任务 ' + data.task.id + '？')) return;
-      writeAction('/api/tasks/' + data.task.id + '/cancel', null, '已取消 ' + data.task.id);
+    var stop = el('button', 'danger', '停止任务');
+    var stoppable = data.ticket.status === 'queued' || data.ticket.status === 'running';
+    stop.disabled = !stoppable;
+    stop.addEventListener('click', function () {
+      if (!confirm('停止任务 ' + data.ticket.id + '？')) return;
+      writeAction('/tickets/' + data.ticket.id + '/stop', null, '已停止 ' + data.ticket.id);
+    });
+    var retry = el('button', null, '重试');
+    var retryable = data.ticket.status === 'paused' || data.ticket.status === 'failed';
+    retry.disabled = !retryable;
+    retry.addEventListener('click', function () {
+      if (!confirm('重试任务 ' + data.ticket.id + '？')) return;
+      writeAction('/tickets/' + data.ticket.id + '/retry', null, '已重试 ' + data.ticket.id);
     });
     var merge = el('button', 'primary', '合并到主干');
-    merge.disabled = data.task.status !== 'succeeded' || !data.task.branch;
+    merge.disabled = data.ticket.status !== 'succeeded' || !data.ticket.branch;
     merge.addEventListener('click', function () {
-      var tips = '把 ' + data.task.branch + ' 合并到 ' + (data.task.baseRef || '主干') + '？\\n\\n合并会先验证（有测试就跑测试），通过后快进主干；失败不会改动主干。';
+      var tips = '把 ' + data.ticket.branch + ' 合并到 ' + (data.ticket.baseRef || '主干') + '？\\n\\n合并会先验证（有测试就跑测试），通过后快进主干；失败不会改动主干。';
       if (!confirm(tips)) return;
-      writeAction('/api/tasks/' + data.task.id + '/merge', { confirm: true }, '已合并 ' + data.task.id);
+      writeAction('/tickets/' + data.ticket.id + '/merge', { confirm: true }, '已合并 ' + data.ticket.id);
     });
-    actions.appendChild(cancel);
+    actions.appendChild(stop);
+    actions.appendChild(retry);
     actions.appendChild(merge);
     box.appendChild(actions);
 
     box.appendChild(el('h2', null, 'Prompt'));
-    var prompt = el('pre', null, data.task.prompt);
+    var prompt = el('pre', null, data.ticket.prompt);
     box.appendChild(prompt);
     box.appendChild(el('h2', null, '日志尾部（最后 ' + data.logTail.length + ' 行）'));
     box.appendChild(el('pre', null, data.logTail.length ? data.logTail.join('\\n') : '（还没有日志）'));
   }
   async function openDetail(id) {
     try {
-      renderDetail(await api('/api/tasks/' + encodeURIComponent(id)));
+      renderDetail(await api('/tickets/' + encodeURIComponent(id)));
     } catch (err) {
       toast(err.message, true);
     }
@@ -313,9 +324,9 @@ export const WEB_UI = `<!doctype html>
     try {
       var body = { prompt: text };
       if (state.repo) body.repo = state.repo;
-      var res = await api('/api/tasks', { method: 'POST', body: JSON.stringify(body) });
+      var res = await api('/tickets', { method: 'POST', body: JSON.stringify(body) });
       area.value = '';
-      msg.textContent = '已接单 · ' + (res.taskId || '');
+      msg.textContent = '已接单 · ' + (res.ticketId || '');
       msg.className = 'ok';
       await loadBoard();
     } catch (err) {
@@ -327,6 +338,10 @@ export const WEB_UI = `<!doctype html>
     }
   }
   document.getElementById('refresh').addEventListener('click', loadBoard);
+  document.getElementById('executor').addEventListener('click', function (event) {
+    var paused = event.target.dataset.paused === '1';
+    writeAction('/executor/' + (paused ? 'resume' : 'pause'), null, paused ? '执行器已恢复' : '执行器已暂停');
+  });
   document.getElementById('repo').addEventListener('change', function (event) {
     state.repo = event.target.value;
     loadBoard();

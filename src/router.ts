@@ -24,7 +24,7 @@ import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
-import { formatStatusBoard } from "./status";
+import { formatStatusBoard, statusSnapshot } from "./status";
 
 export { formatDuration } from "./status";
 
@@ -40,6 +40,13 @@ export interface RouterDeps {
   effects?: EffectQueue;
   /** 注入以便测试 */
   now?: () => number;
+}
+
+/** 执行器对外状态：暂停标志、并发上限、正在执行的数量 */
+export interface ExecutorState {
+  paused: boolean;
+  concurrency: number;
+  active: number;
 }
 
 /** 单英文词任务的待确认正文，10 分钟过期 */
@@ -67,11 +74,14 @@ export class Router {
   private pending = new Map<string, PendingTask>();
   /** 外部动作的 outbox：推送、建 PR、回帖都先落库再执行 */
   private readonly effects: EffectQueue;
+  /** 执行器暂停：不领取新排队任务，运行中的任务继续；状态落 meta，重启后保持 */
+  private paused: boolean;
 
   constructor(private deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
     this.progressOn = deps.cfg.notifications?.progress ?? false;
     this.effects = deps.effects ?? new EffectQueue(deps.store, { now: this.now });
+    this.paused = deps.store.getMeta("executor.paused") === "1";
     this.registerEffects(deps.deliverer);
   }
 
@@ -191,6 +201,30 @@ export class Router {
     return n;
   }
 
+  /** 执行器状态：管理接口与 CLI 共用 */
+  executorState(): ExecutorState {
+    return {
+      paused: this.paused,
+      concurrency: Math.max(1, this.deps.cfg.worker.concurrency ?? 1),
+      active: this.active.size,
+    };
+  }
+
+  /** 暂停领取新任务：已在跑的任务继续，排队任务等 resume */
+  pauseExecutor(): ExecutorState {
+    this.paused = true;
+    this.deps.store.setMeta("executor.paused", "1");
+    return this.executorState();
+  }
+
+  /** 恢复领取：立刻补位一次，不必等下一个心跳 */
+  resumeExecutor(): ExecutorState {
+    this.paused = false;
+    this.deps.store.setMeta("executor.paused", "0");
+    void this.fill();
+    return this.executorState();
+  }
+
   /** 立即执行一个已进入 running 的任务；不等待完成 */
   private launch(task: Task): void {
     const branch = task.branch ?? `pisa/${task.id}`;
@@ -202,7 +236,7 @@ export class Router {
 
   /** 按并发上限补位；不等待任务完成 */
   private async fill(): Promise<void> {
-    if (this.stopping) return;
+    if (this.stopping || this.paused) return;
     const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
     while (this.active.size < limit) {
       const task = this.deps.store.nextQueued();
@@ -260,6 +294,7 @@ export class Router {
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
+      else if (t === "/retry" || t.startsWith("/retry ")) cmd = { kind: "retry", body: t.slice(6).trim() };
       else if (t === "/rewind" || t.startsWith("/rewind ")) cmd = { kind: "rewind", body: t.slice(7).trim() };
       else if (t && !t.startsWith("/")) cmd = { kind: "task", body: t };
       else if (t.startsWith("/")) {
@@ -344,6 +379,11 @@ export class Router {
       return;
     }
 
+    if (cmd.kind === "retry") {
+      await this.handleRetry(msg, cmd.body);
+      return;
+    }
+
     if (cmd.kind === "merge") {
       await this.handleMerge(msg, cmd.body);
       return;
@@ -386,7 +426,7 @@ export class Router {
     }
 
     if (cmd.kind === "status") {
-      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now()));
+      await this.reply(msg.chatId, formatStatusBoard(statusSnapshot(this.deps.store), this.now()));
       return;
     }
 
@@ -846,6 +886,44 @@ export class Router {
     }
     await this.reply(msg.chatId, `恢复执行 · ${id}\n分支 ${task.branch ?? `pisa/${id}`}`, id);
     this.launch({ ...task, status: "running", startedAt });
+  }
+
+  /**
+   * 重试：paused 走恢复（要求工作副本与空位），failed 清空错误重新排队。
+   * 取消与成功不提供重试：前者是放弃，后者该走 rewind。
+   */
+  private async handleRetry(msg: IncomingMessage, body: string): Promise<void> {
+    const { store } = this.deps;
+    const id = body.trim();
+    const task = id ? store.get(id) : null;
+    if (!task) {
+      await this.reply(msg.chatId, `找不到任务 ${id || ""}`);
+      return;
+    }
+    if (!msg.admin && task.requester !== msg.userId) {
+      await this.reply(msg.chatId, "只有原请求者可以重试。");
+      return;
+    }
+    if (task.status === "paused") {
+      await this.handleResume(msg, id);
+      return;
+    }
+    if (task.status !== "failed") {
+      await this.reply(msg.chatId, `任务 ${id} 当前为 ${task.status}，只有中断或失败的任务可以重试。`);
+      return;
+    }
+    const requeued = store.transition(id, "queued", {
+      error: null,
+      summary: null,
+      sessionId: null,
+      startedAt: null,
+      endedAt: null,
+    });
+    if (!requeued) {
+      await this.reply(msg.chatId, `重试失败 · ${id}`);
+      return;
+    }
+    await this.reply(msg.chatId, `已重新排队 · ${id}\n上次失败：${task.error ?? "未记录"}`, id);
   }
 
   /** 取一个排队任务执行；返回是否真的执行了 */

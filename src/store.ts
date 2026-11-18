@@ -505,6 +505,14 @@ export class Store {
     return added;
   }
 
+  /** 事件对应的任务：管理接口派活后按 eventId 反查，重复投递拿到同一个任务 */
+  taskByEvent(eventId: string): Task | null {
+    const row = this.db
+      .query("SELECT t.* FROM tasks t JOIN events e ON e.task_id = t.id WHERE e.event_id = ? ORDER BY e.seen_at DESC LIMIT 1")
+      .get(eventId) as Row | null;
+    return row ? toTask(row) : null;
+  }
+
   /** 幂等：同一事件只能登记一次 */
   claimEvent(eventId: string, taskId: string, seenAt = Date.now()): boolean {
     const res = this.db.run("INSERT OR IGNORE INTO events(event_id, task_id, seen_at) VALUES (?, ?, ?)", [

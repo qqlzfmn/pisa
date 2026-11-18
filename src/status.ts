@@ -64,30 +64,49 @@ export function taskJson(t: Task, now = Date.now()): TaskJson {
   };
 }
 
+/** 状态中文标签：CLI 与 Web 共用，避免两处词表漂移 */
+export const STATUS_LABEL: Record<TaskStatus, string> = {
+  queued: "排队",
+  running: "运行中",
+  paused: "已中断",
+  succeeded: "成功",
+  failed: "失败",
+  cancelled: "已取消",
+  rewound: "已撤销",
+};
+
+/** 管理接口对外的票据投影：JSON 字段与中文标签同源 */
+export interface TicketJson extends TaskJson {
+  statusLabel: string;
+}
+
+export function ticketJson(t: Task, now = Date.now()): TicketJson {
+  return { ...taskJson(t, now), statusLabel: STATUS_LABEL[t.status] };
+}
+
 export interface StatusSnapshot {
-  running: Task[];
-  queued: Task[];
-  finished: Task[];
+  running: TicketJson[];
+  queued: TicketJson[];
+  finished: TicketJson[];
   counts: Record<TaskStatus, number>;
   total: number;
 }
 
-/** 看板数据：Router 与 CLI 共用，唯一事实源 */
-export function statusSnapshot(store: Store): StatusSnapshot {
+/** 看板数据：Router、管理接口与 CLI 唯一事实源 */
+export function statusSnapshot(store: Store, now = Date.now()): StatusSnapshot {
   const counts = store.countByStatus();
   return {
-    running: store.runningTasks(),
-    queued: store.queuedTasks(),
-    finished: store.recentFinished(5),
+    running: store.runningTasks().map((t) => ticketJson(t, now)),
+    queued: store.queuedTasks().map((t) => ticketJson(t, now)),
+    finished: store.recentFinished(5).map((t) => ticketJson(t, now)),
     counts,
     total: Object.values(counts).reduce((sum, n) => sum + n, 0),
   };
 }
 
-/** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
-export function formatStatusBoard(store: Store, now = Date.now()): string {
-  const { running, queued, finished, counts, total } = statusSnapshot(store);
-
+/** 任务看板：运行中 / 排队 / 最近完成，末尾汇总；输入是快照，Router 与 CLI 共用 */
+export function formatStatusBoard(snapshot: StatusSnapshot, now = Date.now()): string {
+  const { running, queued, finished, counts, total } = snapshot;
   const lines = ["运行中"];
   if (running.length === 0) lines.push("(无)");
   for (const t of running) {

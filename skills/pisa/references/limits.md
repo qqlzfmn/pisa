@@ -10,19 +10,19 @@
 | 续跑 | `continue` 在父任务分支上继续，继承 PR |
 | 阻塞等待 | `wait` / `--wait`，带超时 |
 | 观察 | `status`、`list`、`show`、`logs`、心跳 |
-| 取消 | queued/paused 立即取消；running 登记取消请求 |
-| 机器可读输出 | 所有查询命令 `--json` |
+| 取消 | `stop`：queued/paused 立即取消；running 登记取消请求 |
+| 重试 | `retry`：paused 恢复执行；failed 清空错误重新排队 |
+| 合并 / 撤销 | `merge` 验证后快进合并；`rewind` 预览或执行撤销 |
+| 机器可读输出 | 所有命令 `--json` |
 
 ## 不能做
 
-- **远程调度**：CLI 只读写本机配置与 SQLite。agent 必须在装有 pisa、能访问目标仓库的机器上运行。
-- **直接执行 Worker**：CLI 只入队。守护进程不在，任务不会跑。
-- **恢复 paused 任务**：`resume` 只在 pisa 会话里；CLI 没有该子命令。
-- **合并 / 撤销**：`merge`、`rewind` 只在 pisa 会话里；需要人类操作。
+- **远程调度**：CLI 只调用本机 `127.0.0.1` 的管理接口。agent 必须在装有 pisa、能访问目标仓库的机器上运行。
+- **直接执行 Worker**：CLI 只发请求。守护进程不在，接口不可达（退出码 1），任务不会跑。
 - **管理定时任务**：`schedules` 只在会话里。
-- **改任务状态**：除 cancel 外，CLI 不写运行中/完成状态；状态由守护进程推进。
+- **改任务状态**：除 stop / retry / merge / rewind 这些显式动作，CLI 不推进状态；状态由守护进程写。
 - **跨机器共享状态**：`pisa.db` 是本地文件，不要放网络盘并发写。
-- **自动重试**：没有内建重试；由调用方决定。
+- **自动重试**：没有后台重试队列；`retry` 由调用方触发。
 
 ## 执行模型
 
@@ -34,10 +34,9 @@
 
 ## 身份与权限
 
-- `requester` 默认取 `PISA_CLI_USER`、`USER`，或 `--requester`；它是自报名字，不是认证。
-- 真正的边界是本机 shell 权限：能运行 CLI 的人就能提交任务。
-- `whitelist.repos` 非空时限制可提交的仓库别名；空列表表示不限制仓库，但仍要求仓库已配置且是 git 仓库。
-- CLI 不校验 `whitelist.users`；该白名单用于聊天通道。
+- `requester` 默认取 `--requester`、`PISA_CLI_USER` 或 `USER`；它是任务归属，不是认证。
+- 认证是本机 token：`${web.tokenEnv}`，没有时读 `<stateDir>/api.token`（0600）。能读到 token 的本机用户就能调用接口。
+- `whitelist.users` 必须包含 `requester`，否则派活被拒（退出码 3）；`whitelist.repos` 非空时限制可提交的仓库别名，空列表表示不限制仓库，但仍要求仓库已配置且是 git 仓库。
 
 ## 数据与隐私
 
@@ -48,8 +47,8 @@
 
 ## 一致性
 
-- SQLite WAL 支持 CLI 与守护进程并发；`createTaskFromTrigger` 保证触发器与任务同事务，同一触发身份只会有一个任务。
-- 状态机唯一入口是 `Store.transition`；CLI 的 cancel 也走它。
+- CLI 不碰数据库：所有读写都经管理接口，由守护进程内的同一个 `Store` 串行化；`createTaskFromTrigger` 保证触发器与任务同事务，同一触发身份只会有一个任务。
+- 状态机唯一入口是 `Store.transition`；`stop`、`retry`、`rewind` 也走它。
 - 心跳阈值 10 秒；守护进程每 800ms 写一次。
 - 任务号格式 `t_<yyyyMMdd>_<6位十六进制>`，只用于定位，不要解析出语义。
 
@@ -59,9 +58,9 @@
 | --- | --- | --- |
 | 提交 | 有 | 有 |
 | 续跑 | 有 | 有（回复消息或 PR 评论） |
-| 恢复 paused | 无 | 有 |
-| 合并 | 无 | 有 |
-| 撤销 | 无 | 有 |
+| 恢复 paused | 有（`retry`） | 有 |
+| 合并 | 有（`merge`） | 有 |
+| 撤销 | 有（`rewind`） | 有 |
 | 定时任务 | 无 | 有 |
 | 进度推送 | 无（轮询） | 有（实时回执） |
 | 完成回帖 | 无 | 有（回到来源消息/PR/Issue） |

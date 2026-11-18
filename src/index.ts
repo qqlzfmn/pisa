@@ -54,30 +54,26 @@ async function main(): Promise<void> {
     const token = process.env[gh.tokenEnv];
     if (token) process.env.GH_TOKEN = token;
   }
-  let router: Router;
+  // 管理接口总是随守护进程启动：CLI 只认这条通道；web.enabled 只决定 /ui 是否可访问
+  cfg.web = web;
+  const bus = new ReplyBus(web.chatId, channel);
+  const router = new Router({
+    cfg,
+    store,
+    worker: new Worker(cfg.worker, cfg.stateDir),
+    deliverer: new GitDeliverer(cfg),
+    channel: bus,
+  });
+  if (!cfg.whitelist.users.includes(web.userId)) {
+    console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，管理接口派活会被拒绝`);
+  }
   let webServer: WebServer | null = null;
-  if (web.enabled) {
-    // 控制台的写操作共用 Router，回执由总线收集；其它 chatId 的回执转发给真实通道
-    const bus = new ReplyBus(web.chatId, channel);
-    router = new Router({
-      cfg,
-      store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
-      deliverer: new GitDeliverer(cfg),
-      channel: bus,
-    });
-    if (!cfg.whitelist.users.includes(web.userId)) {
-      console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
-    }
+  try {
     webServer = startWebServer({ cfg, store, router, bus }, web);
-  } else {
-    router = new Router({
-      cfg,
-      store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
-      deliverer: new GitDeliverer(cfg),
-      channel,
-    });
+    console.log(`[pisa] 管理接口 ${webServer.base} · token 见 ${join(cfg.stateDir, "api.token")} 或 ${web.tokenEnv}`);
+  } catch (err) {
+    // 端口被占用不该拖住任务执行：CLI 会拿到「不可达」，任务照常跑
+    console.warn(`[pisa] 管理接口监听 ${web.port} 失败：${(err as Error).message}`);
   }
 
   const recovered = router.recoverInterrupted();

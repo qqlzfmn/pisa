@@ -118,7 +118,8 @@ export const ALLOWED: Record<TaskStatus, TaskStatus[]> = {
   paused: ["running", "cancelled"],
   // 终态任务可被 rewind 标记；rewound 自身不可再迁出
   succeeded: ["rewound"],
-  failed: ["rewound"],
+  // 失败任务可原样重排：清空 error 与会话，重新认领
+  failed: ["queued", "rewound"],
   cancelled: ["rewound"],
   rewound: [],
 };

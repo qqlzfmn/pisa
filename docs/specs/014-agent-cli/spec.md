@@ -1,8 +1,8 @@
 # 014 · Agent CLI 与 skill 包
 
-- 状态：implemented
+- 状态：implemented，命令与退出码由 [018 · 管理 API 与 CLI](../018-mgmt-api/spec.md) 取代
 - 关联：001（任务状态机）、010（状态板）、013（rewind 账本）
-- 依赖：Bun、SQLite（与守护进程共用同一个库）
+- 依赖：Bun、SQLite（本规格落地时 CLI 直连数据库；018 起改为调用本机管理接口）
 
 ## 1. 问题
 

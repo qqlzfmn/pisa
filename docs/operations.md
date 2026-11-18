@@ -49,6 +49,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 
 /pisa continue <任务号> <新要求>   从上一轮的分支和上下文继续做
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
+/pisa retry <任务号>              重试中断或失败的任务（paused 恢复，failed 重新排队）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
 /pisa status                     任务看板（私聊可用 /status）
 ```
@@ -115,41 +116,48 @@ curl -X POST http://127.0.0.1:8799/event \
 
 ## Agent CLI 与 skill
 
-不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 只读写 `pisa.config.json` 与同一个 `pisa.db`，执行仍由守护进程负责。
+不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 只是本机管理接口的客户端：读配置定位 `stateDir` 与接口地址，请求全部发给守护进程，不再直接读写数据库。
 
 ```bash
 bun link                 # 把 pisa 命令链到 PATH；也可直接用 bun run src/cli.ts
-pisa task "修 CI：test 失败日志见 ci.log" --repo demo --json
+pisa run "修 CI：test 失败日志见 ci.log" --repo demo --json
 pisa wait <任务号> --timeout 900 --json
 pisa status --json
 pisa show <任务号>
 pisa logs <任务号> --tail 100
-pisa cancel <任务号>
+pisa stop <任务号>
+pisa retry <任务号>
+pisa merge <任务号>
+pisa rewind <任务号> --yes
 pisa continue <任务号> "按 PR 评论再改"
 ```
 
 - `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省从当前目录向上找 `pisa.config.json`
 - 相对 `stateDir` 与仓库路径以配置文件目录为基准，从子目录调用也指向同一份状态
-- 退出码：`0` 成功、`1` 任务失败、`2` 用法/配置、`3` 找不到、`4` 不可运行、`5` 等待超时
-- 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
+- 接口地址默认 `http://127.0.0.1:<web.port>`；`PISA_API_URL` 可覆盖，但只接受回环地址
+- 退出码按「脚本下一步该做什么」划分：`0` 正常；`1` 需重启（接口不可达、心跳过期、合并成功等待重启）；`2` 部件错误（4xx/5xx、任务失败、等待超时、用法错误）；`3` 待配置（配置文件缺失、未授权、仓库或用户不在白名单）
+- 提交时若心跳已过期，任务仍入队，但退出码是 `1` 并提示重启守护进程
 
 给 agent 的可复用说明在 [`skills/pisa/`](../skills/pisa/)：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
 
 ## Web 控制台
 
-任务多起来后，看板、日志、派活不必再翻聊天记录。控制台是一个单页 HTML，内联样式与原生脚本，没有前端构建步骤：
+任务多起来后，看板、日志、派活不必再翻聊天记录。守护进程启动时总会绑定本机管理接口（`web.port`，默认 8787）；`web.enabled` 或 `--web` 只决定单页控制台是否对外开放。控制台是一个单页 HTML，内联样式与原生脚本，没有前端构建步骤：
 
 ```bash
-PISA_WEB_TOKEN=<自定义 token> bun run web
-# Web 控制台：http://127.0.0.1:8787/ui?token=<token>
+bun run src/index.ts              # 管理接口：http://127.0.0.1:8787
+bun run web                       # 同时开启 /ui 控制台
+# 控制台：http://127.0.0.1:8787/ui?token=<token>
 ```
 
 - 只监听 `127.0.0.1`；`/ui` 与 `/api/*` 都要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、cookie 任一），缺失或错误一律 401
 - 用带 token 的 `/ui` 打开后下发 `HttpOnly` cookie，页面随即把地址栏里的 token 抹掉
 - 看板三段：运行中 / 排队 / 最近完成（最多 20 条），可按仓库筛选，5 秒自动刷新
+- 接口：`GET /state`、`GET /tickets`、`GET /tickets/:id`、`POST /tickets`、`POST /tickets/:id/stop|retry|merge|rewind`、`POST /executor/pause|resume`（契约见 `src/api.ts`，规格见 `docs/specs/018-mgmt-api/`）
+- 鉴权：`/state`、`/tickets…`、`/executor/*` 只认 `x-pisa-token` 或 `Authorization: Bearer`；`/ui` 与 `/` 额外接受一次性的 `?token=` 作为浏览器引导，接口不接受查询参数或 cookie
+- token 优先取 `${web.tokenEnv}`，没有就生成 32 位随机串写进 `<stateDir>/api.token`（0600），CLI 读同一个文件
 - 任务详情：prompt、状态、耗时、分支、PR、副作用与最后 200 行日志
-- 支持派活、取消、合并（浏览器二次确认）与复制任务号
-- 没配 `${web.tokenEnv}` 时启动生成一次性 token，只打印到日志，不落盘
+- 支持派活、停止、重试、合并（浏览器二次确认）、暂停/恢复执行器与复制任务号
 - 写操作走同一个 `Router`：白名单、状态机、合并前的验证与快进逻辑与 IM 完全一致
 
 ```json
@@ -158,7 +166,7 @@ PISA_WEB_TOKEN=<自定义 token> bun run web
 }
 ```
 
-`userId` 是页面派出任务的请求者，必须在 `whitelist.users` 里；不配时取 `PISA_CLI_USER` 或 `$USER`。`chatId` 默认 `"web"`，只用于内部记账。也可以 `bun run src/index.ts --web` 临时开启，`--web` 会忽略 `web.enabled`。
+`userId` 是页面派出任务的请求者，必须在 `whitelist.users` 里；不配时取 `PISA_CLI_USER` 或 `$USER`。`chatId` 默认 `"web"`，只用于内部记账。CLI 派活时请求者是 `--requester`、`PISA_CLI_USER` 或 `$USER`，同样要落在白名单里。`--web` 只影响控制台页面，管理接口始终启动。
 
 ## 多仓库
 

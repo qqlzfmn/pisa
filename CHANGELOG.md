@@ -9,6 +9,9 @@
 - `triggers` 表：任务创建改为按触发身份（`source` + 线程 + 消息 + 版本 + 载荷指纹）落库，触发器与任务同一事务；旧库在 `Store` 构造时按任务自身信息补齐，重放旧事件不会重复建单
 - 编辑与线程归属：同一消息的新版本按 `version` 留痕，任务仍在排队就更新需求正文；同线程不带命令的后续消息并进未结束任务的上下文
 - 入口身份字段：`IncomingMessage` 新增 `threadKey` / `messageKey` / `version` / `actor`；Telegram 处理 `edited_message` 与论坛话题线程，GitHub 评论用 `updated_at` 作版本、评论作者作 actor，webhook 接受 `threadKey` / `version`
+- 本机管理接口：守护进程始终在 `127.0.0.1:<web.port>` 提供 `GET /state`、`GET/POST /tickets`、`GET /tickets/:id`、`/tickets/:id/stop|retry|merge|rewind`、`/executor/pause|resume`，只认请求头 `x-pisa-token` / `Authorization: Bearer`；token 缺省生成到 `<stateDir>/api.token`（0600）
+- CLI 改为管理接口客户端：`pisa run|continue|wait|status|list|show|logs|stop|retry|merge|rewind|repos`，不再直接读写 `pisa.db`；`--json` 输出接口的票据投影
+- IM 新增 `retry`：`paused` 恢复、`failed` 重新排队；失败的跃迁补上 `failed → queued`
 
 ### 修复
 
@@ -18,6 +21,8 @@
 ### 变更
 
 - 推送、建 PR、回帖改为经 outbox 执行：失败不再只记日志，退避到期后自动补发；建 PR 失败仍退回 `compare` 链接，任务终态不变
+- CLI 退出码按「脚本下一步」收敛为 0 正常 / 1 需重启 / 2 部件错误 / 3 待配置；旧码 1 任务失败、3 找不到、4 不可运行、5 等待超时统一并入 2
+- 控制台接口从 `/api/tasks*` 迁到 `/tickets*`，鉴权只认请求头（`/ui` 保留一次性 `?token=` 引导），不再下发 cookie
 - README 从配置说明改为产品首页：一句话定位、三类读者路径、30 秒上手、架构图与分层表、三个带预期输出的场景、与 CNB NPC / Copilot cloud agent 的边界对比、FAQ、已知限制、演示 GIF（`docs/assets/demo.gif`）
 - 配置与运维细节（全部配置项、IM/CLI 命令、webhook、多仓库、GitHub 评论、定时、保留、launchd）迁到 [docs/operations.md](./docs/operations.md)，README 只保留入口
 
