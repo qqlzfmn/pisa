@@ -6,6 +6,9 @@
 
 ### 新增
 
+- `pisa status` 用退出码表达运维结论：`0` 正常、`1` 需重启、`2` 部件错误、`3` 待配置；文本末尾追加健康块，`--json` 增加 `health` 字段。健康判定覆盖仓库、心跳、Telegram/Webhook/GitHub/定时任务/Web 控制台的配置完整性（`src/ops.ts`）
+- `pisa patrol`：一次性巡检，正常静默、异常输出并返回对应码；按问题 key 去重（`meta.patrol:alerted`），问题恢复后清零，投递失败下一轮重试。`scripts/install-launchd.sh` 额外安装每小时触发的 `ai.pisa.patrol`（`scripts/patrol.sh`，日志 `~/Library/Logs/pisa.patrol.log`）
+- `patrol.chatId`：配置后巡检告警发到 Telegram，缺省只写 stdout
 - 健康与任务指标：`GET /health` 返回 `ok`、`uptimeSec`、队列深度、running 数与最近 24h 成功率/耗时分位/每仓库任务数；`ok` 取守护进程心跳，心跳停止时返回 503。看板与 `pisa status --json` 附带同一口径的 24h 汇总（`src/metrics.ts`）
 - `triggers` 表：任务创建改为按触发身份（`source` + 线程 + 消息 + 版本 + 载荷指纹）落库，触发器与任务同一事务；旧库在 `Store` 构造时按任务自身信息补齐，重放旧事件不会重复建单
 - 编辑与线程归属：同一消息的新版本按 `version` 留痕，任务仍在排队就更新需求正文；同线程不带命令的后续消息并进未结束任务的上下文

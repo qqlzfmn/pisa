@@ -133,7 +133,26 @@ pisa continue <任务号> "按 PR 评论再改"
 - `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省从当前目录向上找 `pisa.config.json`
 - 相对 `stateDir` 与仓库路径以配置文件目录为基准，从子目录调用也指向同一份状态
 - 退出码：`0` 成功、`1` 任务失败、`2` 用法/配置、`3` 找不到、`4` 不可运行、`5` 等待超时
+- `status` 与 `patrol` 的退出码另有一套运维语义：`0` 正常、`1` 需重启、`2` 部件错误、`3` 待配置（多个问题取最大码）。其它命令的退出码不变
 - 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
+
+### 运维状态巡检
+
+`pisa status` 末尾多一块健康结论，退出码与之一致：
+
+```bash
+pisa status; echo $?        # 0 正常 / 1 需重启 / 2 部件错误 / 3 待配置
+pisa patrol                 # 一次性巡检：正常不输出，异常打印并以对应退出码返回
+```
+
+| 码 | 结论 | 判定 |
+| --- | --- | --- |
+| 0 | 正常 | 没有下列问题 |
+| 1 | 需重启 | 心跳超过 10 秒或从未心跳 |
+| 2 | 部件错误 | 已启用的 Telegram / Webhook / GitHub / 定时任务 / Web 控制台配置不完整，或 cron 非法、任务 id 重复 |
+| 3 | 待配置 | `repos` 为空；`status`、`patrol` 找不到配置文件时也返回 3 |
+
+`patrol` 按问题 key 去重：同一个问题只提醒一次，问题消失后记录清空，再出现会重新提醒。`patrol.chatId` 与 `channels.telegram.tokenEnv` 都可用时告警发到 Telegram，否则只写 stdout；投递失败不写去重记录，下一轮重试。
 
 给 agent 的可复用说明在 [`skills/pisa/`](../skills/pisa/)：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
 
@@ -330,26 +349,29 @@ pisa 可以改自己：
 ./scripts/install-launchd.sh
 ```
 
-脚本生成 `~/Library/LaunchAgents/ai.pisa.supervisor.plist` 并加载，工作目录是仓库根目录，日志写在 `~/Library/Logs/pisa.launchd.log`（外部卷上的路径 launchd 无权限写入）。多份 worktree 同时安装会互相覆盖，只保留一份。
+脚本生成 `~/Library/LaunchAgents/ai.pisa.supervisor.plist` 并加载，工作目录是仓库根目录，日志写在 `~/Library/Logs/pisa.launchd.log`（外部卷上的路径 launchd 无权限写入）。同一脚本还装 `ai.pisa.patrol`：每小时跑一次 `scripts/patrol.sh`，正常无输出，异常写 `~/Library/Logs/pisa.patrol.log`。多份 worktree 同时安装会互相覆盖，只保留一份。
 
 看日志：
 
 ```bash
 tail -f ~/Library/Logs/pisa.launchd.log
+tail -f ~/Library/Logs/pisa.patrol.log
 launchctl print gui/$(id -u)/ai.pisa.supervisor    # 状态
+launchctl print gui/$(id -u)/ai.pisa.patrol
 ```
 
 卸载：
 
 ```bash
 launchctl bootout gui/$(id -u)/ai.pisa.supervisor
-rm ~/Library/LaunchAgents/ai.pisa.supervisor.plist
+launchctl bootout gui/$(id -u)/ai.pisa.patrol
+rm ~/Library/LaunchAgents/ai.pisa.{supervisor,patrol}.plist
 ```
 
-token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.pisa/telegram_token` 与 `~/.pisa/webhook_token`。
+token 不进 plist：`supervise.sh` 与 `patrol.sh` 启动时从环境变量取，缺省读 `~/.pisa/telegram_token` 与 `~/.pisa/webhook_token`。
 
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`schedules`、`patrol`、`proactive` 与 `retentionDays`。
 
-解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。
+解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`schedules`、`patrol`、`proactive` 没有默认值，缺省即关闭；`patrol` 不配 `chatId` 时巡检仍运行，告警只写 stdout。

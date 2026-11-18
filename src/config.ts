@@ -80,6 +80,8 @@ export interface Config {
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
   scheduler?: { chatId: string; userId: string };
   schedules?: ScheduleJob[];
+  /** 小时巡检的告警去向；不配置时只写 stdout */
+  patrol?: { chatId?: string };
   /** events 与 progress 的保留天数；≤ 0 关闭每日清理，默认 30 */
   retentionDays?: number;
   proactive?: {

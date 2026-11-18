@@ -263,25 +263,79 @@ describe("查询与操作", () => {
   test("status 输出看板与守护进程状态", async () => {
     seed({ prompt: "排队中" });
     const text = await cli(...base("status"));
-    expect(text.code).toBe(0);
+    expect(text.code).toBe(1);
     expect(text.out).toContain("排队（1）");
     expect(text.out).toContain("working/queued（等空闲槽位）");
     expect(text.out).toContain("最近 24h：无完成");
     expect(text.out).toContain("守护进程：未运行");
+    expect(text.out).toContain("健康：需重启（退出码 1）");
+    expect(text.out).toContain("- 守护进程未运行");
 
     const store = new Store(join(stateDir, "pisa.db"));
     store.beat();
     store.close();
-    const body = parse<{ daemon: { alive: boolean }; total: number; queued: TaskJson[]; last24h: WindowMetrics }>(
-      await cli(...base("status", "--json")),
-    );
+    const body = parse<{
+      daemon: { alive: boolean };
+      health: { code: number; level: string; issues: { key: string }[] };
+      total: number;
+      queued: TaskJson[];
+      last24h: WindowMetrics;
+    }>(await cli(...base("status", "--json")));
     expect(body.daemon.alive).toBe(true);
+    expect(body.health).toEqual({ code: 0, level: "ok", issues: [] });
     expect(body.last24h).toEqual({ finished: 0, succeeded: 0, failed: 0, successRate: null, durationSamples: 0, p50Ms: null, p95Ms: null });
     expect(body.total).toBe(1);
     expect(body.queued[0]!.prompt).toBe("排队中");
     expect(body.queued[0]!.status).toBe("queued");
     expect(body.queued[0]!.stage).toBe("working/queued");
     expect(body.queued[0]!.stageLabel).toBe("等空闲槽位");
+  });
+
+  test("status 退出码区分部件错误与待配置", async () => {
+    const store = new Store(join(stateDir, "pisa.db"));
+    store.beat();
+    store.close();
+    expect((await cli(...base("status"))).code).toBe(0);
+
+    writeConfig({ channels: { telegram: { enabled: true, tokenEnv: "PISA_MISSING_TELEGRAM_TOKEN" } } });
+    const broken = await cli(...base("status"));
+    expect(broken.code).toBe(2);
+    expect(broken.out).toContain("健康：部件错误（退出码 2）");
+    expect(broken.out).toContain("- Telegram 已启用但缺少环境变量 PISA_MISSING_TELEGRAM_TOKEN");
+
+    writeConfig({ repos: [] });
+    const unconfigured = await cli(...base("status"));
+    expect(unconfigured.code).toBe(3);
+    expect(unconfigured.out).toContain("健康：待配置（退出码 3）");
+
+    const missing = await cli("status", "--config", join(root, "absent.json"));
+    expect(missing.code).toBe(3);
+    expect(missing.err).toContain("找不到配置文件");
+  });
+
+  test("patrol 只在异常时说话，去重后恢复再提醒", async () => {
+    const first = await cli(...base("patrol"));
+    expect(first.code).toBe(1);
+    expect(first.out).toContain("pisa 巡检：需重启（退出码 1）");
+    expect(first.out).toContain("- 守护进程未运行");
+
+    const repeat = await cli(...base("patrol"));
+    expect(repeat.code).toBe(1);
+    expect(repeat.out).toBe("");
+
+    const store = new Store(join(stateDir, "pisa.db"));
+    store.beat();
+    store.close();
+    const healthy = await cli(...base("patrol"));
+    expect(healthy.code).toBe(0);
+    expect(healthy.out).toBe("");
+
+    const stale = new Store(join(stateDir, "pisa.db"));
+    stale.beat(Date.now() - 60_000);
+    stale.close();
+    const relapse = await cli(...base("patrol"));
+    expect(relapse.code).toBe(1);
+    expect(relapse.out).toContain("- 守护进程未运行");
   });
 
   test("show 与 logs", async () => {

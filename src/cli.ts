@@ -11,6 +11,8 @@ import { makeTrigger } from "./trigger";
 import { continuationContext } from "./task-context";
 import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
+import { formatOpsAlert, formatOpsHealth, OPS_LEVEL_CODE, opsHealth, patrolTick } from "./ops";
+import { TelegramChannel } from "./channels/telegram";
 import { windowMetrics } from "./metrics";
 import { stageText } from "./stage";
 
@@ -251,6 +253,7 @@ export function helpText(): string {
   pisa continue <任务号> <新要求> [--wait] [--json]
   pisa wait <任务号> [--timeout 秒] [--json]
   pisa status [--json]
+  pisa patrol [--json]
   pisa list [--repo 别名] [--status 状态] [--limit N] [--pr 编号] [--json]
   pisa show <任务号> [--json]
   pisa logs <任务号> [--tail N]
@@ -263,6 +266,9 @@ export function helpText(): string {
 退出码：
   0 成功    1 任务失败或命令被拒    2 用法/配置错误
   3 找不到任务    4 任务不可运行（暂停/取消/撤销）    5 等待超时
+
+status / patrol 用运维语义：
+  0 正常    1 需重启    2 部件错误    3 待配置
 `;
 }
 
@@ -276,7 +282,13 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
 
   const configPath = resolveConfigPath(args);
   if (!existsSync(configPath)) {
-    throw new UsageError(`找不到配置文件：${configPath}；可用 --config 指定`);
+    const message = `找不到配置文件：${configPath}；可用 --config 指定`;
+    // status / patrol 本身就是给脚本与巡检用的，缺配置也算「待配置」而不是用法错误
+    if (command === "status" || command === "patrol") {
+      io.err(message);
+      return OPS_LEVEL_CODE.config;
+    }
+    throw new UsageError(message);
   }
   const { cfg, store } = openState(configPath);
   try {
@@ -326,10 +338,12 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
 
       case "status": {
         const daemon = daemonState(store);
+        const health = opsHealth({ cfg, store });
         if (args.flags.get("json")) {
           const snapshot = statusSnapshot(store);
           json(io, {
             daemon,
+            health,
             counts: snapshot.counts,
             total: snapshot.total,
             running: snapshot.running.map(taskJson),
@@ -337,12 +351,40 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
             finished: snapshot.finished.map(taskJson),
             last24h: windowMetrics(store),
           });
-          return EXIT.ok;
+          return health.code;
         }
         io.out(formatStatusBoard(store));
         const beat = daemon.ageMs === null ? "无心跳记录" : `最后心跳 ${formatDuration(daemon.ageMs)} 前`;
         io.out(`守护进程：${daemon.alive ? "运行中" : "未运行"}（${beat}）`);
-        return EXIT.ok;
+        io.out(formatOpsHealth(health));
+        return health.code;
+      }
+
+      case "patrol": {
+        const chatId = cfg.patrol?.chatId;
+        const telegram = cfg.channels.telegram;
+        const token = telegram && chatId ? process.env[telegram.tokenEnv] : undefined;
+        const result = await patrolTick({
+          cfg,
+          store,
+          send:
+            telegram && chatId && token
+              ? async (text) => {
+                  const channel = new TelegramChannel(token, process.env.PISA_TELEGRAM_PROXY ?? telegram.proxy);
+                  try {
+                    await channel.send(chatId, text);
+                  } finally {
+                    await channel.stop();
+                  }
+                }
+              : undefined,
+        });
+        if (args.flags.get("json")) json(io, result);
+        else if (result.error) {
+          io.err(`巡检告警发送失败：${result.error}`);
+          io.out(formatOpsAlert(result.health));
+        } else if (result.fresh.length > 0 && !result.delivered) io.out(formatOpsAlert(result.health));
+        return result.health.code;
       }
 
       case "list": {

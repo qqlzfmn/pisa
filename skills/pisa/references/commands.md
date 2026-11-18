@@ -17,7 +17,8 @@
 
 | 命令 | 作用 | 关键选项 |
 | --- | --- | --- |
-| `pisa status` | 看板 + 守护进程心跳 | `--json` |
+| `pisa status` | 看板 + 守护进程心跳 + 健康结论 | `--json` |
+| `pisa patrol` | 一次性运维巡检，正常无输出 | `--json` |
 | `pisa list` | 任务列表 | `--repo`、`--status`、`--limit`（默认 20）、`--pr <编号>`、`--github-repo <owner/repo>`、`--json` |
 | `pisa show <任务号>` | 单个任务详情 | `--json` |
 | `pisa logs <任务号>` | 任务日志尾部 | `--tail <行数>`（默认 80） |
@@ -55,6 +56,7 @@
 ```json
 {
   "daemon": { "alive": true, "ageMs": 412, "lastBeat": 1763424000000 },
+  "health": { "code": 0, "level": "ok", "issues": [] },
   "counts": { "queued": 1, "running": 1, "paused": 0, "succeeded": 3, "failed": 0, "cancelled": 0, "rewound": 0 },
   "total": 5,
   "running": [Task],
@@ -63,9 +65,13 @@
 }
 ```
 
+`patrol --json`：`{ "health": { "code", "level", "issues" }, "fresh": [OpsIssue], "delivered": boolean, "error"?: string }`。`fresh` 是本次新出现、还没提醒过的问题。
+
 `list --json`、`show --json`、`repos --json` 都是数组或对象，字段与上面一致。
 
 ## 退出码
+
+`task` / `continue` / `wait` / `show` / `cancel` 等命令：
 
 | 码 | 语义 |
 | --- | --- |
@@ -75,6 +81,17 @@
 | 3 | 任务号不存在 |
 | 4 | 任务不可运行（paused / cancelled / rewound） |
 | 5 | `wait` 超时 |
+
+`status` / `patrol` 用运维语义，`1`–`3` 与上表不同：
+
+| 码 | 语义 |
+| --- | --- |
+| 0 | 正常 |
+| 1 | 需重启（心跳停止） |
+| 2 | 部件错误（已启用组件配置不完整、cron 非法、任务 id 重复） |
+| 3 | 待配置（`repos` 为空，或找不到配置文件） |
+
+多个问题同时存在时取最大码。
 
 ## 配置要点
 

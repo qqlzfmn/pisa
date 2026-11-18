@@ -83,6 +83,9 @@
     "chatId": "<telegram chat id>",
     "userId": "<telegram user id>"
   },
+  "patrol": {
+    "chatId": "<telegram chat id>"
+  },
   "schedules": [
     {
       "id": "morning",

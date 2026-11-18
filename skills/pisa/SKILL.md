@@ -80,6 +80,8 @@ pisa wait <id> --timeout 900 --json      # 阻塞到终态，退出码 0/1/4/5
 | 4 | 任务不可运行 | paused / cancelled / rewound，交给人处理 |
 | 5 | 等待超时 | 任务可能仍在跑；用 `pisa status` 继续观察，不要重复提交 |
 
+`status` 与 `patrol` 是例外：退出码为运维语义 `0` 正常 / `1` 需重启 / `2` 部件错误 / `3` 待配置。`status --json.health.issues` 列出每个问题；`1`、`2`、`3` 都交给人处理，不要自动改配置。
+
 ## 常用命令速查
 
 ```bash
