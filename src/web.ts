@@ -7,9 +7,15 @@ import type { Store } from "./store";
 import type { ChannelAdapter, DeliveryReceipt, IncomingMessage, Task } from "./types";
 import { daemonState, taskJson, type TaskJson } from "./status";
 import { computeWindowMetrics, METRICS_WINDOW_MS } from "./metrics";
-import { readTail, tailLines } from "./log";
+import { taskLogTail } from "./log";
 import { WEB_UI } from "./web-ui";
-import { HttpError, readJson, safeEqual } from "./http";
+import { HttpError, json, readJson, safeEqual } from "./http";
+import {
+  createManagementApi,
+  isManagementPath,
+  writeManagementToken,
+  type ManagementRouter,
+} from "./mgmt";
 
 /** cookie 名；页面用 `?token=` 打开后由服务端下发，之后每次请求自动带上 */
 export const WEB_COOKIE = "pisa_web";
@@ -63,16 +69,9 @@ export interface WebDeps {
   startedAt?: number;
 }
 
-/** Web 只依赖 Router 的一个能力；Router 结构化满足它 */
-export interface WebRouter {
+/** Web 依赖 Router 的消息入口与管理能力；Router 结构化满足 */
+export interface WebRouter extends ManagementRouter {
   handle(msg: IncomingMessage): Promise<void>;
-}
-
-function json(value: unknown, status = 200, headers: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers },
-  });
 }
 
 function cookieValue(header: string | null, name: string): string | null {
@@ -95,20 +94,6 @@ function requestToken(req: Request, url: URL): { token: string; fromQuery: boole
   const cookie = cookieValue(req.headers.get("cookie"), WEB_COOKIE);
   if (cookie) return { token: cookie, fromQuery: false };
   return null;
-}
-
-function tailLog(cfg: Config, id: string): string[] {
-  const path = join(cfg.stateDir, "logs", `${id}.log`);
-  if (!existsSync(path)) return [];
-  return tailLines(readTail(path), LOG_TAIL_LINES).map((line) => {
-    try {
-      const rec = JSON.parse(line) as { ts?: number; stage?: string; msg?: string };
-      const time = typeof rec.ts === "number" ? new Date(rec.ts).toTimeString().slice(0, 8) : "-";
-      return `${time} ${rec.stage ?? "-"} ${rec.msg ?? ""}`.trimEnd();
-    } catch {
-      return line;
-    }
-  });
 }
 
 /** 把 Web 表单动作翻译成一条 IM 消息，交给 Router；不复制白名单、状态机与合并校验 */
@@ -184,6 +169,9 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
     });
   }
 
+  /** 管理接口只认请求头，先于 cookie 鉴权分派；CLI 与脚本走这里，浏览器走控制台 */
+  const management = createManagementApi({ cfg, store, router, token, now, run });
+
   async function dispatchTask(repo: string | undefined, prompt: string): Promise<{ taskId: string; message: string; ok: boolean }> {
     const msg = webMessage(cfg, web, "task", prompt, repo);
     const result = await run(msg);
@@ -232,6 +220,7 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
 
   async function route(req: Request): Promise<Response> {
     const url = new URL(req.url);
+    if (isManagementPath(url.pathname)) return management(req, url);
     if (url.pathname === "/health") {
       if (req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
       return healthResponse();
@@ -299,7 +288,7 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
             ok: true,
             task: boardTask(task, at),
             effects: store.effectsOf(task.id).map((e) => ({ kind: e.kind, target: e.target, detail: e.detail, createdAt: e.createdAt })),
-            logTail: tailLog(cfg, task.id),
+            logTail: taskLogTail(cfg.stateDir, task.id, LOG_TAIL_LINES),
           },
           200,
           setCookie,
@@ -357,6 +346,8 @@ export function startWebServer(deps: Omit<WebDeps, "token">, web: WebConfig): We
     idleTimeout: 255,
     fetch: handle,
   });
+  // CLI 靠这个文件读 token：守护进程自己生成的 token 就没人能从环境变量里知道
+  writeManagementToken(deps.cfg.stateDir, token);
   const url = `http://127.0.0.1:${server.port}/ui?token=${encodeURIComponent(token)}`;
   if (ephemeral) console.log(`Web 控制台 token 未配置（${web.tokenEnv}），本次使用一次性 token：${url}`);
   else console.log(`Web 控制台：${url}`);

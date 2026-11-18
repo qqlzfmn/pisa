@@ -67,3 +67,18 @@ export function readTail(path: string, maxBytes = 64 * 1024): string {
 export function tailLines(text: string, count: number): string[] {
   return text.split("\n").filter((line) => line.length > 0).slice(-count);
 }
+
+/** 任务日志的文本尾部：JSONL 转 `HH:MM:SS stage msg`，坏行原样保留 */
+export function taskLogTail(stateDir: string, taskId: string, count: number): string[] {
+  const path = join(stateDir, "logs", `${taskId}.log`);
+  if (!existsSync(path)) return [];
+  return tailLines(readTail(path), count).map((line) => {
+    try {
+      const rec = JSON.parse(line) as { ts?: number; stage?: string; msg?: string };
+      const time = typeof rec.ts === "number" ? new Date(rec.ts).toTimeString().slice(0, 8) : "-";
+      return `${time} ${rec.stage ?? "-"} ${rec.msg ?? ""}`.trimEnd();
+    } catch {
+      return line;
+    }
+  });
+}

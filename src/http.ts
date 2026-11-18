@@ -3,6 +3,14 @@ import { timingSafeEqual } from "node:crypto";
 /** 本机 HTTP 入口的请求体上限：派活正文、确认标志与事件号都很小 */
 export const MAX_BODY_BYTES = 64 * 1024;
 
+/** 本机 HTTP 接口的统一 JSON 回包 */
+export function json(value: unknown, status = 200, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers },
+  });
+}
+
 /** 入口错误：带 HTTP 状态码，调用方按 status 回包 */
 export class HttpError extends Error {
   constructor(

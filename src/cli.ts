@@ -1,460 +1,437 @@
 #!/usr/bin/env bun
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
-import { findConfig, loadConfig, repoByAlias, type Config } from "./config";
-import { Store } from "./store";
-import { isGitRepo } from "./git";
-import type { Task, TaskStatus } from "./types";
-import { newTaskId } from "./ids";
-import { makeTrigger } from "./trigger";
-import { continuationContext } from "./task-context";
-import { readTail, tailLines } from "./log";
-import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
-import { windowMetrics } from "./metrics";
-import { stageText } from "./stage";
+// pisa CLI：管理接口的客户端。所有查询与操作都发 HTTP 请求，不打开数据库。
+// 退出码是契约：0 正常 / 1 需重启 / 2 部件错误 / 3 待配置。
 
-/** 退出码：脚本据此分支，不要在版本间随意改语义 */
-const EXIT = {
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { loadConfig, type Config } from "./config";
+import { readManagementToken } from "./mgmt";
+import type { WindowMetrics } from "./metrics";
+import {
+  formatBoard,
+  formatWindowMetrics,
+  type BoardView,
+  type DaemonState,
+  type TaskJson,
+} from "./status";
+import type { TaskStatus } from "./types";
+
+export const EXIT = {
   ok: 0,
-  taskFailed: 1,
-  usage: 2,
-  notFound: 3,
-  notRunnable: 4,
-  timeout: 5,
+  restart: 1,
+  fault: 2,
+  unconfigured: 3,
 } as const;
 
-const STATUSES: readonly TaskStatus[] = ["queued", "running", "paused", "succeeded", "failed", "cancelled", "rewound"];
-const TERMINAL: readonly TaskStatus[] = ["succeeded", "failed", "cancelled", "rewound"];
-
-interface Io {
-  out: (text: string) => void;
-  err: (text: string) => void;
-}
-
-const defaultIo: Io = {
-  out: (text) => console.log(text),
-  err: (text) => console.error(text),
+const TERMINAL: Partial<Record<TaskStatus, true>> = {
+  succeeded: true,
+  failed: true,
+  cancelled: true,
+  rewound: true,
+};
+const BOOL_FLAGS: Record<string, true> = { json: true, wait: true, help: true, confirm: true, yes: true, force: true, resume: true };
+const VALUE_FLAGS: Record<string, true> = {
+  config: true,
+  repo: true,
+  "event-id": true,
+  timeout: true,
+  interval: true,
+  status: true,
+  limit: true,
+  pr: true,
+  "github-repo": true,
+  tail: true,
 };
 
-class UsageError extends Error {}
-
-interface ParsedArgs {
-  positional: string[];
-  flags: Map<string, string | true>;
+export interface Io {
+  out(line: string): void;
+  err(line: string): void;
 }
 
-const BOOL_FLAGS = new Set(["json", "wait", "help"]);
-const VALUE_FLAGS = new Set([
-  "config",
-  "repo",
-  "event-id",
-  "requester",
-  "timeout",
-  "interval",
-  "status",
-  "limit",
-  "pr",
-  "github-repo",
-  "tail",
-]);
+type Flags = Record<string, string | boolean>;
 
-function parseArgs(argv: string[]): ParsedArgs {
-  const positional: string[] = [];
-  const flags = new Map<string, string | true>();
-  for (let i = 0; i < argv.length; i += 1) {
+/** 带退出码的错误：顶层统一打印，不再各自 exit */
+class CliError extends Error {
+  constructor(
+    readonly code: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function parseArgs(argv: string[]): { flags: Flags; args: string[] } {
+  const flags: Flags = {};
+  const args: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "--") {
-      positional.push(...argv.slice(i + 1));
-      break;
-    }
     if (!arg.startsWith("--")) {
-      positional.push(arg);
+      args.push(arg);
       continue;
     }
     const eq = arg.indexOf("=");
-    const name = arg.slice(2, eq === -1 ? undefined : eq);
-    if (BOOL_FLAGS.has(name)) {
-      if (eq !== -1) throw new UsageError(`--${name} 不接受取值`);
-      flags.set(name, true);
+    const name = eq > 0 ? arg.slice(2, eq) : arg.slice(2);
+    if (name in BOOL_FLAGS) {
+      flags[name] = eq > 0 ? arg.slice(eq + 1) !== "false" : true;
       continue;
     }
-    if (!VALUE_FLAGS.has(name)) throw new UsageError(`未知选项 --${name}`);
-    const value = eq !== -1 ? arg.slice(eq + 1) : argv[++i];
-    if (value === undefined || value.startsWith("--")) throw new UsageError(`--${name} 缺少取值`);
-    flags.set(name, value);
+    if (!(name in VALUE_FLAGS)) throw new CliError(EXIT.fault, `未知参数：--${name}`);
+    const value = eq > 0 ? arg.slice(eq + 1) : argv[++i];
+    if (value === undefined) throw new CliError(EXIT.fault, `参数 --${name} 缺少值`);
+    flags[name] = value;
   }
-  return { positional, flags };
+  return { flags, args };
 }
 
-function flagString(args: ParsedArgs, name: string): string | undefined {
-  const v = args.flags.get(name);
+function str(flags: Flags, name: string): string | undefined {
+  const v = flags[name];
   return typeof v === "string" ? v : undefined;
 }
 
-function flagNumber(args: ParsedArgs, name: string): number | undefined {
-  const raw = flagString(args, name);
-  if (raw === undefined) return undefined;
+function num(flags: Flags, name: string, fallback: number): number {
+  const raw = str(flags, name);
+  if (raw === undefined) return fallback;
   const n = Number(raw);
-  if (!Number.isFinite(n)) throw new UsageError(`--${name} 需要数字，收到 ${raw}`);
-  return Math.floor(n);
+  if (!Number.isFinite(n) || n <= 0) throw new CliError(EXIT.fault, `参数 --${name} 需要正数`);
+  return n;
 }
 
-function json(io: Io, value: unknown): void {
-  io.out(JSON.stringify(value, null, 2));
+interface Client {
+  cfg: Config;
+  base: string;
+  token: string;
 }
 
-function openState(configPath: string): { cfg: Config; store: Store } {
-  const cfg = loadConfig(configPath);
-  return { cfg, store: new Store(join(cfg.stateDir, "pisa.db")) };
+interface ExecutorView {
+  paused: boolean;
+  active: number;
+  concurrency: number;
 }
 
-function resolveConfigPath(args: ParsedArgs): string {
-  return flagString(args, "config") ?? process.env.PISA_CONFIG ?? findConfig(process.cwd());
+interface StateResponse extends BoardView {
+  daemon: DaemonState;
+  executor: ExecutorView;
+  last24h: WindowMetrics;
 }
 
-function repoForTask(cfg: Config, alias: string | undefined) {
-  const repo = repoByAlias(cfg, alias);
-  if (!repo) throw new UsageError(alias ? `未知仓库别名：${alias}` : "配置里没有仓库，请先设置 repos");
-  if (cfg.whitelist.repos.length > 0 && !cfg.whitelist.repos.includes(repo.alias)) {
-    throw new UsageError(`无权限：仓库 ${repo.alias} 不在 whitelist.repos`);
+interface TicketDetail {
+  task: TaskJson;
+  effects: Array<{ kind: string; target: string | null }>;
+  logTail: string[];
+}
+
+interface TicketList {
+  tickets: TaskJson[];
+}
+
+interface SubmitResponse {
+  taskId: string;
+  task: TaskJson;
+  message: string;
+}
+
+interface ActionResponse {
+  status: TaskStatus | null;
+  message: string;
+  taskId?: string | null;
+  restart?: "auto" | "manual";
+}
+
+/** 连接信息来自配置与 token：读不到就属于「待配置」，不是运行故障 */
+function connect(flags: Flags): Client {
+  const path = str(flags, "config") ?? process.env.PISA_CONFIG ?? "pisa.config.json";
+  // loadConfig 缺文件时静默回落到默认值：CLI 不能把「没有配置」当成「配置好了但没开接口」
+  if (!existsSync(resolve(path))) {
+    throw new CliError(EXIT.unconfigured, `读不到配置：${resolve(path)}（用 --config 指定）`);
   }
-  if (!isGitRepo(repo.path)) throw new UsageError(`仓库路径不是 git 仓库：${repo.path}`);
-  return repo;
+  let cfg: Config;
+  try {
+    cfg = loadConfig(path);
+  } catch (err) {
+    throw new CliError(EXIT.unconfigured, `配置无法解析：${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (cfg.web?.enabled !== true) {
+    throw new CliError(EXIT.unconfigured, "管理接口未启用：在配置里设 web.enabled = true 后重启守护进程");
+  }
+  const token = process.env[cfg.web.tokenEnv]?.trim() || readManagementToken(cfg.stateDir);
+  if (!token) throw new CliError(EXIT.unconfigured, `找不到管理 token：设 ${cfg.web.tokenEnv} 或确认守护进程已启动`);
+  return { cfg, base: `http://127.0.0.1:${cfg.web.port}`, token };
 }
 
-function cliRequester(args: ParsedArgs): string {
-  return flagString(args, "requester") ?? process.env.PISA_CLI_USER ?? process.env.USER ?? "local";
+/** 响应体由本机守护进程产出：此处按调用方声明的形状取用，运行时只校验错误字段 */
+async function call<T>(c: Client, method: string, path: string, body?: unknown): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${c.base}${path}`, {
+      method,
+      headers: { "x-pisa-token": c.token, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new CliError(EXIT.fault, `连不上管理接口 ${c.base}：守护进程在跑吗？`);
+  }
+  const text = await res.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (res.ok) return data as T;
+  const error = apiError(data);
+  const message = error.error ?? `HTTP ${res.status}`;
+  if (error.code === "config" || error.code === "auth") throw new CliError(EXIT.unconfigured, message);
+  throw new CliError(EXIT.fault, message);
 }
 
-function newCliTask(init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "baseRef" | "context" | "prUrl">): Task {
+function apiError(data: unknown): { code?: string; error?: string } {
+  if (!data || typeof data !== "object") return {};
+  const record = data as Record<string, unknown>;
   return {
-    ...init,
-    source: "cli",
-    channel: "cli",
-    chatId: "cli",
-    status: "queued",
-    branch: null,
-    sessionId: null,
-    replyPr: null,
-    replyIssue: null,
-    replyRepo: null,
-    summary: null,
-    error: null,
-    createdAt: Date.now(),
-    startedAt: null,
-    endedAt: null,
-    cancelRequested: false,
+    code: typeof record.code === "string" ? record.code : undefined,
+    error: typeof record.error === "string" ? record.error : undefined,
   };
 }
 
-function enqueue(io: Io, store: Store, args: ParsedArgs, task: Task): number {
-  const eventId = flagString(args, "event-id") ?? `cli:${randomUUID()}`;
-  const trigger = makeTrigger({
-    source: "cli",
-    // 每条 CLI 提交自成一册线程；--event-id 相同即视为同一件事
-    threadKey: `cli:${eventId}`,
-    messageKey: eventId,
-    actor: task.requester,
-    at: task.createdAt,
-    text: task.prompt,
-  });
-  const claim = store.createTaskFromTrigger(trigger, task);
-  if (!claim.created) {
-    const existing = store.get(claim.taskId);
-    if (existing) {
-      const note = claim.promptUpdated
-        ? "事件已存在，需求已按最新版本更新"
-        : claim.edited
-          ? "事件已存在，任务已开跑，本次内容只做了留痕"
-          : "事件已存在，返回原任务";
-      emitTask(io, args, existing, note);
+function exitForTask(task: TaskJson): number {
+  return task.status === "succeeded" ? EXIT.ok : EXIT.fault;
+}
+
+function printTask(io: Io, task: TaskJson): void {
+  io.out(`${task.id} · ${task.status}${task.stage ? ` · ${task.stage}` : ""} · ${task.repo}`);
+  if (task.prompt) io.out(`需求：${task.prompt}`);
+  if (task.branch) io.out(`分支：${task.branch}`);
+  if (task.prUrl) io.out(`PR：${task.prUrl}`);
+  if (task.summary) io.out(`结果：${task.summary}`);
+  if (task.error) io.out(`错误：${task.error}`);
+}
+
+/** 轮询到终态；超时也是部件错误，不假装成功 */
+async function waitFor(c: Client, id: string, flags: Flags, io: Io): Promise<TaskJson> {
+  const interval = num(flags, "interval", 2) * 1000;
+  const timeoutMs = num(flags, "timeout", 900) * 1000;
+  const deadline = Date.now() + timeoutMs;
+  const quiet = flags.json === true;
+  for (;;) {
+    const data = await call<TicketDetail>(c, "GET", `/tickets/${encodeURIComponent(id)}?logTail=1`);
+    const task = data.task;
+    if (TERMINAL[task.status]) return task;
+    if (Date.now() >= deadline) {
+      throw new CliError(EXIT.fault, `等待超时（${timeoutMs / 1000}s）：${id} 仍是 ${task.status}`);
     }
+    if (!quiet) io.out(`${task.id} ${task.status}${task.stageLabel ? ` · ${task.stageLabel}` : ""}`);
+    await Bun.sleep(interval);
+  }
+}
+
+async function statusCommand(c: Client, flags: Flags, io: Io): Promise<number> {
+  const data = await call<StateResponse>(c, "GET", "/state");
+  if (flags.json) {
+    io.out(JSON.stringify(data, null, 2));
     return EXIT.ok;
   }
-
-  const daemon = daemonState(store);
-  // --wait --json 只输出最终任务，避免两个 JSON 拼在一起无法解析
-  if (!(args.flags.get("wait") && args.flags.get("json"))) {
-    emitTask(io, args, task, daemon.alive ? "已入队" : "已入队，但守护进程心跳已过期；请确认 pisa 正在运行");
-  }
-  if (!daemon.alive) io.err("警告：没有检测到运行中的 pisa 守护进程，任务会一直排队。");
+  const executor = data.executor;
+  io.out(formatBoard(data));
+  io.out(formatWindowMetrics(data.last24h));
+  io.out(`执行器：${executor.paused ? "已暂停" : "运行中"} · 运行 ${executor.active}/${executor.concurrency}`);
   return EXIT.ok;
 }
 
-function emitTask(io: Io, args: ParsedArgs, task: Task, message: string): void {
-  if (args.flags.get("json")) {
-    json(io, { ...taskJson(task), message });
-    return;
+async function listCommand(c: Client, flags: Flags, io: Io): Promise<number> {
+  const query = new URLSearchParams();
+  for (const key of ["repo", "status", "limit", "pr", "github-repo"] as const) {
+    const value = str(flags, key);
+    if (value !== undefined) query.set(key, value);
   }
-  io.out(`${task.id} · ${task.status} · ${task.repo}`);
-  io.out(message);
-}
-
-async function waitTask(io: Io, store: Store, args: ParsedArgs, id: string): Promise<number> {
-  const timeoutSec = flagNumber(args, "timeout") ?? 1800;
-  const intervalMs = Math.max(10, flagNumber(args, "interval") ?? 1000);
-  const deadline = Date.now() + timeoutSec * 1000;
-  for (;;) {
-    const task = store.get(id);
-    if (!task) {
-      io.err(`找不到任务 ${id}`);
-      return EXIT.notFound;
-    }
-    if (TERMINAL.includes(task.status)) {
-      if (args.flags.get("json")) json(io, taskJson(task));
-      else {
-        io.out(`${task.id} · ${task.status}`);
-        if (task.summary) io.out(task.summary);
-        if (task.error) io.err(task.error);
-        if (task.prUrl) io.out(task.prUrl);
-      }
-      return task.status === "succeeded" ? EXIT.ok : task.status === "failed" ? EXIT.taskFailed : EXIT.notRunnable;
-    }
-    if (task.status === "paused") {
-      if (args.flags.get("json")) json(io, taskJson(task));
-      else io.err(`任务 ${task.id} 已暂停，恢复请在 pisa 会话里用 resume <任务号>`);
-      return EXIT.notRunnable;
-    }
-    if (Date.now() >= deadline) {
-      if (args.flags.get("json")) json(io, { id: task.id, status: task.status, timeout: true });
-      else io.err(`等待超时，任务仍在 ${task.status}：${task.id}`);
-      return EXIT.timeout;
-    }
-    await Bun.sleep(intervalMs);
-  }
-}
-
-function taskHuman(io: Io, task: Task, logPath: string): void {
-  const rows: Array<[string, string]> = [
-    ["任务", task.id],
-    ["状态", task.status],
-    ["阶段", stageText(task)],
-    ["仓库", task.repo],
-    ["需求", preview(task.prompt, 120)],
-    ["分支", task.branch ?? "(未创建)"],
-    ["PR", task.prUrl ?? "(无)"],
-    ["创建", new Date(task.createdAt).toISOString()],
-    ["耗时", task.startedAt ? formatDuration((task.endedAt ?? Date.now()) - task.startedAt) : "-"],
-    ["日志", logPath],
-  ];
-  if (task.summary) rows.push(["摘要", task.summary]);
-  if (task.error) rows.push(["错误", task.error]);
-  for (const [k, v] of rows) io.out(`${k}：${v}`);
-}
-
-export function helpText(): string {
-  return `pisa CLI：向本地 pisa 守护进程提交任务并查询结果
-
-用法：
-  pisa task <需求> [--repo 别名] [--wait] [--json]
-  pisa continue <任务号> <新要求> [--wait] [--json]
-  pisa wait <任务号> [--timeout 秒] [--json]
-  pisa status [--json]
-  pisa list [--repo 别名] [--status 状态] [--limit N] [--pr 编号] [--json]
-  pisa show <任务号> [--json]
-  pisa logs <任务号> [--tail N]
-  pisa cancel <任务号>
-  pisa repos [--json]
-
-全局选项：
-  --config <path>   配置文件；默认 PISA_CONFIG，否则从当前目录向上找 pisa.config.json
-
-退出码：
-  0 成功    1 任务失败或命令被拒    2 用法/配置错误
-  3 找不到任务    4 任务不可运行（暂停/取消/撤销）    5 等待超时
-`;
-}
-
-async function dispatch(io: Io, argv: string[]): Promise<number> {
-  const args = parseArgs(argv);
-  const command = args.positional[0] ?? (args.flags.get("help") ? "help" : undefined);
-  if (!command || command === "help" || args.flags.get("help")) {
-    io.out(helpText());
+  const data = await call<TicketList>(c, "GET", `/tickets?${query.toString()}`);
+  if (flags.json) {
+    io.out(JSON.stringify(data, null, 2));
     return EXIT.ok;
   }
-
-  const configPath = resolveConfigPath(args);
-  if (!existsSync(configPath)) {
-    throw new UsageError(`找不到配置文件：${configPath}；可用 --config 指定`);
-  }
-  const { cfg, store } = openState(configPath);
-  try {
-    switch (command) {
-      case "task": {
-        const brief = args.positional.slice(1).join(" ").trim();
-        if (!brief) throw new UsageError("task 需要需求正文");
-        const repo = repoForTask(cfg, flagString(args, "repo") ?? process.env.PISA_REPO);
-        const task = newCliTask({
-          id: newTaskId(),
-          requester: cliRequester(args),
-          repo: repo.alias,
-          prompt: brief,
-          baseRef: null,
-          context: null,
-          prUrl: null,
-        });
-        const code = enqueue(io, store, args, task);
-        return code === EXIT.ok && args.flags.get("wait") ? await waitTask(io, store, args, task.id) : code;
-      }
-
-      case "continue": {
-        const parentId = args.positional[1];
-        const brief = args.positional.slice(2).join(" ").trim();
-        if (!parentId || !brief) throw new UsageError("用法：pisa continue <任务号> <新要求>");
-        const parent = store.get(parentId);
-        if (!parent) throw new NotFoundError(`找不到任务 ${parentId}`);
-        if (!parent.branch) throw new UsageError(`任务 ${parent.id} 没有可续跑的分支`);
-        const task = newCliTask({
-          id: newTaskId(),
-          requester: cliRequester(args),
-          repo: parent.repo,
-          prompt: brief,
-          baseRef: parent.branch,
-          context: continuationContext(parent),
-          prUrl: parent.prUrl,
-        });
-        const code = enqueue(io, store, args, task);
-        return code === EXIT.ok && args.flags.get("wait") ? await waitTask(io, store, args, task.id) : code;
-      }
-
-      case "wait": {
-        const id = args.positional[1];
-        if (!id) throw new UsageError("用法：pisa wait <任务号>");
-        return await waitTask(io, store, args, id);
-      }
-
-      case "status": {
-        const daemon = daemonState(store);
-        if (args.flags.get("json")) {
-          const snapshot = statusSnapshot(store);
-          json(io, {
-            daemon,
-            counts: snapshot.counts,
-            total: snapshot.total,
-            running: snapshot.running.map(taskJson),
-            queued: snapshot.queued.map(taskJson),
-            finished: snapshot.finished.map(taskJson),
-            last24h: windowMetrics(store),
-          });
-          return EXIT.ok;
-        }
-        io.out(formatStatusBoard(store));
-        const beat = daemon.ageMs === null ? "无心跳记录" : `最后心跳 ${formatDuration(daemon.ageMs)} 前`;
-        io.out(`守护进程：${daemon.alive ? "运行中" : "未运行"}（${beat}）`);
-        return EXIT.ok;
-      }
-
-      case "list": {
-        const status = flagString(args, "status");
-        if (status && !STATUSES.includes(status as TaskStatus)) {
-          throw new UsageError(`未知状态：${status}；可选 ${STATUSES.join("/")}`);
-        }
-        const limit = flagNumber(args, "limit") ?? 20;
-        const pr = flagNumber(args, "pr");
-        const tasks = pr !== undefined
-          ? store.tasksByPr(pr, flagString(args, "github-repo"), limit)
-          : store.listTasks({ repo: flagString(args, "repo"), status: status as TaskStatus | undefined, limit });
-        if (args.flags.get("json")) {
-          json(io, tasks.map(taskJson));
-          return EXIT.ok;
-        }
-        if (tasks.length === 0) io.out("(无任务)");
-        for (const t of tasks) {
-          const extra = t.prUrl ? ` · ${t.prUrl}` : "";
-          io.out(`${t.id} · ${t.status} · ${t.repo} · ${preview(t.prompt, 60)}${extra}`);
-        }
-        return EXIT.ok;
-      }
-
-      case "show": {
-        const id = args.positional[1];
-        if (!id) throw new UsageError("用法：pisa show <任务号>");
-        const task = store.get(id);
-        if (!task) throw new NotFoundError(`找不到任务 ${id}`);
-        if (args.flags.get("json")) json(io, taskJson(task));
-        else taskHuman(io, task, join(cfg.stateDir, "logs", `${task.id}.log`));
-        return EXIT.ok;
-      }
-
-      case "logs": {
-        const id = args.positional[1];
-        if (!id) throw new UsageError("用法：pisa logs <任务号> [--tail N]");
-        const path = join(cfg.stateDir, "logs", `${id}.log`);
-        if (!existsSync(path)) throw new NotFoundError(`任务 ${id} 还没有日志：${path}`);
-        const count = Math.max(1, Math.floor(flagNumber(args, "tail") ?? 80));
-        const lines = tailLines(readTail(path), Math.max(1, count));
-        io.out(lines.length > 0 ? lines.join("\n") : "(日志为空)");
-        return EXIT.ok;
-      }
-
-      case "cancel": {
-        const id = args.positional[1];
-        if (!id) throw new UsageError("用法：pisa cancel <任务号>");
-        const task = store.get(id);
-        if (!task) throw new NotFoundError(`找不到任务 ${id}`);
-        if (task.status === "running") {
-          store.requestCancel(id);
-          io.out(`已请求取消：${id}（Worker 在下一个检查点退出）`);
-          return EXIT.ok;
-        }
-        if (task.status !== "queued" && task.status !== "paused") {
-          throw new NotRunnableError(`任务已处于 ${task.status}，无法取消`);
-        }
-        if (!store.transition(id, "cancelled", { endedAt: Date.now() })) {
-          throw new NotRunnableError(`任务状态已变化，取消失败：${id}`);
-        }
-        io.out(`已取消：${id}`);
-        return EXIT.ok;
-      }
-
-      case "repos": {
-        const rows = cfg.repos.map((r) => ({
-          alias: r.alias,
-          path: r.path,
-          remote: r.remote ?? null,
-          baseBranch: r.baseBranch ?? null,
-          allowed: cfg.whitelist.repos.length === 0 || cfg.whitelist.repos.includes(r.alias),
-        }));
-        if (args.flags.get("json")) json(io, rows);
-        else if (rows.length === 0) io.out("(配置里没有仓库)");
-        else for (const r of rows) io.out(`${r.alias} · ${r.allowed ? "可用" : "未授权"} · ${r.path}`);
-        return EXIT.ok;
-      }
-
-      default:
-        throw new UsageError(`未知命令：${command}；pisa help 查看用法`);
-    }
-  } finally {
-    store.close();
-  }
+  const tickets = data.tickets;
+  if (tickets.length === 0) io.out("没有匹配的任务。");
+  for (const t of tickets) io.out(`${t.id}  ${t.status.padEnd(9)} ${t.repo.padEnd(12)} ${t.prompt}`);
+  return EXIT.ok;
 }
 
-class NotFoundError extends Error {}
-class NotRunnableError extends Error {}
+async function showCommand(c: Client, flags: Flags, args: string[], io: Io): Promise<number> {
+  const id = args[0];
+  if (!id) throw new CliError(EXIT.fault, "用法：pisa show <任务号>");
+  const data = await call<TicketDetail>(c, "GET", `/tickets/${encodeURIComponent(id)}?logTail=${num(flags, "tail", 200)}`);
+  if (flags.json) {
+    io.out(JSON.stringify(data, null, 2));
+    return EXIT.ok;
+  }
+  printTask(io, data.task);
+  for (const e of data.effects) io.out(`副作用：${e.kind}${e.target ? ` ${e.target}` : ""}`);
+  for (const line of data.logTail) io.out(line);
+  return EXIT.ok;
+}
 
-export async function runCli(argv: string[], io: Partial<Io> = {}): Promise<number> {
-  const merged: Io = { ...defaultIo, ...io };
+/** run 与 continue 共用：提交后用 --wait 等到终态 */
+async function submit(c: Client, flags: Flags, io: Io, payload: Record<string, unknown>): Promise<number> {
+  const data = await call<SubmitResponse>(c, "POST", "/tickets", payload);
+  const task = data.task;
+  if (flags.wait !== true) {
+    if (flags.json) io.out(JSON.stringify(data, null, 2));
+    else io.out(`${data.message}\n任务号：${task.id}`);
+    return EXIT.ok;
+  }
+  const done = await waitFor(c, task.id, flags, io);
+  if (flags.json) io.out(JSON.stringify(done, null, 2));
+  else printTask(io, done);
+  return exitForTask(done);
+}
+
+async function runCommand(c: Client, flags: Flags, args: string[], io: Io): Promise<number> {
+  const prompt = args.join(" ").trim();
+  if (!prompt) throw new CliError(EXIT.fault, "用法：pisa run <需求> [--repo 别名] [--wait] [--json]");
+  const payload: Record<string, unknown> = { prompt };
+  const repo = str(flags, "repo");
+  if (repo) payload.repo = repo;
+  const eventId = str(flags, "event-id");
+  if (eventId) payload.eventId = eventId;
+  return submit(c, flags, io, payload);
+}
+
+async function continueCommand(c: Client, flags: Flags, args: string[], io: Io): Promise<number> {
+  const [parent, ...rest] = args;
+  const prompt = rest.join(" ").trim();
+  if (!parent || !prompt) throw new CliError(EXIT.fault, "用法：pisa continue <任务号> <需求>");
+  const payload: Record<string, unknown> = { prompt, continueFrom: parent };
+  const repo = str(flags, "repo");
+  if (repo) payload.repo = repo;
+  return submit(c, flags, io, payload);
+}
+
+async function waitCommand(c: Client, flags: Flags, args: string[], io: Io): Promise<number> {
+  const id = args[0];
+  if (!id) throw new CliError(EXIT.fault, "用法：pisa wait <任务号> [--timeout 秒]");
+  const done = await waitFor(c, id, flags, io);
+  if (flags.json) io.out(JSON.stringify(done, null, 2));
+  else printTask(io, done);
+  return exitForTask(done);
+}
+
+async function logsCommand(c: Client, flags: Flags, args: string[], io: Io): Promise<number> {
+  const id = args[0];
+  if (!id) throw new CliError(EXIT.fault, "用法：pisa logs <任务号> [--tail 行数]");
+  const data = await call<TicketDetail>(c, "GET", `/tickets/${encodeURIComponent(id)}?logTail=${num(flags, "tail", 200)}`);
+  if (flags.json) io.out(JSON.stringify({ ok: true, taskId: id, logTail: data.logTail }, null, 2));
+  else for (const line of data.logTail) io.out(line);
+  return EXIT.ok;
+}
+
+async function retryCommand(c: Client, flags: Flags, args: string[], io: Io): Promise<number> {
+  const id = args[0];
+  if (!id) throw new CliError(EXIT.fault, "用法：pisa retry <任务号> [--wait]");
+  const data = await call<SubmitResponse>(c, "POST", `/tickets/${encodeURIComponent(id)}/retry`);
+  if (flags.wait !== true) {
+    if (flags.json) io.out(JSON.stringify(data, null, 2));
+    else io.out(`${data.message}\n任务号：${data.taskId}`);
+    return EXIT.ok;
+  }
+  const done = await waitFor(c, data.taskId, flags, io);
+  if (flags.json) io.out(JSON.stringify(done, null, 2));
+  else printTask(io, done);
+  return exitForTask(done);
+}
+
+async function stopCommand(c: Client, flags: Flags, args: string[], io: Io): Promise<number> {
+  const id = args[0];
+  if (!id) throw new CliError(EXIT.fault, "用法：pisa stop <任务号>");
+  const data = await call<ActionResponse>(c, "POST", `/tickets/${encodeURIComponent(id)}/stop`);
+  if (flags.json) io.out(JSON.stringify(data, null, 2));
+  else io.out(data.message || `已请求停止 ${id}`);
+  return EXIT.ok;
+}
+
+async function pauseCommand(c: Client, flags: Flags, io: Io): Promise<number> {
+  const paused = flags.resume !== true;
+  const data = await call<{ executor: ExecutorView }>(c, "POST", "/executor/pause", { paused });
+  if (flags.json) io.out(JSON.stringify(data, null, 2));
+  else io.out(paused ? "已暂停派活：排队任务不再出队，运行中的任务继续。" : "已恢复派活。");
+  return EXIT.ok;
+}
+
+async function mergeCommand(c: Client, flags: Flags, args: string[], io: Io): Promise<number> {
+  const id = args[0];
+  if (!id) throw new CliError(EXIT.fault, "用法：pisa merge <任务号> --confirm [--force]");
+  if (flags.confirm !== true) throw new CliError(EXIT.fault, "合并前要显式确认：加 --confirm");
+  const data = await call<ActionResponse>(c, "POST", `/tickets/${encodeURIComponent(id)}/merge`, {
+    confirm: true,
+    force: flags.force === true,
+  });
+  if (flags.json) io.out(JSON.stringify(data, null, 2));
+  else io.out(data.message || `已合并 ${id}`);
+  // manual：改动要重启守护进程才生效，脚本据此决定是否重启
+  return data.restart === "manual" ? EXIT.restart : EXIT.ok;
+}
+
+async function rewindCommand(c: Client, flags: Flags, args: string[], io: Io): Promise<number> {
+  const id = args[0];
+  if (!id) throw new CliError(EXIT.fault, "用法：pisa rewind <任务号> [--yes]");
+  const apply = flags.yes === true;
+  const data = await call<ActionResponse>(c, "POST", `/tickets/${encodeURIComponent(id)}/rewind`, { confirm: apply });
+  if (flags.json) io.out(JSON.stringify(data, null, 2));
+  else if (apply) io.out(data.message || `已撤销 ${id}`);
+  else io.out(`${data.message}\n（仅预览；加 --yes 执行）`);
+  return EXIT.ok;
+}
+
+const HELP = `pisa —— 任务守护进程的管理客户端
+
+用法：
+  pisa status [--json]                      状态快照
+  pisa run <需求> [--repo 别名] [--wait]    派活
+  pisa continue <任务号> <需求>              接着上一轮改
+  pisa wait <任务号> [--timeout 秒]          等到终态
+  pisa show <任务号> [--tail 行数]           任务详情与日志
+  pisa logs <任务号> [--tail 行数]           只看日志
+  pisa list [--status S] [--repo 别名] [--limit N] [--pr N]
+  pisa retry <任务号> [--wait]               同需求重跑
+  pisa stop <任务号>                         停止任务
+  pisa pause [--resume]                      暂停 / 恢复派活
+  pisa merge <任务号> --confirm [--force]    合并分支
+  pisa rewind <任务号> [--yes]               撤销已合并的分支
+
+通用参数：--json 机器可读输出 · --config 配置文件
+退出码：0 正常 / 1 需重启 / 2 部件错误 / 3 待配置`;
+
+const COMMANDS: Record<string, (c: Client, flags: Flags, args: string[], io: Io) => Promise<number>> = {
+  status: (c, flags, _args, io) => statusCommand(c, flags, io),
+  list: (c, flags, _args, io) => listCommand(c, flags, io),
+  show: showCommand,
+  run: runCommand,
+  continue: continueCommand,
+  wait: waitCommand,
+  logs: logsCommand,
+  retry: retryCommand,
+  stop: stopCommand,
+  pause: (c, flags, _args, io) => pauseCommand(c, flags, io),
+  merge: mergeCommand,
+  rewind: rewindCommand,
+};
+
+export async function runCli(argv: string[], io: Io = { out: console.log, err: console.error }): Promise<number> {
   try {
-    return await dispatch(merged, argv);
+    const { flags, args } = parseArgs(argv);
+    const name = args.shift() ?? "";
+    if (flags.help === true || name === "help" || !name) {
+      io.out(HELP);
+      return EXIT.ok;
+    }
+    const command = COMMANDS[name];
+    if (!command) throw new CliError(EXIT.fault, `未知命令：${name}（pisa help 看命令清单）`);
+    return await command(connect(flags), flags, args, io);
   } catch (err) {
-    if (err instanceof NotFoundError) {
-      merged.err(err.message);
-      return EXIT.notFound;
+    if (err instanceof CliError) {
+      io.err(`错误：${err.message}`);
+      return err.code;
     }
-    if (err instanceof NotRunnableError) {
-      merged.err(err.message);
-      return EXIT.notRunnable;
-    }
-    if (err instanceof UsageError) {
-      merged.err(err.message);
-      return EXIT.usage;
-    }
-    merged.err(err instanceof Error ? err.message : String(err));
-    return EXIT.usage;
+    io.err(`错误：${err instanceof Error ? err.message : String(err)}`);
+    return EXIT.fault;
   }
 }
 
-if (import.meta.main) {
-  process.exit(await runCli(process.argv.slice(2)));
-}
+if (import.meta.main) process.exit(await runCli(process.argv.slice(2)));

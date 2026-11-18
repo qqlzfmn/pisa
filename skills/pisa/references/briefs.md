@@ -54,14 +54,14 @@ brief 是 Worker 唯一的需求来源。它看不到你的会话历史，也不
 
 ```text
 目标：实现 issue #17：CLI 支持 `--dry-run`，只打印将执行的动作，不写库。
-现状：当前 `pisa task` 无条件入队；issue 要求 dry-run 输出任务 JSON 但不创建任务。
+现状：当前 `pisa run` 无条件入队；issue 要求 dry-run 输出任务 JSON 但不创建任务。
 证据：issue #17；src/cli.ts 的 task 分支；tests/cli.test.ts 现有提交用例。
 范围：
 - 只改 src/cli.ts、tests/cli.test.ts、skills/pisa/references/commands.md
 - 不改任务状态机与数据库 schema
 验收：
-- `pisa task "x" --dry-run --json` 输出将创建的任务字段，退出码 0
-- 执行后 `pisa list` 数量不变
+- `pisa run "x" --dry-run --json` 输出将创建的任务字段，退出码 0
+- 执行后 `pisa list --json | jq '.tickets | length'` 不变
 - 新增测试覆盖 dry-run 不入队
 - `bun test` 与 `bunx tsc --noEmit` 通过
 约束：不新增依赖。
@@ -85,4 +85,4 @@ brief 是 Worker 唯一的需求来源。它看不到你的会话历史，也不
 - [ ] 文件路径带行号或符号名
 - [ ] 没有密钥、token、个人隐私
 - [ ] 没有要求 Worker 执行 `git commit` / `push` / 开 PR（交付阶段负责）
-- [ ] 长 brief 用 `pisa task "$(cat brief.txt)"` 或 heredoc 传入，避免 shell 转义问题
+- [ ] 长 brief 用 `pisa run "$(cat brief.txt)"` 或 heredoc 传入，避免 shell 转义问题

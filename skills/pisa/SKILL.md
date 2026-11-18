@@ -34,38 +34,39 @@ command -v pisa || bun run src/cli.ts help
 再按顺序确认：
 
 ```bash
-pisa repos --json                              # 配置了哪些仓库、是否授权
-pisa status --json                             # 守护进程是否在跑
+pisa status --json                             # 守护进程是否在跑、配置了哪些仓库
+pisa list --limit 5 --json                     # 最近的活跃任务，避免重复提交
 ```
 
-`status --json` 里 `daemon.alive` 为 `false` 时，`pisa task` 仍会入队，但 stderr 会警告，任务不会自己开始。此时先让人类启动守护进程（`bun run src/index.ts` 或 launchd），否则不要进入轮询。
+CLI 走本机管理接口：退出码 `3` 说明管理接口没开、token 拿不到或配置缺失，先让人类把守护进程起来（`bun run src/index.ts` 或 launchd）并确认 `web.enabled: true`；退出码 `2` 且 stderr 写着「连不上管理接口」同理。不要在没有接口的情况下反复重试。
 
 ## 标准流程
 
-1. **选仓库**：`pisa repos --json`，用返回的 `alias`。不要猜仓库路径。
+1. **选仓库**：`pisa status --json` 的 `repos` 列出可用别名，用其中的 `alias`。不要猜仓库路径。
 2. **写 brief**：按 [references/briefs.md](references/briefs.md) 的模板，把问题、证据、范围、验收写清楚。brief 是 Worker 唯一的需求来源，缺证据会得到猜测式修复。
 3. **提交**：
 
    ```bash
-   pisa task "<brief>" --repo <别名> --event-id "<幂等键>" --json
+   pisa run "<brief>" --repo <别名> --event-id "<幂等键>" --json
    ```
 
    `--event-id` 用稳定值（如 `ci:<run-id>`、`issue:<n>`），重试不会建重复任务。
 4. **轮询**：优先 `pisa wait <id> --timeout <秒> --json`，让 CLI 阻塞到终态；需要边等边做别的事时用 `pisa status --json` 或 `pisa list --status running --json`。
 5. **验收**：看退出码、`summary`、`branch`、`prUrl`；需要细节时 `pisa logs <id> --tail 150`。
 6. **迭代**：同一分支继续改，用 `pisa continue <父任务号> "<新要求>" --json`，不要新建任务重做。
+7. **重跑**：同一需求再跑一遍用 `pisa retry <任务号> --wait`；它会新建任务，不带旧分支。
 
 ## 轮询策略
 
 不要写 `sleep 5 && pisa show` 的固定循环；`pisa wait` 已经做完了：
 
 ```bash
-pisa wait <id> --timeout 900 --json      # 阻塞到终态，退出码 0/1/4/5
+pisa wait <id> --timeout 900 --json      # 阻塞到终态，退出码 0/2/3
 ```
 
 - 有 CI 时限：`--timeout` 小于 CI 超时，留出收尾时间。
-- 多任务并行：先全部 `task` 拿到 id，再对每个 id `wait`；或定期 `pisa status --json` 看整体。
-- 等待超时（5）：不要重提，先 `pisa show <id> --json`；仍 running 就继续等。
+- 多任务并行：先全部 `run` 拿到 id，再对每个 id `wait`；或定期 `pisa status --json` 看整体。
+- 等待超时（退出码 2，stderr 含「等待超时」）：不要重提，先 `pisa show <id> --json`；仍 running 就继续等。
 - 需要边等边做别的事：单次查 `pisa status --json`，不要高频轮询。
 - 守护进程死亡：`status --json.daemon.alive=false`，任务变不动；交给人恢复，不要重复提交。
 
@@ -73,24 +74,25 @@ pisa wait <id> --timeout 900 --json      # 阻塞到终态，退出码 0/1/4/5
 
 | 码 | 含义 | 你的动作 |
 | --- | --- | --- |
-| 0 | 成功 | 读 `summary` / `prUrl`，做自己的验收 |
-| 1 | 任务失败 | 读 `error` 与日志，判断是 brief 问题还是环境问题 |
-| 2 | 用法或配置错误 | 修参数/配置，不要原样重试 |
-| 3 | 找不到任务 | 检查任务号；不要假设任务存在 |
-| 4 | 任务不可运行 | paused / cancelled / rewound，交给人处理 |
-| 5 | 等待超时 | 任务可能仍在跑；用 `pisa status` 继续观察，不要重复提交 |
+| 0 | 正常 | 读 `summary` / `prUrl`，做自己的验收 |
+| 1 | 需重启 | 改动已合入但当前不是看护模式；把重启交给人或看护进程，不要自己重启 |
+| 2 | 部件错误 | 连不上接口、任务未成功（failed/cancelled/rewound）、`wait` 超时、用法错误、任务号不存在；读 `error` 与日志再决定 |
+| 3 | 待配置 | 管理接口未启用、token 缺失或无效、仓库未授权、缺配置文件；交给人处理 |
 
 ## 常用命令速查
 
 ```bash
-pisa task "<brief>" --repo demo --event-id ci:123 --wait --timeout 1200 --json
+pisa run "<brief>" --repo demo --event-id ci:123 --wait --timeout 1200 --json
 pisa wait <id> --timeout 600 --json
 pisa status --json
 pisa list --repo demo --status succeeded --limit 10 --json
 pisa show <id> --json
 pisa logs <id> --tail 120
-pisa cancel <id>
+pisa retry <id> --wait
+pisa stop <id>
 pisa continue <id> "按评论第 2 点改" --json
+pisa pause            # 发布窗口内暂停派活
+pisa pause --resume
 ```
 
 完整参数与 JSON 字段见 [references/commands.md](references/commands.md)。
@@ -106,5 +108,6 @@ pisa continue <id> "按评论第 2 点改" --json
 - 不要用 `pisa` 执行 `git commit`、`git push` 或开 PR；这些由 pisa 的交付阶段完成。你只在任务完成后验收结果。
 - 不要在 brief 里写"随便修一下""看着办"；写成可验证的验收条件。
 - 不要重复提交同一需求；先 `pisa list --json` 查有没有在跑或已完成的任务。
+- 不要在守护进程外手动暂停/恢复：派活开关用 `pisa pause` / `pisa pause --resume`，不要改库。
 - 不要让多个任务改同一个仓库的同一分支；pisa 每个任务默认独立分支，续跑才共享分支。
 - 等待超时不等于失败；先查状态再决定是否重提。

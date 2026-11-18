@@ -152,23 +152,53 @@ curl -X POST http://127.0.0.1:8799/event \
 
 ## Agent CLI 与 skill
 
-不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 只读写 `pisa.config.json` 与同一个 `pisa.db`，执行仍由守护进程负责。
+不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 是管理接口的客户端：只发 HTTP 请求，不打开数据库，执行仍由守护进程负责。管理接口与 Web 控制台共用一台服务，因此需要 `web.enabled: true`。
 
 ```bash
 bun link                 # 把 pisa 命令链到 PATH；也可直接用 bun run src/cli.ts
-pisa task "修 CI：test 失败日志见 ci.log" --repo demo --json
+pisa run "修 CI：test 失败日志见 ci.log" --repo demo --json
 pisa wait <任务号> --timeout 900 --json
 pisa status --json
 pisa show <任务号>
 pisa logs <任务号> --tail 100
-pisa cancel <任务号>
+pisa retry <任务号> --wait
+pisa stop <任务号>
+pisa pause              # 暂停派活；--resume 恢复
+pisa merge <任务号> --confirm
+pisa rewind <任务号> --yes
 pisa continue <任务号> "按 PR 评论再改"
 ```
 
-- `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省从当前目录向上找 `pisa.config.json`
+- `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省用当前目录的 `pisa.config.json`
 - 相对 `stateDir` 与仓库路径以配置文件目录为基准，从子目录调用也指向同一份状态
-- 退出码：`0` 成功、`1` 任务失败、`2` 用法/配置、`3` 找不到、`4` 不可运行、`5` 等待超时
-- 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
+- token：先读 `${web.tokenEnv}`，再读守护进程启动时写入的 `<stateDir>/mgmt.token`（0600）
+- 退出码：`0` 正常、`1` 需重启（`pisa merge` 在非看护模式下改动要重启才生效）、`2` 部件错误（连不上接口、4xx/5xx、任务未成功、等待超时、用法错误）、`3` 待配置（缺配置文件、管理接口未启用、token 缺失或无效、仓库未授权）
+- `--interval` 以秒为单位；文本输出与 `--json` 同源，JSON 字段见 `docs/specs/020-management-api/spec.md`
+
+### 管理 API
+
+同一台服务上另有一组只给脚本用的 JSON 接口，只监听 `127.0.0.1`：
+
+```bash
+curl -s -H "x-pisa-token: $PISA_WEB_TOKEN" http://127.0.0.1:8787/state
+curl -s -H "x-pisa-token: $PISA_WEB_TOKEN" -X POST \
+  -H 'content-type: application/json' -d '{"prompt":"修 CI"}' http://127.0.0.1:8787/tickets
+```
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/state` | 心跳、执行器（含暂停态）、计数、看板与 24h 指标 |
+| GET | `/tickets` | 任务列表，支持 `repo` / `status` / `limit` / `pr` / `github-repo` |
+| POST | `/tickets` | 派活；`{prompt, repo?, continueFrom?, eventId?}` |
+| GET | `/tickets/:id` | 任务、副作用与日志尾部（`?logTail=N`） |
+| POST | `/tickets/:id/retry` | 终态任务同需求重跑 |
+| POST | `/tickets/:id/stop` | 停止任务 |
+| POST | `/tickets/:id/merge` | 合并，需 `{confirm:true}`，可 `force` |
+| POST | `/tickets/:id/rewind` | 撤销；不带 `confirm` 只预览 |
+| POST | `/executor/pause` | `{paused:true/false}` 暂停或恢复派活 |
+
+- 鉴权只认请求头：`Authorization: Bearer` 或 `x-pisa-token`；`?token=` 与 cookie 一律 401，`Host` 不是回环地址时 403
+- 错误体统一为 `{ok:false, code, error}`，`code` 取 `usage` / `config` / `auth` / `state`；浏览器继续用 `/api/*` 与 cookie
 
 给 agent 的可复用说明在 [`skills/pisa/`](../skills/pisa/)：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
 
@@ -181,12 +211,12 @@ PISA_WEB_TOKEN=<自定义 token> bun run web
 # Web 控制台：http://127.0.0.1:8787/ui?token=<token>
 ```
 
-- 只监听 `127.0.0.1`；`/ui` 与 `/api/*` 都要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、cookie 任一），缺失或错误一律 401
+- 只监听 `127.0.0.1`；`/ui` 与 `/api/*` 都要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、cookie 任一），缺失或错误一律 401；管理接口 `/state`、`/tickets`、`/executor/pause` 只认请求头
 - 用带 token 的 `/ui` 打开后下发 `HttpOnly` cookie，页面随即把地址栏里的 token 抹掉
 - 看板三段：运行中 / 排队 / 最近完成（最多 20 条），可按仓库筛选，5 秒自动刷新
 - 任务详情：prompt、状态、耗时、分支、PR、副作用与最后 200 行日志
 - 支持派活、取消、合并（浏览器二次确认）与复制任务号
-- 没配 `${web.tokenEnv}` 时启动生成一次性 token，只打印到日志，不落盘
+- 没配 `${web.tokenEnv}` 时启动生成一次性 token，打印到日志并写入 `<stateDir>/mgmt.token`（0600）供 CLI 读取
 - 写操作走同一个 `Router`：白名单、状态机、合并前的验证与快进逻辑与 IM 完全一致
 
 ### 健康采集

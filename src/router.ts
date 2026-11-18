@@ -33,8 +33,9 @@ import { formatExamples, formatHelp } from "./usage";
 import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
-import { continuationContext } from "./task-context";
+import { continuationContext, retryContext } from "./task-context";
 import { formatStatusBoard } from "./status";
+import type { ExecutorState, RetryResult } from "./mgmt";
 
 export { formatDuration } from "./status";
 
@@ -65,6 +66,8 @@ export class Router {
   private active = new Map<string, Promise<void>>();
   /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
   private stopping = false;
+  /** 暂停派活：只拦新任务，运行中的任务跑完为止；不写库，重启后恢复为运行 */
+  private paused = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** 上次孤儿任务巡检时间 */
   private lastReconcile = 0;
@@ -133,6 +136,19 @@ export class Router {
       }
       void this.fill();
     }, intervalMs);
+  }
+
+  /** 暂停/恢复派活：只影响出队，运行中的任务不受影响 */
+  pauseExecutor(paused: boolean): void {
+    this.paused = paused;
+  }
+
+  executorState(): ExecutorState {
+    return {
+      paused: this.paused,
+      active: this.active.size,
+      concurrency: Math.max(1, this.deps.cfg.worker.concurrency ?? 1),
+    };
   }
 
   /**
@@ -212,7 +228,7 @@ export class Router {
 
   /** 按并发上限补位；不等待任务完成 */
   private async fill(): Promise<void> {
-    if (this.stopping) return;
+    if (this.stopping || this.paused) return;
     const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
     while (this.active.size < limit) {
       const task = this.deps.store.nextQueued();
@@ -469,7 +485,7 @@ export class Router {
 
     const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
 
-    const denied = this.checkAccess(msg, repo);
+    const denied = this.checkAccess(msg.userId, msg.repo, repo);
     if (denied) {
       const last = this.deniedAt.get(msg.userId) ?? 0;
       if (this.now() - last > 24 * 3600 * 1000) {
@@ -710,10 +726,10 @@ export class Router {
     return { repos, worktrees };
   }
 
-  private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
+  private checkAccess(userId: string, alias: string | undefined, repo: RepoConfig | undefined): string | null {
     const { cfg } = this.deps;
-    if (!cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
-    if (!repo) return `仓库未配置：${msg.repo ?? "(默认)"}`;
+    if (!cfg.whitelist.users.includes(userId)) return "无权限：该用户不在白名单。";
+    if (!repo) return `仓库未配置：${alias ?? "(默认)"}`;
     if (!cfg.whitelist.repos.includes(repo.alias)) return `无权限：仓库 ${repo.alias} 不在白名单。`;
     if (!isGitRepo(repo.path)) return `仓库路径不是 git 仓库：${repo.path}`;
     return null;
@@ -1002,6 +1018,67 @@ export class Router {
     }
     await this.reply(msg.chatId, `恢复执行 · ${id}\n分支 ${task.branch ?? `pisa/${id}`}`, id);
     this.launch({ ...task, status: "running", startedAt });
+  }
+
+  /**
+   * 重新入队：终态任务用同一需求、同一仓库再跑一遍。
+   * 不复用旧分支：失败任务的分支在清理后已不存在，要接着改请用 continue。
+   */
+  async retryTask(taskId: string, requester: string): Promise<RetryResult> {
+    const { cfg, store } = this.deps;
+    const parent = store.get(taskId);
+    if (!parent) return { ok: false, taskId: null, code: "not-found", message: `找不到任务 ${taskId}` };
+    if (parent.status === "queued" || parent.status === "running" || parent.status === "paused") {
+      return {
+        ok: false,
+        taskId: null,
+        code: "state",
+        message: `任务 ${taskId} 还在 ${parent.status}，先停止再重试。`,
+      };
+    }
+    const repo = repoByAlias(cfg, parent.repo);
+    if (!repo) return { ok: false, taskId: null, code: "config", message: `仓库未配置：${parent.repo}` };
+    const denied = this.checkAccess(requester, parent.repo, repo);
+    if (denied) return { ok: false, taskId: null, code: "config", message: denied };
+
+    const id = newTaskId(this.now());
+    const eventId = `retry:${parent.id}:${id}`;
+    const task: Task = {
+      id,
+      source: eventId,
+      channel: "api",
+      chatId: parent.chatId,
+      requester,
+      repo: repo.alias,
+      prompt: parent.prompt,
+      status: "queued",
+      branch: null,
+      prUrl: null,
+      sessionId: null,
+      baseRef: null,
+      context: retryContext(parent),
+      replyPr: null,
+      replyIssue: null,
+      replyRepo: null,
+      summary: null,
+      error: null,
+      createdAt: this.now(),
+      startedAt: null,
+      endedAt: null,
+      cancelRequested: false,
+    };
+    // 线程按新任务独立：重试是一条新时间线，不能与父任务的去重键相撞
+    const trigger = makeTrigger({
+      source: "api",
+      threadKey: `api:${eventId}`,
+      messageKey: eventId,
+      actor: requester,
+      at: task.createdAt,
+      text: task.prompt,
+    });
+    store.claimEvent(eventId, task.id);
+    store.createTaskFromTrigger(trigger, task);
+    return { ok: true, taskId: id, message: `已重新入队 · ${id}` };
   }
 
   /** 取一个排队任务执行；返回是否真的执行了 */

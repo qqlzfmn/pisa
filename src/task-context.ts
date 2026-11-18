@@ -21,3 +21,13 @@ export function continuationContext(parent: Task, comment?: ContinueComment): st
   if (comment) lines.push(`PR：#${comment.number}`, `PR 评论：${comment.text.slice(0, 1000)}`);
   return lines.join("\n");
 }
+
+/**
+ * 重试上下文：同一需求再跑一遍，不复用上一轮的分支与 PR。
+ * 前一轮的失败原因要带给 Worker，否则它会以为是首次执行。
+ */
+export function retryContext(parent: Task): string {
+  const lines = [continuationContext(parent), `本轮是任务 ${parent.id} 的重试，上一轮状态：${parent.status}。`];
+  if (parent.error) lines.push(`上一轮错误：${parent.error.slice(0, 1500)}`);
+  return lines.join("\n");
+}

@@ -1,6 +1,6 @@
 import type { Task, TaskStatus } from "./types";
 import type { Store } from "./store";
-import { STAGE_LABEL, stageText, taskStage, type TaskStage } from "./stage";
+import { STAGE_LABEL, taskStage, type TaskStage } from "./stage";
 import { windowMetrics, type WindowMetrics } from "./metrics";
 
 /** 毫秒 → 人类可读时长：不足 1 分钟给秒，不足 1 小时给 XmYs，其余 XhYm */
@@ -65,53 +65,64 @@ export function taskJson(t: Task, now = Date.now()): TaskJson {
   };
 }
 
-export interface StatusSnapshot {
-  running: Task[];
-  queued: Task[];
-  finished: Task[];
+/** 看板的 JSON 形态：管理接口、CLI 与文本看板共用，字段来自 TaskJson */
+export interface BoardView {
+  running: TaskJson[];
+  queued: TaskJson[];
+  finished: TaskJson[];
   counts: Record<TaskStatus, number>;
   total: number;
 }
 
-/** 看板数据：Router 与 CLI 共用，唯一事实源 */
-export function statusSnapshot(store: Store): StatusSnapshot {
+/**
+ * 看板快照：running 全量返回，queued/finished 由入口给上限；
+ * total 与 counts 始终是全库口径，截断只影响列表长度。
+ */
+export function boardView(
+  store: Store,
+  now = Date.now(),
+  limits: { queued?: number; finished?: number } = {},
+): BoardView {
   const counts = store.countByStatus();
+  const queued = store.queuedTasks();
   return {
-    running: store.runningTasks(),
-    queued: store.queuedTasks(),
-    finished: store.recentFinished(5),
+    running: store.runningTasks().map((t) => taskJson(t, now)),
+    queued: (limits.queued === undefined ? queued : queued.slice(0, limits.queued)).map((t) => taskJson(t, now)),
+    finished: store.recentFinished(limits.finished ?? 5).map((t) => taskJson(t, now)),
     counts,
     total: Object.values(counts).reduce((sum, n) => sum + n, 0),
   };
 }
 
-/** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
-export function formatStatusBoard(store: Store, now = Date.now()): string {
-  const { running, queued, finished, counts, total } = statusSnapshot(store);
-
+/** 文本看板：只依赖 JSON 投影，守护进程与 CLI 输出同一份 */
+export function formatBoard(view: BoardView): string {
   const lines = ["运行中"];
-  if (running.length === 0) lines.push("(无)");
-  for (const t of running) {
-    const elapsed = formatDuration(now - (t.startedAt ?? t.createdAt));
-    lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · 已运行 ${elapsed} · ${preview(t.prompt, 40)}`);
+  if (view.running.length === 0) lines.push("(无)");
+  for (const t of view.running) {
+    lines.push(`${t.id} · ${t.stage}（${t.stageLabel}） · ${t.repo} · 已运行 ${t.duration} · ${preview(t.prompt, 40)}`);
   }
 
-  lines.push("", `排队（${queued.length}）`);
-  if (queued.length === 0) lines.push("(无)");
-  for (const t of queued.slice(0, 5)) lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · ${preview(t.prompt, 40)}`);
+  lines.push("", `排队（${view.counts.queued}）`);
+  if (view.queued.length === 0) lines.push("(无)");
+  for (const t of view.queued.slice(0, 5)) {
+    lines.push(`${t.id} · ${t.stage}（${t.stageLabel}） · ${t.repo} · ${preview(t.prompt, 40)}`);
+  }
 
   lines.push("", "最近完成");
-  if (finished.length === 0) lines.push("(无)");
-  for (const t of finished) {
-    const spent = formatDuration((t.endedAt ?? t.createdAt) - (t.startedAt ?? t.createdAt));
-    const parts = [FINISHED_LABEL[t.status] ?? t.status, stageText(t), spent, t.repo, preview(t.prompt, 30)];
+  if (view.finished.length === 0) lines.push("(无)");
+  for (const t of view.finished) {
+    const parts = [FINISHED_LABEL[t.status] ?? t.status, `${t.stage}（${t.stageLabel}）`, t.duration, t.repo, preview(t.prompt, 30)];
     if (t.prUrl) parts.push(t.prUrl);
     lines.push(parts.join(" · "));
   }
 
-  lines.push("", `汇总：${total} 个任务 · 成功 ${counts.succeeded} · 失败 ${counts.failed} · 暂停 ${counts.paused}`);
-  lines.push(formatWindowMetrics(windowMetrics(store, now)));
+  lines.push("", `汇总：${view.total} 个任务 · 成功 ${view.counts.succeeded} · 失败 ${view.counts.failed} · 暂停 ${view.counts.paused}`);
   return lines.join("\n");
+}
+
+/** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
+export function formatStatusBoard(store: Store, now = Date.now()): string {
+  return `${formatBoard(boardView(store, now))}\n${formatWindowMetrics(windowMetrics(store, now))}`;
 }
 
 /** 24h 指标单行：看板与 CLI 文本输出共用 */

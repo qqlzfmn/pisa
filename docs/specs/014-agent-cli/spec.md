@@ -1,8 +1,8 @@
 # 014 · Agent CLI 与 skill 包
 
-- 状态：implemented
+- 状态：superseded（命令集合与退出码由 [020](../020-management-api/spec.md) 取代；CLI 不再打开 SQLite）
 - 关联：001（任务状态机）、010（状态板）、013（rewind 账本）
-- 依赖：Bun、SQLite（与守护进程共用同一个库）
+- 依赖：Bun
 
 ## 1. 问题
 
