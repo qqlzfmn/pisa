@@ -77,7 +77,10 @@
         "chatId": "<telegram chat id>",
         "userId": "<telegram user id>"
       }
-    ]
+    ],
+    "review": {
+      "enabled": false
+    }
   },
   "scheduler": {
     "chatId": "<telegram chat id>",

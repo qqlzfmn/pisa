@@ -283,6 +283,28 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 
 `gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
 
+### PR 自动评审
+
+在 `github` 下加 `review.enabled` 即可让 pisa 评审开放 PR：
+
+```json
+{
+  "github": {
+    "enabled": true,
+    "repos": [{ "repo": "owner/pisa", "chatId": "<chat id>", "userId": "<user id>" }],
+    "review": { "enabled": true }
+  }
+}
+```
+
+- 开关缺省关闭；关闭时不调用 `gh pr list`，不产生任何评审任务
+- 每轮评论轮询后再列一次开放 PR（`gh pr list --state open --limit 100`），为每个尚未评审过的 PR 建只读任务
+- 去重键是「PR 线程 + head SHA」：同一 PR 的同一提交只评审一次；PR 推送新提交后按新 SHA 再评审一次。命中触发记录时连 diff 都不拉
+- 评审任务在独立工作副本里执行，但结果只回帖、不交付：不改代码、不提交、不推送、不建 PR；Worker 即使改了文件，工作副本与临时分支也会在结束时删除
+- diff 由 pisa 用 `gh pr diff` 拉取后写进提示词（上限 40000 字，超出截断并注明）；拉取失败不建任务，下一轮重试
+- 结论以 `**pisa** 评审结论` 开头回帖到 PR，限 3000 字，并带隐藏标记防重复；普通任务的回帖标题仍是 `**pisa** 任务完成`
+- 开启开关时会评审当前所有开放 PR；`gh pr list` 只取前 100 个
+
 ## 自举
 
 pisa 可以改自己：

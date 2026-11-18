@@ -7,10 +7,11 @@ import type { EffectRow, Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
 import { EffectQueue, type CommentPayload, type PrPayload, type PushPayload } from "./effects";
-import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
+import { changedFiles, createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
 import {
   defaultRunner,
   formatReply,
+  formatReviewReply,
   postComment,
   postIssueComment,
   postReplyOnce,
@@ -475,6 +476,7 @@ export class Router {
       requester: msg.userId,
       repo: repo.alias,
       prompt,
+      kind: msg.kind,
       status: "queued",
       branch,
       prUrl,
@@ -987,7 +989,7 @@ export class Router {
     // 多仓库：任务记住评论所在仓库；旧任务与 IM 触发的回帖退回配置里的单仓库
     const repo = task.replyRepo ?? githubRepos(gh)[0]?.repo;
     if (!gh?.enabled || !repo) return;
-    const body = formatReply(summary);
+    const body = task.kind === "review" ? formatReviewReply(summary) : formatReply(summary);
     if (task.replyPr) await this.postReply(repo, task.replyPr, "pr", task, body, log);
     if (task.replyIssue) await this.postReply(repo, task.replyIssue, "issue", task, body, log);
   }
@@ -1113,6 +1115,23 @@ export class Router {
       this.effects.cancelTask(task.id);
       store.transition(task.id, "failed", { error: result.error ?? "未知错误", endedAt: this.now() });
       await this.reply(task.chatId, `失败 · ${task.id}\n${(result.error ?? "").slice(0, 800)}`, task.id);
+      return;
+    }
+
+    // 评审只读：不交付任何代码，工作副本里的改动随目录删除；结论走回帖
+    if (task.kind === "review") {
+      const changed = changedFiles(workdir).length;
+      this.dropWorktree(repo.path, task, workdir);
+      this.cleanupBranch(repo.path, task, branch);
+      store.transition(task.id, "succeeded", {
+        summary: result.summary,
+        branch: null,
+        prUrl: null,
+        endedAt: this.now(),
+      });
+      log.write("done", `review changed=${changed} delivered=false`);
+      await this.replyToSource(task, result.summary, log);
+      await this.reply(task.chatId, `✅ ${task.id} 评审完成\n\n${result.summary.slice(0, 1200)}`, task.id);
       return;
     }
 

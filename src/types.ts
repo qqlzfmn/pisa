@@ -1,5 +1,8 @@
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
+/** 任务目的：普通交付任务，或只读评审 PR 的任务 */
+export type TaskKind = "task" | "review";
+
 /** 任务对外产生的副作用种类：rewind 的依据 */
 export type EffectKind = "branch" | "push" | "pr" | "comment" | "worktree" | "merge";
 
@@ -31,6 +34,8 @@ export interface IncomingMessage {
   replyToMessageId?: number;
   /** 直接续跑这个任务，跳过命令里的任务号（PR 评论绑定用） */
   continueFrom?: string;
+  /** 任务目的；评审任务只读，不走交付 */
+  kind?: TaskKind;
   /** 任务完成后回帖到该 PR */
   replyPr?: number;
   /** 任务完成后回帖到该 Issue（与 replyPr 互斥） */
@@ -60,6 +65,8 @@ export interface Task {
   requester: string;
   repo: string;
   prompt: string;
+  /** 缺省为普通任务；评审任务只读 */
+  kind?: TaskKind;
   status: TaskStatus;
   branch: string | null;
   prUrl: string | null;

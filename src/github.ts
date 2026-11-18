@@ -61,6 +61,66 @@ export function formatReply(summary: string): string {
   return `**pisa** 任务完成\n\n${summary.trim().slice(0, 3000)}`;
 }
 
+/** 评审回帖正文：与任务完成分开标题，其余截断规则一致 */
+export function formatReviewReply(summary: string): string {
+  return `**pisa** 评审结论\n\n${summary.trim().slice(0, 3000)}`;
+}
+
+export interface OpenPr {
+  number: number;
+  headSha: string;
+  title: string;
+  body: string;
+  url: string;
+}
+
+/** 当前开放的 PR；head SHA 是评审去重键 */
+export function listOpenPrs(runner: Runner, repo: string): GhResult<OpenPr[]> {
+  const res = runner([
+    "gh",
+    "pr",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "open",
+    "--limit",
+    "100",
+    "--json",
+    "number,headRefOid,title,body,url",
+  ]);
+  if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
+  if (!res.out.trim()) return { ok: true, value: [] };
+  try {
+    const raw = JSON.parse(res.out) as unknown;
+    if (!Array.isArray(raw)) return { ok: false, error: "PR 列表不是数组" };
+    const prs: OpenPr[] = [];
+    for (const item of raw) {
+      const row = item as Record<string, unknown>;
+      const number = Number(row["number"]);
+      const headSha = String(row["headRefOid"] ?? "");
+      if (!Number.isSafeInteger(number) || number <= 0 || !headSha) continue;
+      prs.push({
+        number,
+        headSha,
+        title: String(row["title"] ?? ""),
+        body: String(row["body"] ?? ""),
+        url: String(row["url"] ?? ""),
+      });
+    }
+    return { ok: true, value: prs };
+  } catch {
+    return { ok: false, error: `PR 列表解析失败：${res.out.slice(0, 200)}` };
+  }
+}
+
+/** PR 的完整 diff；失败时由调用方下轮重试，不建评审任务 */
+export function pullRequestDiff(runner: Runner, repo: string, n: number): GhResult<string> {
+  const res = runner(["gh", "pr", "diff", String(n), "--repo", repo]);
+  if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
+  return { ok: true, value: res.out };
+}
+
 /** 拉取 since 之后新增或更新的 Issue / PR 评论；逐行解析 `--jq '.[]'` 的输出 */
 export function listComments(runner: Runner, repo: string, sinceIso: string): GhResult<PrComment[]> {
   const since = encodeURIComponent(sinceIso);

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   requester        TEXT NOT NULL,
   repo             TEXT NOT NULL,
   prompt           TEXT NOT NULL,
+  kind             TEXT NOT NULL DEFAULT 'task',
   status           TEXT NOT NULL,
   branch           TEXT,
   pr_url           TEXT,
@@ -152,6 +153,7 @@ interface Row {
   requester: string;
   repo: string;
   prompt: string;
+  kind: string;
   status: TaskStatus;
   branch: string | null;
   pr_url: string | null;
@@ -216,6 +218,7 @@ function toTask(r: Row): Task {
     requester: r.requester,
     repo: r.repo,
     prompt: r.prompt,
+    kind: r.kind === "review" ? "review" : "task",
     status: r.status,
     branch: r.branch,
     prUrl: r.pr_url,
@@ -261,6 +264,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "kind")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'");
     }
     this.backfillTriggers();
   }
@@ -549,8 +555,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, kind, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -559,6 +565,7 @@ export class Store {
         t.requester,
         t.repo,
         t.prompt,
+        t.kind ?? "task",
         t.status,
         t.branch,
         t.prUrl,

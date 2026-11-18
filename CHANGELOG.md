@@ -6,6 +6,7 @@
 
 ### 新增
 
+- PR 自动评审：`github.review.enabled` 打开后，每轮轮询开放 PR，按「PR 线程 + head SHA」去重建只读评审任务；结论以 `**pisa** 评审结论` 回帖，任务不交付代码，工作副本与临时分支结束即删
 - `triggers` 表：任务创建改为按触发身份（`source` + 线程 + 消息 + 版本 + 载荷指纹）落库，触发器与任务同一事务；旧库在 `Store` 构造时按任务自身信息补齐，重放旧事件不会重复建单
 - 编辑与线程归属：同一消息的新版本按 `version` 留痕，任务仍在排队就更新需求正文；同线程不带命令的后续消息并进未结束任务的上下文
 - 入口身份字段：`IncomingMessage` 新增 `threadKey` / `messageKey` / `version` / `actor`；Telegram 处理 `edited_message` 与论坛话题线程，GitHub 评论用 `updated_at` 作版本、评论作者作 actor，webhook 接受 `threadKey` / `version`
