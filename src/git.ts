@@ -134,6 +134,51 @@ export function pushedBranch(workdir: string, branch: string): boolean {
   return sh(["git", "-C", workdir, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`]).code === 0;
 }
 
+/** 本地分支名（refs/heads/*）：对账用来找任务记录之外的分支 */
+export function localBranches(repoPath: string): string[] {
+  const res = sh(["git", "-C", repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+  if (res.code !== 0) return [];
+  return res.out.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+/** 远端跟踪分支名（refs/remotes/<remote>/*，去掉 remote 前缀与 HEAD）：只看本地引用，不联网 */
+export function remoteBranches(repoPath: string, remote = "origin"): string[] {
+  const res = sh(["git", "-C", repoPath, "for-each-ref", "--format=%(refname:short)", `refs/remotes/${remote}`]);
+  if (res.code !== 0) return [];
+  return res.out
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((name) => name.startsWith(`${remote}/`))
+    .filter((name) => !name.endsWith("/HEAD"))
+    .map((name) => name.slice(remote.length + 1));
+}
+
+export interface WorktreeInfo {
+  path: string;
+  /** 工作副本检出的分支；detached HEAD 时为 null */
+  branch: string | null;
+}
+
+/** git 登记的工作副本；porcelain 里每块以 `worktree <path>` 开头，后跟可选的 `branch refs/heads/<name>` */
+export function listWorktrees(repoPath: string): WorktreeInfo[] {
+  const res = sh(["git", "-C", repoPath, "worktree", "list", "--porcelain"]);
+  if (res.code !== 0) return [];
+  const out: WorktreeInfo[] = [];
+  let current: WorktreeInfo | null = null;
+  for (const line of res.out.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      if (current) out.push(current);
+      current = { path: line.slice("worktree ".length).trim().replace(/^"|"$/g, ""), branch: null };
+      continue;
+    }
+    if (current && line.startsWith("branch ")) {
+      current.branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+    }
+  }
+  if (current) out.push(current);
+  return out;
+}
+
 /** 无 PR 能力时给一个可点的对比链接 */
 export function compareUrl(remote: string, base: string, branch: string): string | null {
   if (!remote) return null;

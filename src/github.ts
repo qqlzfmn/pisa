@@ -32,6 +32,41 @@ export function prRepoFromUrl(url: string): string | null {
   return m?.[1] ?? null;
 }
 
+/** git 远端地址 → GitHub 的 owner/repo；非 github.com 返回 null（gh 只对 GitHub 有意义） */
+export function githubRepoSlug(remote: string): string | null {
+  const text = remote.trim();
+  const ssh = text.match(/^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/);
+  const https = text.match(/^https?:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/);
+  return ssh?.[1] ?? https?.[1] ?? null;
+}
+
+/** 仓库里所有打开的 PR；查询失败返回 null，调用方不能据此判断「没有 PR」 */
+export function listOpenPrs(runner: Runner, repo: string): Array<{ number: number; head: string }> | null {
+  const res = runner([
+    "gh",
+    "pr",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "open",
+    "--limit",
+    "200",
+    "--json",
+    "number,headRefName",
+  ]);
+  if (res.code !== 0) return null;
+  try {
+    const rows = JSON.parse(res.out) as Array<Record<string, unknown>>;
+    if (!Array.isArray(rows)) return null;
+    return rows
+      .map((row) => ({ number: Number(row["number"]), head: String(row["headRefName"] ?? "") }))
+      .filter((row) => Number.isSafeInteger(row.number) && row.number > 0);
+  } catch {
+    return null;
+  }
+}
+
 export interface PrState {
   state: string;
   mergeCommit: string | null;

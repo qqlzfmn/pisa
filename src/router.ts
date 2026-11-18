@@ -1,5 +1,5 @@
-import { join, resolve } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
@@ -7,10 +7,12 @@ import type { EffectRow, Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
 import { EffectQueue, type CommentPayload, type PrPayload, type PushPayload } from "./effects";
-import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
+import { createWorktree, currentBranch, deleteBranch, isGitRepo, listWorktrees, localBranches, remoteBranches, remoteUrl, removeWorktree, sh } from "./git";
 import {
   defaultRunner,
   formatReply,
+  githubRepoSlug,
+  listOpenPrs,
   postComment,
   postIssueComment,
   postReplyOnce,
@@ -19,6 +21,14 @@ import {
   type Runner,
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import {
+  applyReconcile,
+  formatReconcile,
+  planReconcile,
+  realPath,
+  type RepoReality,
+  type WorktreeReality,
+} from "./reconcile";
 import { formatExamples, formatHelp } from "./usage";
 import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
@@ -261,6 +271,8 @@ export class Router {
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
       else if (t === "/rewind" || t.startsWith("/rewind ")) cmd = { kind: "rewind", body: t.slice(7).trim() };
+      else if (t === "/reconcile" || t.startsWith("/reconcile "))
+        cmd = { kind: "reconcile", body: t.slice(10).trim() };
       else if (t && !t.startsWith("/")) cmd = { kind: "task", body: t };
       else if (t.startsWith("/")) {
         // 未知斜杠命令：只对可能是命令错拼的单词给提示，其余保持忽略
@@ -367,6 +379,11 @@ export class Router {
 
     if (cmd.kind === "gc") {
       await this.handleGc(msg, cmd.body);
+      return;
+    }
+
+    if (cmd.kind === "reconcile") {
+      await this.handleReconcile(msg, cmd.body);
       return;
     }
 
@@ -610,6 +627,73 @@ export class Router {
     }
     if (!dry && cfg.repos[0]) sh(["git", "-C", cfg.repos[0].path, "worktree", "prune"]);
     return out;
+  }
+
+  /**
+   * `/pisa reconcile [任务号] [--fix]`：任务记录与实际资源逐项比对并列出差异。
+   * 只清理已结束任务的残留和没有任务记录的资源；运行中、成功待合并的一律保留。
+   */
+  private async handleReconcile(msg: IncomingMessage, body: string): Promise<void> {
+    const { cfg, store } = this.deps;
+    const fix = /--fix/.test(body);
+    const scope = body.replace(/--fix/g, "").trim().split(/\s+/).filter(Boolean)[0] ?? null;
+    const worktreeRoot = resolve(cfg.stateDir, "worktrees");
+    const { repos, worktrees } = this.reconcileRealities(worktreeRoot);
+    const tasks = store.allTasks();
+    const findings = planReconcile({ tasks, repos, worktrees, worktreeRoot, scope });
+
+    const outcomes = fix
+      ? applyReconcile(findings, { runner: this.deps.ghRunner ?? defaultRunner, worktreeRoot })
+      : null;
+
+    const report = {
+      scope,
+      scopeRecorded: scope ? tasks.some((t) => t.id === scope) : false,
+      findings,
+      outcomes,
+      tasks: tasks.length,
+      repos: repos.length,
+    };
+    await this.reply(msg.chatId, formatReconcile(report, cfg.trigger));
+  }
+
+  /** 实际状态探测：只读分支、工作副本、PR，不做任何修改 */
+  private reconcileRealities(worktreeRoot: string): { repos: RepoReality[]; worktrees: WorktreeReality[] } {
+    const { cfg } = this.deps;
+    const runner = this.deps.ghRunner ?? defaultRunner;
+    const repos: RepoReality[] = [];
+    const worktrees: WorktreeReality[] = [];
+    const registered = new Set<string>();
+    const root = realPath(worktreeRoot);
+
+    for (const repo of cfg.repos) {
+      const slug = githubRepoSlug(repo.remote ?? remoteUrl(repo.path));
+      for (const w of listWorktrees(repo.path)) {
+        const path = resolve(w.path);
+        if (!realPath(path).startsWith(`${root}${sep}`)) continue;
+        registered.add(realPath(path));
+        worktrees.push({ path, repo: repo.alias, repoPath: repo.path, branch: w.branch });
+      }
+      repos.push({
+        alias: repo.alias,
+        repoPath: repo.path,
+        slug,
+        baseBranch: repo.baseBranch ?? "main",
+        localBranches: localBranches(repo.path),
+        remoteBranches: remoteBranches(repo.path),
+        openPrs: slug ? listOpenPrs(runner, slug) : null,
+      });
+    }
+
+    // 工作副本根目录下 git 没登记的目录：手工删过、prune 过之后留下的空壳
+    if (existsSync(worktreeRoot)) {
+      for (const entry of readdirSync(worktreeRoot, { withFileTypes: true })) {
+        const path = resolve(worktreeRoot, entry.name);
+        if (!entry.isDirectory() || registered.has(realPath(path))) continue;
+        worktrees.push({ path, repo: null, repoPath: null, branch: null });
+      }
+    }
+    return { repos, worktrees };
   }
 
   private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
