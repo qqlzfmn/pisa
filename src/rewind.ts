@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import type { Effect, Task } from "./types";
-import { closePr, prNumberFromIssueUrl, prRepoFromUrl, type Runner } from "./github";
+import { closePr, prNumberFromIssueUrl, prRepoFromUrl, prStatus, type Runner } from "./github";
 import { currentBranch, deleteBranch, removeWorktree, sh } from "./git";
+import type { Store } from "./store";
 
 /** 外部状态探测点：分支/工作副本是否还在，PR 是否已合并；测试注入假实现 */
 export interface RewindProbes {
@@ -45,7 +46,8 @@ export interface RewindPlan {
   notes: string[];
 }
 
-const MERGE_LABEL: Record<MergeState, string> = {
+/** 合并状态的中文标签：CLI 预览、Web 预览与结果共用 */
+export const MERGE_LABEL: Record<MergeState, string> = {
   merged: "已合并（用 revert 提交回退，不改写历史）",
   open: "未合并（PR 仍打开，将关闭）",
   closed: "未合并（PR 已关闭）",
@@ -288,6 +290,47 @@ function revert(a: Extract<RewindAction, { kind: "revert-merge" }>, deps: Rewind
     return { ok: false, error: `提交回退失败：${(commit.err || commit.out).slice(0, 300)}` };
   }
   return { ok: true };
+}
+
+/** 探测点：预览与执行都只读这些状态；CLI 与 Web 共用一份实现 */
+export function rewindProbes(runner: Runner): RewindProbes {
+  return {
+    branchExists: (repoPath, branch) =>
+      sh(["git", "-C", repoPath, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).code === 0,
+    worktreeExists: (path) => existsSync(path),
+    prState: (repo, n) => prStatus(runner, repo, n),
+  };
+}
+
+/**
+ * 逐条执行计划并把结果写回账本：
+ * - 成功的副作用已不存在，从账本删掉；失败的保留以便重试
+ * - 合并状态未知时不动任务状态；全部成功且状态可判定才置 rewound
+ */
+export function executeRewind(
+  plan: RewindPlan,
+  store: Store,
+  deps: RewindDeps,
+): { results: RewindOutcome[]; rewound: boolean } {
+  const results = applyRewind(plan, deps);
+  for (const r of results) {
+    if (r.ok && r.effect) store.removeEffect(deps.taskId, r.effect.kind, r.effect.target);
+  }
+  const rewound = plan.merge !== "unknown" && results.every((r) => r.ok);
+  if (rewound) store.transition(deps.taskId, "rewound");
+  return { results, rewound };
+}
+
+/** 执行结果文本；没有动作时单独提示，避免给空列表配「已撤销」标题 */
+export function formatRewindOutcome(plan: RewindPlan, results: RewindOutcome[]): string {
+  if (results.length > 0) return formatRewindResult(plan, results);
+  const lines = [
+    plan.merge === "unknown" ? `未完成撤销 · ${plan.task.id}` : `已标记撤销 · ${plan.task.id}`,
+    "没有需要执行的撤销动作。",
+  ];
+  if (plan.irreversible.length > 0) lines.push("", "不可撤销", ...plan.irreversible.map((s) => `- ${s}`));
+  if (plan.notes.length > 0) lines.push("", "保留", ...plan.notes.map((s) => `- ${s}`));
+  return lines.join("\n");
 }
 
 export function formatRewindResult(plan: RewindPlan, results: RewindOutcome[]): string {

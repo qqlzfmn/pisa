@@ -727,6 +727,35 @@ export class Store {
     return rows.map(toTask);
   }
 
+  /**
+   * 创建时间落在 [from, to) 的任务按状态聚合，附成功任务的平均耗时。
+   * 指标图按天分桶时每天调一次，SQL 只做分组，时间轴由调用方决定。
+   */
+  dayStats(from: number, to: number): Array<{ status: TaskStatus; n: number; avgDuration: number | null }> {
+    return this.db
+      .query(
+        `SELECT status, COUNT(*) AS n,
+                AVG(CASE WHEN status = 'succeeded' AND started_at IS NOT NULL AND ended_at IS NOT NULL
+                         THEN ended_at - started_at END) AS avgDuration
+           FROM tasks WHERE created_at >= ? AND created_at < ?
+          GROUP BY status`,
+      )
+      .all(from, to) as Array<{ status: TaskStatus; n: number; avgDuration: number | null }>;
+  }
+
+  /** t 时刻还没开始、也没结束的任务数：排队深度（含已认领未开工） */
+  queueDepthAt(t: number): number {
+    const row = this.db
+      .query(
+        `SELECT COUNT(*) AS n FROM tasks
+          WHERE created_at <= ?
+            AND (started_at IS NULL OR started_at > ?)
+            AND (ended_at IS NULL OR ended_at > ?)`,
+      )
+      .get(t, t, t) as { n: number };
+    return row.n;
+  }
+
   /** 各状态任务数；看板汇总行用 */
   countByStatus(): Record<TaskStatus, number> {
     const rows = this.db.query("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").all() as Array<{

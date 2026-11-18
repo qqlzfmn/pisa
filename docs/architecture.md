@@ -65,8 +65,11 @@ core 内部模块关系：
 | `github-watcher.ts` | 轮询 GitHub 评论，把命中触发词的评论转成事件 | 构造时注入 `enqueue` |
 | `scheduler.ts` | cron 到点开单 | 构造时注入 `enqueue` |
 | `proactive.ts` | 群聊关键词与定时探针 | 构造时注入 `enqueue` |
-| `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
+| `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind`、`rewindProbes`、`executeRewind` |
 | `stage.ts` / `status.ts` | 任务阶段规则表与对外投影：阶段、JSON 字段、看板文本 | `taskStage()`、`taskJson()`、`formatStatusBoard()` |
+| `metrics.ts` | 按天聚合任务结果：成功率、平均耗时、队列深度 | `metricsSeries()` |
+| `config-edit.ts` | 配置的可编辑投影、字段校验、原子写回 | `editableConfig()`、`parseEditable()`、`saveEditableConfig()` |
+| `audit.ts` | 写操作审计：追加 JSON 行、脱敏截断、超限裁剪 | `appendAudit()`、`readAudit()` |
 | `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机 | `createWebApp()`、`startWebServer()`、`ReplyBus` |
 | `log.ts` / `config.ts` / `types.ts` | 日志脱敏、配置加载与默认值、共享类型与状态机表 | — |
 

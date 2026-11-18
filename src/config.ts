@@ -96,6 +96,8 @@ export interface Config {
     };
   };
   stateDir: string;
+  /** 实际读到的配置文件绝对路径；文件不存在时缺失。Web 控制台据此把编辑结果写回原文件 */
+  configPath?: string;
 }
 
 /**
@@ -176,6 +178,7 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
   if (process.env.PISA_TRIGGER) cfg.trigger = process.env.PISA_TRIGGER;
   if (process.env.PISA_USERS) cfg.whitelist.users = process.env.PISA_USERS.split(",").map((s) => s.trim()).filter(Boolean);
   if (process.env.PISA_STATE_DIR) cfg.stateDir = resolve(process.env.PISA_STATE_DIR);
+  cfg.configPath = existsSync(abs) ? abs : undefined;
   return cfg;
 }
 

@@ -2,12 +2,17 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Server } from "bun";
-import { DEFAULT_WEB, type Config, type WebConfig } from "./config";
+import { DEFAULT_WEB, loadConfig, repoByAlias, type Config, type WebConfig } from "./config";
 import type { Store } from "./store";
 import type { ChannelAdapter, DeliveryReceipt, IncomingMessage, Task } from "./types";
 import { daemonState, taskJson, type TaskJson } from "./status";
 import { readTail, tailLines } from "./log";
 import { WEB_UI } from "./web-ui";
+import { appendAudit, readAudit } from "./audit";
+import { METRICS_DEFAULT_DAYS, metricsSeries } from "./metrics";
+import { editableConfig, parseEditable, saveEditableConfig, summarizeEditable } from "./config-edit";
+import { MERGE_LABEL, executeRewind, formatRewindOutcome, planRewind, rewindProbes, type RewindPlan } from "./rewind";
+import { defaultRunner, type Runner } from "./github";
 
 /** cookie 名；页面用 `?token=` 打开后由服务端下发，之后每次请求自动带上 */
 export const WEB_COOKIE = "pisa_web";
@@ -15,7 +20,7 @@ export const WEB_COOKIE = "pisa_web";
 const LOG_TAIL_LINES = 200;
 /** 请求体上限：派活正文与确认标志都很小 */
 const MAX_BODY_BYTES = 64 * 1024;
-const TASK_ROUTE = /^\/api\/tasks\/([\w-]+)(?:\/(cancel|merge))?$/;
+const TASK_ROUTE = /^\/api\/tasks\/([\w-]+)(?:\/(cancel|merge|rewind))?$/;
 
 /**
  * Router 的回执总线：本机 Web 的 chatId 由它收集，其它 chatId 原样转发给真实通道。
@@ -58,6 +63,8 @@ export interface WebDeps {
   bus: ReplyBus;
   /** 已解析的访问 token */
   token: string;
+  /** 撤销预览/执行的 gh 执行器；默认走真实命令，测试注入假实现 */
+  ghRunner?: Runner;
   now?: () => number;
 }
 
@@ -218,6 +225,38 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
     return { taskId: task?.id ?? "", ...result, ok: result.ok && Boolean(task) };
   }
 
+  const runner = deps.ghRunner ?? defaultRunner;
+
+  /** 每个写操作落一条审计；detail 由 redact 去掉凭据后再截断 */
+  function audit(action: string, target: string, ok: boolean, detail?: string): void {
+    appendAudit(cfg.stateDir, { actor: web.userId, action, target, ok, detail }, now());
+  }
+
+  /** 写操作统一要求 confirm: true：页面每次操作都先弹确认，服务端再兜一层 */
+  async function requireConfirm(req: Request, what: string): Promise<Record<string, unknown>> {
+    const body = await readJson(req);
+    if (body.confirm !== true) throw new HttpError(400, `${what}需要二次确认（confirm: true）`);
+    return body;
+  }
+
+  /** 撤销预览与执行共用同一份计划：探测只读，状态判定只在执行时做一次 */
+  function rewindPlanFor(id: string): { plan: RewindPlan } | { error: string; status: number } {
+    const task = store.get(id);
+    if (!task) return { error: "找不到任务", status: 404 };
+    if (task.status === "rewound") return { error: `任务 ${id} 已撤销`, status: 409 };
+    if (task.status === "queued" || task.status === "running" || task.status === "paused") {
+      return { error: `任务 ${id} 还没结束（${STATUS_LABEL[task.status]}），先取消`, status: 409 };
+    }
+    const repo = repoByAlias(cfg, task.repo);
+    if (!repo) return { error: `仓库未配置：${task.repo}`, status: 409 };
+    const plan = planRewind(task, store.effectsOf(id), {
+      repoPath: repo.path,
+      baseBranch: repo.baseBranch ?? "main",
+      probes: rewindProbes(runner),
+    });
+    return { plan };
+  }
+
   async function route(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const credential = requestToken(req, url);
@@ -258,24 +297,113 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
         );
       }
       if (req.method === "POST") {
-        const body = await readJson(req);
+        const body = await requireConfirm(req, "派活");
         const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
         if (!prompt) throw new HttpError(400, "任务内容不能为空");
         const repo = typeof body.repo === "string" && body.repo.trim() ? body.repo.trim() : undefined;
         const result = await dispatchTask(repo, prompt);
+        audit("task.dispatch", result.taskId || repo || "(默认仓库)", result.ok, result.ok ? prompt : result.message);
         return json({ ...result, taskId: result.taskId || null }, result.ok ? 200 : 400, setCookie);
       }
       return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET, POST" });
     }
 
+    if (req.method === "GET" && url.pathname === "/api/metrics") {
+      const days = Number(url.searchParams.get("days") ?? METRICS_DEFAULT_DAYS);
+      const series = metricsSeries(store, Number.isFinite(days) && days > 0 ? days : METRICS_DEFAULT_DAYS, now());
+      return json({ ok: true, metrics: series }, 200, setCookie);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/audit") {
+      const limit = Number(url.searchParams.get("limit") ?? 50);
+      return json({ ok: true, entries: readAudit(cfg.stateDir, Number.isFinite(limit) && limit > 0 ? limit : 50) }, 200, setCookie);
+    }
+
+    if (url.pathname === "/api/config") {
+      if (req.method === "GET") {
+        if (!cfg.configPath) throw new HttpError(409, "启动时没读到配置文件，无法从页面编辑");
+        // 页面编辑的是文件本身：重新读盘，保存后立刻能读回新值
+        let current: Config;
+        try {
+          current = loadConfig(cfg.configPath);
+        } catch (err) {
+          throw new HttpError(409, `配置文件无法解析：${err instanceof Error ? err.message : String(err)}`);
+        }
+        return json({ ok: true, path: cfg.configPath, config: editableConfig(current) }, 200, setCookie);
+      }
+      if (req.method !== "PUT") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET, PUT" });
+      const body = await requireConfirm(req, "保存配置");
+      if (!cfg.configPath) throw new HttpError(409, "启动时没读到配置文件，无法从页面保存");
+      const parsed = parseEditable(body.config);
+      if (!parsed.ok) {
+        audit("config.save", cfg.configPath, false, parsed.errors.join("；"));
+        return json({ ok: false, errors: parsed.errors, error: parsed.errors.join("；") }, 400, setCookie);
+      }
+      saveEditableConfig(cfg.configPath, parsed.config);
+      const summary = summarizeEditable(parsed.config);
+      audit("config.save", cfg.configPath, true, summary);
+      // 运行中的进程不重载配置：调度与并发只在重启后按新值工作
+      return json({ ok: true, restartRequired: true, message: "已保存，重启守护进程后生效", config: parsed.config, summary }, 200, setCookie);
+    }
+
     const match = TASK_ROUTE.exec(url.pathname);
     if (match) {
       const [, id, action] = match;
+      const taskId = id as string;
+      if (action === "rewind") {
+        if (req.method === "GET") {
+          const prepared = rewindPlanFor(taskId);
+          if ("error" in prepared) return json({ ok: false, error: prepared.error }, prepared.status, setCookie);
+          const { plan } = prepared;
+          return json(
+            {
+              ok: true,
+              rewind: {
+                merge: plan.merge,
+                mergeLabel: MERGE_LABEL[plan.merge],
+                actions: plan.actions.map((a) => a.label),
+                irreversible: plan.irreversible,
+                notes: plan.notes,
+              },
+            },
+            200,
+            setCookie,
+          );
+        }
+        if (req.method !== "POST") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET, POST" });
+        await requireConfirm(req, "撤销");
+        const prepared = rewindPlanFor(taskId);
+        if ("error" in prepared) {
+          audit("task.rewind", taskId, false, prepared.error);
+          return json({ ok: false, error: prepared.error }, prepared.status, setCookie);
+        }
+        const { plan } = prepared;
+        const exec = executeRewind(plan, store, {
+          taskId,
+          runner,
+          commitName: cfg.delivery.commitName,
+          commitEmail: cfg.delivery.commitEmail,
+        });
+        const message = formatRewindOutcome(plan, exec.results);
+        audit("task.rewind", taskId, exec.rewound, message);
+        return json(
+          {
+            ok: exec.rewound,
+            rewound: exec.rewound,
+            status: store.get(taskId)?.status ?? null,
+            actions: plan.actions.map((a) => a.label),
+            results: exec.results.map((r) => ({ label: r.label, ok: r.ok, error: r.error ?? null })),
+            message,
+          },
+          exec.rewound ? 200 : 409,
+          setCookie,
+        );
+      }
       if (action && req.method !== "POST") return json({ ok: false, error: "方法不支持" }, 405, { allow: "POST" });
       if (!action && req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
 
       if (!action) {
-        const task = store.get(id as string);
+        const task = store.get(taskId);
         if (!task) return json({ ok: false, error: "找不到任务" }, 404, setCookie);
         const at = now();
         return json(
@@ -290,16 +418,14 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
         );
       }
 
-      if (action === "merge") {
-        const body = await readJson(req);
-        if (body.confirm !== true) throw new HttpError(400, "合并需要二次确认（confirm: true）");
-      }
-      const result = await run(webMessage(cfg, web, action as "cancel" | "merge", id as string));
-      const task = store.get(id as string);
+      await requireConfirm(req, action === "merge" ? "合并" : "取消");
+      const result = await run(webMessage(cfg, web, action as "cancel" | "merge", taskId));
+      const task = store.get(taskId);
       const done =
         action === "cancel"
           ? Boolean(task && (task.status === "cancelled" || store.isCancelRequested(task.id)))
-          : store.effectsOf(id as string).some((e) => e.kind === "merge");
+          : store.effectsOf(taskId).some((e) => e.kind === "merge");
+      audit(`task.${action}`, taskId, result.ok && done, result.message);
       return json({ ok: result.ok && done, status: task?.status ?? null, message: result.message }, result.ok && done ? 200 : 409, setCookie);
     }
 

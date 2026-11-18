@@ -15,10 +15,9 @@ import {
   postIssueComment,
   postReplyOnce,
   prNumberFromIssueUrl,
-  prStatus,
   type Runner,
 } from "./github";
-import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import { executeRewind, formatRewindOutcome, formatRewindPlan, planRewind, rewindProbes } from "./rewind";
 import { formatExamples, formatHelp } from "./usage";
 import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
@@ -747,16 +746,6 @@ export class Router {
     }
   }
 
-  /** 探测点：预览与执行都只读这些状态 */
-  private rewindProbes(runner: Runner): RewindProbes {
-    return {
-      branchExists: (repoPath, branch) =>
-        sh(["git", "-C", repoPath, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).code === 0,
-      worktreeExists: (path) => existsSync(path),
-      prState: (repo, n) => prStatus(runner, repo, n),
-    };
-  }
-
   /**
    * `/pisa rewind <任务号> [--yes]`：先给预览，带 --yes 才执行。
    * 已合并的任务用 revert 提交回退；无法确认 PR 状态时不动分支，避免误删已合并成果。
@@ -797,34 +786,20 @@ export class Router {
     const plan = planRewind(task, store.effectsOf(id), {
       repoPath: repo.path,
       baseBranch: repo.baseBranch ?? "main",
-      probes: this.rewindProbes(runner),
+      probes: rewindProbes(runner),
     });
     if (!yes) {
       await this.reply(msg.chatId, formatRewindPlan(plan, cfg.trigger));
       return;
     }
 
-    if (plan.actions.length === 0) {
-      if (plan.merge !== "unknown") store.transition(id, "rewound");
-      const lines = [plan.merge === "unknown" ? `未完成撤销 · ${id}` : `已标记撤销 · ${id}`, "没有需要执行的撤销动作。"];
-      if (plan.irreversible.length > 0) lines.push("", "不可撤销", ...plan.irreversible.map((s) => `- ${s}`));
-      if (plan.notes.length > 0) lines.push("", "保留", ...plan.notes.map((s) => `- ${s}`));
-      await this.reply(msg.chatId, lines.join("\n"));
-      return;
-    }
-
-    const results = applyRewind(plan, {
+    const { results } = executeRewind(plan, store, {
       taskId: id,
       runner,
       commitName: cfg.delivery.commitName,
       commitEmail: cfg.delivery.commitEmail,
     });
-    // 成功的副作用已不存在，从账本删掉；失败的保留以便重试
-    for (const r of results) {
-      if (r.ok && r.effect) store.removeEffect(id, r.effect.kind, r.effect.target);
-    }
-    if (plan.merge !== "unknown" && results.every((r) => r.ok)) store.transition(id, "rewound");
-    await this.reply(msg.chatId, formatRewindResult(plan, results));
+    await this.reply(msg.chatId, formatRewindOutcome(plan, results));
   }
 
   private async handleCancel(msg: IncomingMessage, body: string): Promise<void> {

@@ -43,6 +43,19 @@ export const WEB_UI = `<!doctype html>
   dd { margin: 0; word-break: break-all; }
   #detail { border-color: var(--accent); }
   #toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); box-shadow: 0 4px 16px rgba(0,0,0,.15); font-size: 13px; white-space: pre-wrap; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .charts h3 { font-size: 13px; margin: 0 0 4px; font-weight: 500; }
+  .chart { display: flex; align-items: flex-end; gap: 3px; height: 88px; border-bottom: 1px solid var(--line); }
+  .chart .bar { flex: 1; display: flex; align-items: flex-end; height: 100%; }
+  .chart .bar i { display: block; width: 100%; background: var(--accent); border-radius: 2px 2px 0 0; }
+  .chart .bar.bad i { background: var(--bad); }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 12px; margin: 8px 0; }
+  .form-grid label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+  input { font: inherit; color: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; background: transparent; min-width: 0; }
+  td input[type=text], td input[type=number] { width: 100%; }
+  td input[type=number] { max-width: 90px; }
+  #config-note { white-space: pre-wrap; }
+  #rewind-actions { margin: 4px 0 8px; padding-left: 20px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -77,6 +90,43 @@ export const WEB_UI = `<!doctype html>
   <section>
     <h2>最近完成 <span id="count-finished" class="badge"></span></h2>
     <table><thead><tr><th>任务号</th><th>仓库</th><th>状态</th><th>阶段</th><th>耗时</th><th>内容</th><th>分支</th><th>PR</th></tr></thead><tbody id="rows-finished"></tbody></table>
+  </section>
+
+  <section>
+    <h2>指标 <span id="metrics-note" class="badge"></span></h2>
+    <div class="charts">
+      <div><h3>成功率</h3><div id="chart-success"></div><div class="muted">每根柱一天，红色为当天有失败</div></div>
+      <div><h3>平均耗时（秒）</h3><div id="chart-duration"></div><div class="muted">只算成功且有起止时间的任务</div></div>
+      <div><h3>队列深度</h3><div id="chart-queue"></div><div class="muted">当天结束时仍在排队的任务数</div></div>
+    </div>
+  </section>
+
+  <section id="config">
+    <h2>配置 <span id="config-path" class="badge"></span></h2>
+    <div class="row">
+      <span id="config-note" class="muted">改完保存；调度与并发在重启守护进程后生效</span>
+      <div class="spacer"></div>
+      <button id="config-reload">重新读取</button>
+      <button id="config-save" class="primary">保存配置</button>
+    </div>
+    <h2 style="margin-top:12px">仓库</h2>
+    <table><thead><tr><th>别名</th><th>路径</th><th>基线分支</th><th>远端</th><th></th></tr></thead><tbody id="rows-repos"></tbody></table>
+    <div class="row"><button id="add-repo">添加仓库</button></div>
+    <h2 style="margin-top:12px">Worker</h2>
+    <div class="form-grid">
+      <label>适配器<input id="w-adapter" type="text"></label>
+      <label>命令<input id="w-command" type="text"></label>
+      <label>并发<input id="w-concurrency" type="number" min="1" max="32"></label>
+      <label>单任务超时（秒）<input id="w-timeout" type="number" min="1" max="86400"></label>
+    </div>
+    <h2 style="margin-top:12px">定时任务</h2>
+    <table><thead><tr><th>id</th><th>cron</th><th>内容</th><th>仓库</th><th>启用</th><th></th></tr></thead><tbody id="rows-schedules"></tbody></table>
+    <div class="row"><button id="add-schedule">添加定时任务</button></div>
+  </section>
+
+  <section>
+    <h2>审计 <span id="count-audit" class="badge"></span></h2>
+    <table><thead><tr><th>时间</th><th>操作</th><th>对象</th><th>结果</th><th>详情</th></tr></thead><tbody id="rows-audit"></tbody></table>
   </section>
 
   <section id="detail" hidden></section>
@@ -194,6 +244,267 @@ export const WEB_UI = `<!doctype html>
       document.getElementById('daemon').className = 'bad';
     }
   }
+  function barChart(boxId, days, pick, format, badWhen) {
+    var box = document.getElementById(boxId);
+    box.textContent = '';
+    var max = 0;
+    days.forEach(function (d) { max = Math.max(max, pick(d)); });
+    var chart = el('div', 'chart');
+    days.forEach(function (d) {
+      var v = pick(d);
+      var bar = el('div', 'bar' + (badWhen && badWhen(d) ? ' bad' : ''));
+      var fill = el('i');
+      fill.style.height = (max > 0 && v > 0 ? Math.max(3, Math.round(v / max * 100)) : 0) + '%';
+      bar.appendChild(fill);
+      bar.title = d.date + '：' + format(d, v);
+      chart.appendChild(bar);
+    });
+    box.appendChild(chart);
+  }
+  function renderMetrics(data) {
+    var days = data.metrics || [];
+    var last = days[days.length - 1];
+    document.getElementById('metrics-note').textContent = last
+      ? days.length + ' 天 · 最近一天 ' + last.total + ' 条，成功 ' + last.succeeded + '，失败 ' + last.failed
+      : '还没有数据';
+    barChart('chart-success', days,
+      function (d) { return d.successRate === null ? 0 : Math.round(d.successRate * 100); },
+      function (d, v) { return d.successRate === null ? '无已完成任务' : v + '%（成功 ' + d.succeeded + ' / 失败 ' + d.failed + '）'; },
+      function (d) { return d.failed > 0; });
+    barChart('chart-duration', days,
+      function (d) { return d.avgDurationMs ? Math.round(d.avgDurationMs / 1000) : 0; },
+      function (d) { return d.avgDurationMs === null ? '无成功任务' : Math.round(d.avgDurationMs / 1000) + 's'; });
+    barChart('chart-queue', days,
+      function (d) { return d.queueDepth; },
+      function (d, v) { return v + ' 条'; });
+  }
+  async function loadMetrics() {
+    try {
+      renderMetrics(await api('/api/metrics?days=14'));
+    } catch (err) {
+      document.getElementById('metrics-note').textContent = '指标加载失败：' + err.message;
+    }
+  }
+  function fieldValue(id) {
+    return document.getElementById(id).value.trim();
+  }
+  function inputCell(row, field, value, type) {
+    var td = el('td');
+    var input = el('input');
+    input.type = type || 'text';
+    if (type === 'checkbox') input.checked = !!value;
+    else input.value = value === undefined || value === null ? '' : String(value);
+    input.dataset.field = field;
+    td.appendChild(input);
+    row.appendChild(td);
+    return input;
+  }
+  function deleteCell(row) {
+    var td = el('td');
+    var del = el('button', 'danger', '删除');
+    del.addEventListener('click', function () { row.remove(); });
+    td.appendChild(del);
+    row.appendChild(td);
+  }
+  function repoRow(repo) {
+    var row = el('tr');
+    inputCell(row, 'alias', repo.alias);
+    inputCell(row, 'path', repo.path);
+    inputCell(row, 'baseBranch', repo.baseBranch);
+    inputCell(row, 'remote', repo.remote);
+    deleteCell(row);
+    return row;
+  }
+  function scheduleRow(job) {
+    var row = el('tr');
+    inputCell(row, 'id', job.id);
+    inputCell(row, 'cron', job.cron);
+    inputCell(row, 'prompt', job.prompt);
+    inputCell(row, 'repo', job.repo);
+    inputCell(row, 'enabled', job.enabled !== false, 'checkbox');
+    deleteCell(row);
+    return row;
+  }
+  function fillRepos(repos) {
+    var body = document.getElementById('rows-repos');
+    body.textContent = '';
+    (repos || []).forEach(function (repo) { body.appendChild(repoRow(repo)); });
+    if (!body.children.length) body.appendChild(repoRow({}));
+  }
+  function fillSchedules(jobs) {
+    var body = document.getElementById('rows-schedules');
+    body.textContent = '';
+    (jobs || []).forEach(function (job) { body.appendChild(scheduleRow(job)); });
+  }
+  function fillWorker(worker) {
+    document.getElementById('w-adapter').value = worker.adapter || '';
+    document.getElementById('w-command').value = worker.command || '';
+    document.getElementById('w-concurrency').value = String(worker.concurrency);
+    document.getElementById('w-timeout').value = String(worker.timeoutSec);
+  }
+  async function loadConfig() {
+    var note = document.getElementById('config-note');
+    try {
+      var data = await api('/api/config');
+      state.configPath = data.path;
+      document.getElementById('config-path').textContent = data.path;
+      document.getElementById('config-save').disabled = false;
+      note.textContent = '改完保存；调度与并发在重启守护进程后生效';
+      note.className = 'muted';
+      fillRepos(data.config.repos);
+      fillWorker(data.config.worker);
+      fillSchedules(data.config.schedules);
+    } catch (err) {
+      document.getElementById('config-path').textContent = '不可用';
+      document.getElementById('config-save').disabled = true;
+      note.textContent = err.message;
+      note.className = 'bad';
+    }
+  }
+  function readRows(bodyId) {
+    var out = [];
+    document.querySelectorAll('#' + bodyId + ' tr').forEach(function (tr) {
+      var item = {};
+      var filled = false;
+      tr.querySelectorAll('[data-field]').forEach(function (node) {
+        var name = node.dataset.field;
+        if (node.type === 'checkbox') item[name] = node.checked;
+        else {
+          item[name] = node.value.trim();
+          if (item[name]) filled = true;
+        }
+      });
+      if (filled) out.push(item);
+    });
+    return out;
+  }
+  function configPayload() {
+    return {
+      repos: readRows('rows-repos').map(function (r) {
+        var repo = { alias: r.alias, path: r.path };
+        if (r.baseBranch) repo.baseBranch = r.baseBranch;
+        if (r.remote) repo.remote = r.remote;
+        return repo;
+      }),
+      worker: {
+        adapter: fieldValue('w-adapter'),
+        command: fieldValue('w-command'),
+        concurrency: Number(fieldValue('w-concurrency')),
+        timeoutSec: Number(fieldValue('w-timeout'))
+      },
+      schedules: readRows('rows-schedules').map(function (s) {
+        var job = { id: s.id, cron: s.cron, prompt: s.prompt, enabled: s.enabled };
+        if (s.repo) job.repo = s.repo;
+        return job;
+      })
+    };
+  }
+  async function saveConfig() {
+    var note = document.getElementById('config-note');
+    var payload = configPayload();
+    var repos = payload.repos.map(function (r) { return r.alias || '(未命名)'; }).join('、') || '(空)';
+    var jobs = payload.schedules.map(function (s) { return s.id + (s.enabled ? '' : '(停用)'); }).join('、') || '无';
+    var tips = '写回 ' + state.configPath + '？\\n\\n仓库：' + repos +
+      '\\n并发：' + payload.worker.concurrency + '，超时：' + payload.worker.timeoutSec + 's' +
+      '\\n定时任务：' + jobs + '\\n\\n保存后需重启守护进程生效。';
+    if (!confirm(tips)) return;
+    note.textContent = '保存中…';
+    note.className = 'muted';
+    try {
+      var res = await fetch(withToken('/api/config'), {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ confirm: true, config: payload })
+      });
+      if (res.status === 401) { showAuth(); throw new Error('未授权'); }
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok || data.ok === false) {
+        var errors = data.errors && data.errors.length ? data.errors : [data.error || ('HTTP ' + res.status)];
+        note.textContent = errors.join('\\n');
+        note.className = 'bad';
+        toast('配置未保存', true);
+        return;
+      }
+      note.textContent = (data.message || '已保存') + (data.summary ? '\\n' + data.summary : '');
+      note.className = 'ok';
+      toast('配置已保存，重启后生效');
+      await loadConfig();
+      await loadAudit();
+    } catch (err) {
+      note.textContent = err.message;
+      note.className = 'bad';
+    }
+  }
+  function renderAudit(data) {
+    var body = document.getElementById('rows-audit');
+    body.textContent = '';
+    var entries = data.entries || [];
+    document.getElementById('count-audit').textContent = entries.length + ' 条（最新在前）';
+    if (!entries.length) {
+      var empty = el('tr');
+      var td = el('td', 'muted', '（还没有写操作）');
+      td.colSpan = 5;
+      empty.appendChild(td);
+      body.appendChild(empty);
+      return;
+    }
+    entries.forEach(function (entry) {
+      var row = el('tr');
+      cell(row, el('span', null, timeText(entry.at)), 'num');
+      cell(row, el('span', null, entry.action));
+      cell(row, el('span', null, entry.target));
+      cell(row, el('span', entry.ok ? 'ok' : 'bad', entry.ok ? '成功' : '失败'));
+      var detail = el('div', 'prompt', entry.detail || '-');
+      detail.title = entry.detail || '';
+      cell(row, detail, 'prompt');
+      body.appendChild(row);
+    });
+  }
+  async function loadAudit() {
+    try {
+      renderAudit(await api('/api/audit?limit=20'));
+    } catch (err) {
+      document.getElementById('count-audit').textContent = '审计加载失败：' + err.message;
+    }
+  }
+  function rewindPanel(box, task) {
+    var panel = el('div');
+    var head = el('h2', null, '撤销');
+    var status = el('div', 'muted', '读取预览…');
+    var list = el('ul');
+    list.id = 'rewind-actions';
+    var notes = el('div', 'muted');
+    var run = el('button', 'danger', '执行撤销');
+    run.disabled = true;
+    panel.appendChild(head);
+    panel.appendChild(status);
+    panel.appendChild(list);
+    panel.appendChild(notes);
+    panel.appendChild(run);
+    box.appendChild(panel);
+    api('/api/tasks/' + encodeURIComponent(task.id) + '/rewind').then(function (data) {
+      var plan = data.rewind;
+      status.textContent = '合并状态：' + plan.mergeLabel;
+      if (!plan.actions.length) list.appendChild(el('li', 'muted', '没有会自动撤销的副作用'));
+      plan.actions.forEach(function (label) { list.appendChild(el('li', null, label)); });
+      if (plan.irreversible.length) {
+        notes.className = 'bad';
+        notes.textContent = '不可撤销：' + plan.irreversible.join('；');
+      }
+      if (!plan.actions.length) return;
+      run.disabled = false;
+      run.addEventListener('click', function () {
+        var tips = '撤销 ' + task.id + ' 将执行 ' + plan.actions.length + ' 个动作：\\n\\n' +
+          plan.actions.join('\\n') + '\\n\\n不可撤销：' + (plan.irreversible.join('；') || '无') + '\\n\\n继续？';
+        if (!confirm(tips)) return;
+        writeAction('/api/tasks/' + encodeURIComponent(task.id) + '/rewind', { confirm: true }, '已撤销 ' + task.id);
+      });
+    }).catch(function (err) {
+      status.textContent = '无法撤销：' + err.message;
+      status.className = 'muted bad';
+    });
+  }
   function timeText(value) {
     return value ? new Date(value).toLocaleString() : '-';
   }
@@ -258,7 +569,7 @@ export const WEB_UI = `<!doctype html>
     cancel.disabled = !cancellable;
     cancel.addEventListener('click', function () {
       if (!confirm('取消任务 ' + data.task.id + '？')) return;
-      writeAction('/api/tasks/' + data.task.id + '/cancel', null, '已取消 ' + data.task.id);
+      writeAction('/api/tasks/' + data.task.id + '/cancel', { confirm: true }, '已取消 ' + data.task.id);
     });
     var merge = el('button', 'primary', '合并到主干');
     merge.disabled = data.task.status !== 'succeeded' || !data.task.branch;
@@ -270,6 +581,9 @@ export const WEB_UI = `<!doctype html>
     actions.appendChild(cancel);
     actions.appendChild(merge);
     box.appendChild(actions);
+
+    var finished = data.task.status === 'succeeded' || data.task.status === 'failed' || data.task.status === 'cancelled';
+    if (finished) rewindPanel(box, data.task);
 
     box.appendChild(el('h2', null, 'Prompt'));
     var prompt = el('pre', null, data.task.prompt);
@@ -297,6 +611,8 @@ export const WEB_UI = `<!doctype html>
       state.busy = false;
       document.body.style.cursor = '';
       await loadBoard();
+      await loadMetrics();
+      await loadAudit();
       if (state.detail) await openDetail(state.detail.id);
     }
   }
@@ -311,13 +627,20 @@ export const WEB_UI = `<!doctype html>
     msg.textContent = '提交中…';
     state.busy = true;
     try {
-      var body = { prompt: text };
+      if (!confirm('派活到 ' + (state.repo || '默认仓库') + '？\\n\\n' + text)) {
+        msg.textContent = '已取消';
+        msg.className = 'muted';
+        return;
+      }
+      var body = { prompt: text, confirm: true };
       if (state.repo) body.repo = state.repo;
       var res = await api('/api/tasks', { method: 'POST', body: JSON.stringify(body) });
       area.value = '';
       msg.textContent = '已接单 · ' + (res.taskId || '');
       msg.className = 'ok';
       await loadBoard();
+      await loadMetrics();
+      await loadAudit();
     } catch (err) {
       msg.textContent = err.message;
       msg.className = 'bad';
@@ -326,7 +649,12 @@ export const WEB_UI = `<!doctype html>
       button.disabled = false;
     }
   }
-  document.getElementById('refresh').addEventListener('click', loadBoard);
+  function refreshAll() {
+    loadBoard();
+    loadMetrics();
+    loadAudit();
+  }
+  document.getElementById('refresh').addEventListener('click', refreshAll);
   document.getElementById('repo').addEventListener('change', function (event) {
     state.repo = event.target.value;
     loadBoard();
@@ -338,9 +666,23 @@ export const WEB_UI = `<!doctype html>
       dispatch();
     }
   });
+  document.getElementById('add-repo').addEventListener('click', function () {
+    document.getElementById('rows-repos').appendChild(repoRow({}));
+  });
+  document.getElementById('add-schedule').addEventListener('click', function () {
+    document.getElementById('rows-schedules').appendChild(scheduleRow({ enabled: true }));
+  });
+  document.getElementById('config-reload').addEventListener('click', loadConfig);
+  document.getElementById('config-save').addEventListener('click', saveConfig);
   loadBoard();
+  loadMetrics();
+  loadAudit();
+  loadConfig();
   setInterval(function () {
-    if (!state.busy && !document.hidden) loadBoard();
+    if (!state.busy && !document.hidden) {
+      loadBoard();
+      loadMetrics();
+    }
   }, 5000);
 })();
 </script>
