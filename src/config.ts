@@ -30,6 +30,11 @@ export interface GithubConfig {
   repo?: string;
   intervalSec?: number;
   tokenEnv?: string;
+  /**
+   * 允许在评论里派活的 GitHub login，大小写不敏感。
+   * 为空（或缺失）时评论派活整体禁用：评论来自全网，不能靠聊天白名单兜底。
+   */
+  allowedUsers?: string[];
   /** 单仓库旧写法：任务归属 */
   chatId?: string;
   userId?: string;
@@ -177,6 +182,15 @@ export function githubRepos(gh?: GithubConfig): GithubRepoConfig[] {
   }
   if (gh.repo && gh.chatId && gh.userId) return [{ repo: gh.repo, chatId: gh.chatId, userId: gh.userId }];
   return [];
+}
+
+/**
+ * 评论作者白名单：GitHub login，比较时统一小写。
+ * 空集合表示不信任任何评论作者，调用方据此整体禁用评论派活（fail-closed）。
+ */
+export function githubAllowedUsers(gh?: GithubConfig): Set<string> {
+  const logins = (gh?.allowedUsers ?? []).map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return new Set(logins);
 }
 
 const REPO_ALIAS_PREFIX = /^@([A-Za-z0-9_-]+)\s+([\s\S]+)$/;

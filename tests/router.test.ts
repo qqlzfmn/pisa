@@ -505,6 +505,26 @@ describe("Router", () => {
     }
   });
 
+  test("非 IM 通道不能合并：回执拒绝，主干不动", async () => {
+    const supervised = process.env.PISA_SUPERVISED;
+    delete process.env.PISA_SUPERVISED;
+    try {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 新建 out.txt"));
+      await router.drainOnce();
+      const id = store.recentTasks()[0]!.id;
+      const base = sh(["git", "-C", repo, "rev-parse", "main"]).out;
+
+      await router.handle(msg(`/pisa merge ${id}`, { channel: "github" }));
+
+      expect(channel.sent.some((s) => s.text.includes("只有 IM 通道可以"))).toBe(true);
+      expect(sh(["git", "-C", repo, "rev-parse", "main"]).out).toBe(base);
+      expect(sh(["git", "-C", repo, "cat-file", "-e", "main:out.txt"]).code).not.toBe(0);
+    } finally {
+      if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+    }
+  });
+
   test("回复任务消息自动续跑该任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 第一轮"));

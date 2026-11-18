@@ -18,7 +18,7 @@ import { Store } from "../src/store";
 import { Router } from "../src/router";
 import { GitDeliverer, prBody } from "../src/deliver";
 import { createWorktree, sh, type ExecResult } from "../src/git";
-import type { Config } from "../src/config";
+import type { Config, GithubConfig } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 
@@ -38,8 +38,8 @@ function scripted(...replies: ExecResult[]) {
   return { runner, calls };
 }
 
-function apiReply(comments: Array<{ id: number; body: string; issue_url: string }>): ExecResult {
-  return reply(0, comments.map((c) => JSON.stringify({ ...c, user: { login: "alice" } })).join("\n"));
+function apiReply(comments: Array<{ id: number; body: string; issue_url: string }>, login = "alice"): ExecResult {
+  return reply(0, comments.map((c) => JSON.stringify({ ...c, user: { login } })).join("\n"));
 }
 
 /** 讨论串正文列表那次调用的输出：与 `--jq '.[]'` 一致，一行一个评论对象 */
@@ -53,14 +53,16 @@ function threadBodies(bodies: string[]): ExecResult {
  */
 function ghRouter(
   comments: Array<{ id: number; body: string; issue_url: string }>,
-  opts: { prs?: number[]; commentError?: string; typeError?: string } = {},
+  opts: { prs?: number[]; commentError?: string; typeError?: string; login?: string } = {},
 ) {
   const calls: string[][] = [];
   const prs = new Set(opts.prs ?? []);
   const runner: Runner = (args) => {
     calls.push(args);
     const path = args[2] ?? "";
-    if (path.includes("/issues/comments")) return opts.commentError ? reply(1, "", opts.commentError) : apiReply(comments);
+    if (path.includes("/issues/comments")) {
+      return opts.commentError ? reply(1, "", opts.commentError) : apiReply(comments, opts.login);
+    }
     const m = path.match(/\/issues\/(\d+)$/);
     if (!m) return reply(1, "", `unexpected: ${args.join(" ")}`);
     if (opts.typeError) return reply(1, "", opts.typeError);
@@ -325,7 +327,13 @@ describe("GitHub 评论 → 任务", () => {
     stateDir = mkdtempSync(join(tmpdir(), "pisa-gh-state-"));
     store = new Store(":memory:");
     channel = new FakeChannel();
-    cfg = makeCfg(repo, stateDir, { enabled: true, repo: "o/r", chatId: "c1", userId: "u1" });
+    cfg = makeCfg(repo, stateDir, {
+      enabled: true,
+      repo: "o/r",
+      chatId: "c1",
+      userId: "u1",
+      allowedUsers: ["alice"],
+    });
   });
 
   afterEach(() => {
@@ -682,6 +690,85 @@ describe("GitHub 评论 → 任务", () => {
     expect(store.recentTasks()[0]!.status).toBe("succeeded");
     expect(calls).toEqual([]);
   });
+
+  test("作者不在 allowedUsers：不投递，记一条 warn", async () => {
+    const { runner } = ghRouter(
+      [{ id: 21, body: "/pisa 改 README 并提交", issue_url: "https://api.github.com/repos/o/r/issues/20" }],
+      { login: "mallory" },
+    );
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.map(String).join(" "));
+    try {
+      const { w } = watcher(runner);
+      await w.poll();
+    } finally {
+      console.warn = origWarn;
+    }
+
+    expect(store.recentTasks().length).toBe(0);
+    expect(warns.filter((s) => s.includes("评论作者无权派活")).length).toBe(1);
+    expect(warns.some((s) => s.includes("mallory"))).toBe(true);
+  });
+
+  test("作者在白名单（大小写不敏感）：按配置身份投递，并带上评论作者", async () => {
+    cfg.github = { ...cfg.github!, allowedUsers: ["Alice"] };
+    const seen: IncomingMessage[] = [];
+    const { runner } = ghRouter([
+      { id: 22, body: "/pisa 修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/20" },
+    ]);
+    const w = new GithubWatcher({
+      cfg,
+      store,
+      runner,
+      now: () => 1_700_000_000_000,
+      enqueue: (m) => {
+        seen.push(m);
+      },
+    });
+    await w.poll();
+
+    expect(seen.length).toBe(1);
+    // userId 是配置里的归属身份（回帖路由与所有权用它），评论作者单独带审计字段
+    expect(seen[0]!.userId).toBe("u1");
+    expect(seen[0]!.authorLogin).toBe("alice");
+  });
+
+  test("评论任务的归属仍是配置身份，原作者写进任务日志", async () => {
+    const { runner } = ghRouter([
+      { id: 23, body: "/pisa 修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/20" },
+    ]);
+    const { w } = watcher(runner);
+    await w.poll();
+
+    const task = store.recentTasks()[0]!;
+    expect(task.requester).toBe("u1");
+    const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
+    expect(log).toContain("评论作者：alice");
+  });
+
+  test("allowedUsers 为空：fail-closed，启动告警且不投递", async () => {
+    cfg.github = { ...cfg.github!, allowedUsers: [] };
+    const { runner, calls } = ghRouter([
+      { id: 24, body: "/pisa 修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/20" },
+    ]);
+    const { w } = watcher(runner);
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args.map(String).join(" "));
+    try {
+      w.start();
+      await w.poll();
+    } finally {
+      console.warn = origWarn;
+      w.stop();
+    }
+
+    expect(warns.some((s) => s.includes("评论来源未配置 allowedUsers，评论派活已禁用"))).toBe(true);
+    expect(store.recentTasks().length).toBe(0);
+    // 未装定时器、也没走任何 gh 调用
+    expect(calls.length).toBe(0);
+  });
 });
 
 describe("GitHub 多仓库轮询", () => {
@@ -736,8 +823,8 @@ describe("GitHub 多仓库轮询", () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  function setup(gh: Config["github"], runner: Runner, clock: () => number) {
-    const cfg = makeCfg(repo, stateDir, gh);
+  function setup(gh: GithubConfig, runner: Runner, clock: () => number) {
+    const cfg = makeCfg(repo, stateDir, { ...gh, allowedUsers: gh.allowedUsers ?? ["alice"] });
     cfg.whitelist.users = ["u1", "ua", "ub"];
     const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
     const w = new GithubWatcher({ cfg, store, runner, now: clock, enqueue: (m: IncomingMessage) => router.handle(m) });

@@ -1,4 +1,4 @@
-import { githubRepos, type Config } from "./config";
+import { githubAllowedUsers, githubRepos, type Config } from "./config";
 import type { Store } from "./store";
 import type { IncomingMessage } from "./types";
 import { defaultRunner, isPullRequest, listComments, prNumberFromIssueUrl, type Runner } from "./github";
@@ -19,6 +19,9 @@ export interface GithubWatcherDeps {
  * 去重靠投递时的稳定 eventId（`github:comment:<repo>:<id>`），由 Router 的 claimEvent 落库。
  * 每个仓库各自维护增量下界，一个仓库失败不影响其它仓库。
  * 编号是 PR 时接续该 PR 的任务并回帖到 PR；是普通 Issue 时从主干开新分支、回帖到 Issue。
+ *
+ * 评论来自全网：派活只认 `github.allowedUsers` 里的作者；列表为空时整体禁用（fail-closed），
+ * 不建任何评论任务。
  */
 export class GithubWatcher {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -27,10 +30,13 @@ export class GithubWatcher {
   private readonly since = new Map<string, string>();
   private readonly now: () => number;
   private readonly runner: Runner;
+  /** 允许派活的评论作者，小写 login；空集合表示禁用评论派活 */
+  private readonly allowed: Set<string>;
 
   constructor(private deps: GithubWatcherDeps) {
     this.now = deps.now ?? Date.now;
     this.runner = deps.runner ?? defaultRunner;
+    this.allowed = githubAllowedUsers(deps.cfg.github);
     // 启动时刻即下界：不回放历史评论
     const startedAt = new Date(this.now()).toISOString();
     for (const target of githubRepos(deps.cfg.github)) this.since.set(target.repo, startedAt);
@@ -39,8 +45,14 @@ export class GithubWatcher {
   start(): void {
     const gh = this.deps.cfg.github;
     if (!gh?.enabled || this.timer) return;
+    if (this.allowed.size === 0) {
+      console.warn("[pisa] 评论来源未配置 allowedUsers，评论派活已禁用");
+      return;
+    }
     const every = Math.max(10, gh.intervalSec ?? 120) * 1000;
     this.timer = setInterval(() => void this.poll(), every);
+    const watched = githubRepos(gh).map((r) => r.repo);
+    console.log(`[pisa] GitHub 评论轮询已启用 · ${watched.join(", ") || "(无仓库)"}`);
   }
 
   stop(): void {
@@ -51,6 +63,8 @@ export class GithubWatcher {
   async poll(): Promise<void> {
     const gh = this.deps.cfg.github;
     if (!gh?.enabled || this.polling) return;
+    // 未配置作者白名单：不静默照旧，也不投递任何评论任务
+    if (this.allowed.size === 0) return;
     this.polling = true;
     const startedAt = new Date(this.now()).toISOString();
     try {
@@ -83,6 +97,12 @@ export class GithubWatcher {
       if (!text.startsWith(prefix)) continue;
       const n = prNumberFromIssueUrl(comment.issueUrl);
       if (!n) continue;
+      // 公共仓库任何能评论的人都能触发这条链路：作者不在白名单就丢弃，不建任务
+      const author = comment.userLogin.trim();
+      if (!this.allowed.has(author.toLowerCase())) {
+        console.warn(`[pisa] GitHub 评论作者无权派活 · ${repo} #${n} · ${author || "(未知)"}`);
+        continue;
+      }
       const isPr = isPullRequest(this.runner, repo, n);
       if (!isPr.ok) {
         console.warn(`[pisa] GitHub 评论类型判定失败 · ${repo} #${n}：${isPr.error.slice(0, 300)}`);
@@ -96,6 +116,7 @@ export class GithubWatcher {
         userId,
         text,
         replyRepo: repo,
+        authorLogin: comment.userLogin,
       };
       if (isPr.value) {
         await this.deps.enqueue({ ...base, continueFrom: this.deps.store.taskByPr(n, repo)?.id, replyPr: n });

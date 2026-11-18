@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, githubRepos, loadConfig } from "./config";
+import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, loadConfig } from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker, workerEnv } from "./worker";
@@ -79,10 +79,6 @@ async function main(): Promise<void> {
   githubWatcher.start();
   scheduler.start();
   retention.start();
-  if (gh?.enabled) {
-    const watched = githubRepos(gh).map((r) => r.repo);
-    console.log(`[pisa] GitHub 评论轮询已启用 · ${watched.join(", ") || "(无仓库)"}`);
-  }
 
   // 事件入口：CI / 监控 / 脚本可以把任务推进来
   if (cfg.webhook?.enabled) {

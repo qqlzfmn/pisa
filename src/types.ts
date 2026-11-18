@@ -32,6 +32,11 @@ export interface IncomingMessage {
   replyIssue?: number;
   /** 回帖目标仓库（owner/repo）；缺省时用 github 配置的单仓库 */
   replyRepo?: string;
+  /**
+   * 原评论作者（GitHub login），只用于审计留痕。
+   * 鉴权在投递前完成，userId 仍是配置里的归属身份（回执与回帖路由都用它）。
+   */
+  authorLogin?: string;
   receivedAt?: number;
 }
 

@@ -41,6 +41,20 @@ export interface RouterDeps {
 /** 单英文词任务的待确认正文，10 分钟过期 */
 const PENDING_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * 非 IM 入口：这些通道一端的发送方不是可核对的人，只能用来派活（task / continue）。
+ * 评论作者已经过 allowedUsers 过滤，但改撤已有任务仍只开放给 IM。
+ */
+const NON_IM_CHANNELS = new Set<string>(["github", "webhook", "proactive", "cron"]);
+
+/** 非 IM 入口禁止的命令与回执用词；其余（派活与只读查询）不受限 */
+const IM_ONLY_ACTIONS: Readonly<Record<string, string>> = {
+  merge: "合并",
+  cancel: "取消",
+  resume: "恢复",
+  rewind: "撤销",
+};
+
 interface PendingTask {
   prompt: string;
   repo?: string;
@@ -182,6 +196,15 @@ export class Router {
       }
     }
     if (!cmd) return;
+
+    // 非 IM 入口只用来派活：改撤已有任务一律拒绝，避免公开仓库的评论指挥本机
+    if (NON_IM_CHANNELS.has(msg.channel)) {
+      const action = IM_ONLY_ACTIONS[cmd.kind];
+      if (action) {
+        await this.reply(msg.chatId, `只有 IM 通道可以${action}任务。`);
+        return;
+      }
+    }
 
     // 除确认以外的下一条命令视为放弃待确认；避免旧单词被迟到的 confirm 建单
     if (cmd.kind !== "confirm") this.pending.delete(this.pendingKey(msg));
@@ -360,6 +383,8 @@ export class Router {
       cancelRequested: false,
     };
     store.insertTask(task);
+    // 评论任务的身份仍是配置里的 userId（回执与回帖路由都用它），原评论作者单独留痕
+    if (msg.authorLogin) new TaskLogger(cfg.stateDir, task.id).write("github", `评论作者：${msg.authorLogin}`);
     await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库：${repo.alias}\n排队中。`);
   }
 

@@ -304,6 +304,7 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
     "enabled": true,
     "intervalSec": 120,
     "tokenEnv": "GH_TOKEN",
+    "allowedUsers": ["alice", "bob"],
     "repos": [
       { "repo": "owner/pisa", "chatId": "<telegram chat id>", "userId": "<telegram user id>" },
       { "repo": "owner/site", "chatId": "<telegram chat id>", "userId": "<telegram user id>" }
@@ -313,6 +314,9 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 ```
 
 - `repos` 里的每个仓库独立轮询、独立增量下界；`intervalSec` 与 `tokenEnv` 仍是全局配置
+- `allowedUsers` 是评论派活的唯一鉴权：只有列表里的 GitHub login（大小写不敏感）能触发任务，其余评论不投递，只记一条 warn。列表为空时 fail-closed：启动日志打印「评论来源未配置 allowedUsers，评论派活已禁用」，不轮询、不建任何评论任务
+- 评论作者只用于鉴权与审计：任务的 `userId` 仍是仓库条目的配置值（回执与回帖路由用它），原评论作者写进任务日志（`.pisa/logs/<任务号>.log`）
+- 非 IM 入口（GitHub 评论、webhook、主动发现、定时任务）只能派活与续跑；`merge` / `cancel` / `resume` / `rewind` 只接受 IM 通道，回执为「只有 IM 通道可以…」，不改任何分支
 - 旧的单仓库写法 `repo` + `chatId` + `userId` 继续可用；`repos` 非空时优先，旧字段被忽略
 - 某个仓库拉取或类型判定失败只影响它自己：本轮不推进它的下界，其它仓库照常
 - 轮询仓库的 Issue 评论（PR 评论走同一个 API），默认 120 秒一轮
@@ -327,7 +331,7 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 - 任务成功后把摘要（限 3000 字）回帖到评论所在的仓库；旧任务或没有仓库记录时回退到配置里的单仓库；回帖失败只写日志，任务状态不变
 - GitHub 评论产生的任务仍落在本地默认仓库：配置里没有 GitHub 仓库到本地别名的映射
 
-`gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
+`gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者参与鉴权（`allowedUsers`），但不决定任务归属：归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
 
 ## 自举
 
