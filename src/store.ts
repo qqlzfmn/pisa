@@ -4,10 +4,12 @@ import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
-import { canTransition } from "./types";
+import { ACTIVE_STATUSES, canTransition } from "./types";
 
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
 const FINISHED_IN = "('succeeded','failed','cancelled','rewound')";
+/** 未结束状态集合：activeTaskByPr 与续跑守卫共用 */
+const ACTIVE_IN = `(${ACTIVE_STATUSES.map((s) => `'${s}'`).join(",")})`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
@@ -604,6 +606,17 @@ export class Store {
             (!repo || t.prUrl.includes(`github.com/${repo}/pull/${pr}`)),
         ) ?? null
     );
+  }
+
+  /**
+   * 该 PR 下仍在进行（queued/running/paused）的最近一条任务；
+   * 与 taskByPr 并列：有进行中任务时，新评论不能另开工作线。
+   */
+  activeTaskByPr(pr: number, repo?: string): Task | null {
+    const rows = this.db
+      .query(`SELECT * FROM tasks WHERE reply_pr = ? AND status IN ${ACTIVE_IN} ORDER BY created_at DESC`)
+      .all(pr) as Row[];
+    return rows.map(toTask).find((t) => !repo || t.replyRepo === repo) ?? null;
   }
 
   nextQueued(): Task | null {

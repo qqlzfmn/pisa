@@ -2,7 +2,7 @@ import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
-import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
+import { isActiveStatus, type ChannelAdapter, type IncomingMessage, type Task, type WorkerResult } from "./types";
 import type { EffectRow, Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
@@ -409,6 +409,18 @@ export class Router {
       // IM 续跑只允许原请求者；PR 评论以配置身份投递，评论作者与 IM 用户无从对应
       if (!msg.admin && cmd.kind === "continue" && parent.requester !== msg.userId) {
         await this.reply(msg.chatId, "只有原请求者可以续跑。");
+        return;
+      }
+      // 父任务未结束：它的分支还占着，再建一条就是同一处改两遍
+      if (isActiveStatus(parent.status)) {
+        // 占位成功才回执：同一 eventId 重投时静默
+        if (!store.claimEvent(msg.eventId, parent.id)) return;
+        await this.reply(
+          msg.chatId,
+          msg.replyPr
+            ? `PR #${msg.replyPr} 的任务 ${parent.id} 正在进行（${parent.status}），结束后再发评论。`
+            : `任务 ${parent.id} 正在进行（${parent.status}），结束后再续跑。`,
+        );
         return;
       }
       if (!parent.branch) {

@@ -211,7 +211,7 @@ describe("Trigger 身份与线程归属", () => {
 
   test("回复任务消息续跑，子任务触发器线程为 task:<父任务号>", async () => {
     store.linkMessage("c1", "77", "t_parent");
-    seedTask({ id: "t_parent", branch: "pisa/parent" });
+    seedTask({ id: "t_parent", branch: "pisa/parent", status: "succeeded" });
 
     await router().handle(msg("再补一处", { eventId: "evt-2", replyToMessageId: 77 }));
 

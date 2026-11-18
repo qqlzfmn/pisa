@@ -126,3 +126,10 @@ export const ALLOWED: Record<TaskStatus, TaskStatus[]> = {
 export function canTransition(from: TaskStatus, to: TaskStatus): boolean {
   return ALLOWED[from].includes(to);
 }
+
+/** 未结束的状态：分支还被占用，不能作为续跑父任务 */
+export const ACTIVE_STATUSES = ["queued", "running", "paused"] as const;
+
+export function isActiveStatus(status: TaskStatus): boolean {
+  return (ACTIVE_STATUSES as readonly TaskStatus[]).includes(status);
+}

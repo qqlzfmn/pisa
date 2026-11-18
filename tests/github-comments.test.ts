@@ -473,6 +473,39 @@ describe("GitHub 评论 → 任务", () => {
     expect(child.replyPr).toBe(12);
   });
 
+  test("PR 上的父任务还在进行时不裂出第二条工作线，重复投递只回一条", async () => {
+    store.insertTask({ ...baseTask, id: "t_running", prompt: "第一轮", replyPr: 12, replyRepo: "o/r" });
+    expect(store.claimQueued("t_running", Date.now(), "pisa/t_running")).toBe(true);
+
+    const { runner } = ghRouter(
+      [{ id: 21, body: "/pisa 再改一处", issue_url: "https://api.github.com/repos/o/r/issues/12" }],
+      { prs: [12] },
+    );
+    const { w } = watcher(runner);
+    await w.poll();
+    // 同一条评论被下一轮再次返回：eventId 已被占位，静默
+    await w.poll();
+
+    expect(store.countByStatus().queued).toBe(0);
+    expect(store.recentTasks().map((t) => t.id)).toEqual(["t_running"]);
+    expect(channel.sent.length).toBe(1);
+    expect(channel.sent[0]!.text).toBe("PR #12 的任务 t_running 正在进行（running），结束后再发评论。");
+  });
+
+  test("父任务还在排队时同样挡下第二条工作线", async () => {
+    store.insertTask({ ...baseTask, id: "t_queued", prompt: "第一轮", replyPr: 12, replyRepo: "o/r" });
+
+    const { runner } = ghRouter(
+      [{ id: 22, body: "/pisa 再改一处", issue_url: "https://api.github.com/repos/o/r/issues/12" }],
+      { prs: [12] },
+    );
+    const { w } = watcher(runner);
+    await w.poll();
+
+    expect(store.recentTasks().map((t) => t.id)).toEqual(["t_queued"]);
+    expect(channel.sent[0]!.text).toContain("正在进行（queued）");
+  });
+
   test("评论续跑在原分支上提交，不新建分支也不新建 PR", async () => {
     expect(sh(["git", "-C", repo, "branch", "pisa/t_parent", "main"]).code).toBe(0);
     store.insertTask({ ...baseTask, id: "t_parent", prompt: "第一轮" });
@@ -939,6 +972,22 @@ describe("GitHub 多仓库轮询", () => {
     expect(store.taskByPr(7, "o/c")).toBeNull();
     // 不带仓库保持旧行为：任意仓库该编号的最新成功任务
     expect(store.taskByPr(7)!.id).toBe("t_b");
+  });
+
+  test("activeTaskByPr 只认进行中任务，并按仓库区分", () => {
+    const seed = (id: string, status: Task["status"], repo: string, createdAt: number) =>
+      store.insertTask({ ...baseTask, id, prompt: id, status, replyPr: 7, replyRepo: repo, createdAt });
+    seed("t_a", "queued", "o/a", 1);
+    seed("t_b", "running", "o/b", 2);
+    seed("t_done", "succeeded", "o/c", 3);
+
+    expect(store.activeTaskByPr(7, "o/a")!.id).toBe("t_a");
+    expect(store.activeTaskByPr(7, "o/b")!.id).toBe("t_b");
+    // 已结束的任务不算进行中
+    expect(store.activeTaskByPr(7, "o/c")).toBeNull();
+    // 不带仓库：取最新一条进行中
+    expect(store.activeTaskByPr(7)!.id).toBe("t_b");
+    expect(store.activeTaskByPr(8)).toBeNull();
   });
 
   test("回帖使用任务记录的仓库", async () => {

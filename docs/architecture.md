@@ -55,7 +55,7 @@ core 内部模块关系：
 | 模块 | 职责 | 主要对外接口 |
 | --- | --- | --- |
 | `router.ts` | 全局唯一编排者：事件入口、命令、状态跃迁、进度转发、回帖 | `handle()`、`start()/stop()`、`recoverInterrupted()` |
-| `store.ts` | SQLite 持久化：任务、消息映射、事件去重、副作用账本、外部动作队列 | `insertTask`、`claimQueued`、`transition`、`taskByPr`、`effectsOf`、`enqueueEffect`、`dueEffects` |
+| `store.ts` | SQLite 持久化：任务、消息映射、事件去重、副作用账本、外部动作队列 | `insertTask`、`claimQueued`、`transition`、`taskByPr`、`activeTaskByPr`、`effectsOf`、`enqueueEffect`、`dueEffects` |
 | `worker.ts` | 拉起 agent 进程、解析输出、超时与取消 | `class Worker implements WorkerRunner` |
 | `adapters/` | 把 pisa 的任务翻译成某个 agent 的命令行与输出格式 | `getAdapter(name)` |
 | `deliver.ts` | 提交 → 推送 → 开 PR；推送与建 PR 交给 outbox 执行 | `GitDeliverer.deliver()`、`effectHandlers()` |
@@ -144,7 +144,7 @@ cancelled ─┘
    - IM：`channel.start(onMessage)` 回调里先喂 `Proactive.observe`，再 `router.handle`（`src/index.ts`）。
    - webhook：`Bun.serve` 只接 127.0.0.1 的 `POST /event`，校验 `x-pisa-token`，body `{prompt, repo?, eventId?, threadKey?, version?}`，缺省 `eventId` 为 `webhook:<ts>:<rand>`（`src/index.ts`）；带上 `threadKey`（业务单号）就能和别的入口命中同一个任务。
    - Web 控制台：`Bun.serve` 只接 127.0.0.1 的 `/ui` 与 `/api/*`，token 鉴权通过后把派活/取消/合并拼成 `IncomingMessage`（`admin: true`）交给 `router.handle`，回执经 `ReplyBus` 收集后回给页面（`src/web.ts`）。`admin` 让 Router 跳过单英文词误触防护与原请求者校验——浏览器里的操作由 token 直接认证，没有可回 `confirm` 的聊天。
-   - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由触发身份去重，编辑按 `updated_at` 区分）。
+   - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `activeTaskByPr`、`taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由触发身份去重，编辑按 `updated_at` 区分）。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 线程解析（`threadKeyOf`：入口声明 > 被回复任务 > 本条消息）→ 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
 3. **去重与鉴权**（`src/trigger.ts` 与 `checkAccess`，`src/router.ts`）。先 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库，再校验仓库与需求：被拦下的消息不写触发器，改完配置重发同一条即可。通过后 `makeTrigger` 算出触发身份，`store.triggerByMessage(threadKey, messageKey)` 命中同一条消息时，同版本同载荷即重复投递直接丢弃，版本不同即编辑（见 4.2）。
@@ -171,7 +171,7 @@ cancelled ─┘
 | `.pisa/worktrees/<taskId>` | 工作副本 | 成功、失败、运行中取消后删除；`paused`、重启时按取消请求置 `cancelled` 的任务及其后续取消保留 |
 | git 分支 `pisa/<taskId>` | 改动 | 交付前失败/取消时删；成功后保留 |
 
-四类变体：`continue`（IM 续跑原任务，分支与上下文来自父任务）、PR 评论（`taskByPr` 找到父任务，复用同一分支与 PR）、`resume`（`paused` 且工作副本在，同一 worktree + agent `-r` 会话续跑）、`rewind`（终态任务先出计划，`--yes` 再执行，成功项删账本行，失败项留着重试）。
+四类变体：`continue`（IM 续跑原任务，分支与上下文来自父任务）、PR 评论（`activeTaskByPr` / `taskByPr` 找到父任务，复用同一分支与 PR）、`resume`（`paused` 且工作副本在，同一 worktree + agent `-r` 会话续跑）、`rewind`（终态任务先出计划，`--yes` 再执行，成功项删账本行，失败项留着重试）。
 
 ## 4. 扩展点
 
