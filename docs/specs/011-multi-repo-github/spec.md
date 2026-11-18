@@ -39,7 +39,7 @@
 | --- | --- |
 | FR-001 | `github` 新增可选 `repos: Array<{ repo: string; chatId: string; userId: string }>`；旧的 `repo` / `chatId` / `userId` 仍可单独使用 |
 | FR-002 | 仓库清单归一化：`repos` 非空时优先使用；否则由 `repo` + `chatId` + `userId` 组成单元素数组。两者都没有时不监听任何仓库 |
-| FR-003 | `since` 改为按仓库维护（`Map<repo, ISO 时间>`）；每个仓库以启动时刻为自己的初始下界 |
+| FR-003 | `since` 按仓库维护并落库（`meta` 表 `github:since:<repo>`，值为 ISO 时间）；每个仓库缺失记录时以启动时刻初始化并落库，重启后从落库值继续 |
 | FR-004 | 每轮逐仓库轮询；某个仓库的拉取或类型判定失败时，只跳过该仓库本轮剩余处理，不推进它的 `since`，继续处理其它仓库 |
 | FR-005 | 单个仓库的投递异常只记日志并保留该仓库的 `since`，不中断本轮其它仓库 |
 | FR-006 | 事件 id 带仓库：`github:comment:<repo>:<id>`。同一评论 id 出现在不同仓库时视为两个事件 |
