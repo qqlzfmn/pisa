@@ -6,6 +6,7 @@
 
 ### 新增
 
+- 来源准入表：`policy.sources.<来源>` 为每个入口单独配置 `allowed`（缺省沿用 `whitelist.users`）、`accept`（`off`/`observe`/`auto`）与 `cells`（名单内外 × 是否 @ 机器人四格）；`observe` 只记录事件不派活，`auto` 建任务，`off` 拒绝。任务建单时把判定写进 `mandate` 并带策略版本，`/pisa policy`（`/策略`）输出当前规则与版本，启动日志打印版本（`src/policy.ts`）
 - 通用触发适配层：`src/triggers/` 下定义 `TriggerAdapter`（验证、归一化、去重键）与 `dispatch`，新增 GitHub Actions（`X-Hub-Signature-256`）、飞书（`X-Lark-Signature` + 时间窗口）、企业微信（`msg_signature` + AES-256-CBC）三个 HTTP 入口与 `fs.watch` 文件监听，四个入口分别按仓库、群/发送者、发送者、路径白名单过滤；`triggers` 配置项控制启用、端口与密钥环境变量，密钥缺失时入口回 503 而不是退化免签
 - 健康与任务指标：`GET /health` 返回 `ok`、`uptimeSec`、队列深度、running 数与最近 24h 成功率/耗时分位/每仓库任务数；`ok` 取守护进程心跳，心跳停止时返回 503。看板与 `pisa status --json` 附带同一口径的 24h 汇总（`src/metrics.ts`）
 - `triggers` 表：任务创建改为按触发身份（`source` + 线程 + 消息 + 版本 + 载荷指纹）落库，触发器与任务同一事务；旧库在 `Store` 构造时按任务自身信息补齐，重放旧事件不会重复建单
@@ -23,6 +24,8 @@
 
 ### 变更
 
+- 准入判定从仓库校验里拆出：`checkAccess` 不再查 `whitelist.users`，谁能派活由来源策略决定，`whitelist.repos` 只决定落在哪个仓库；Telegram 从 `entities`、飞书从 `@_user_` 占位识别是否点名
+- `/pisa resume` 恢复前按当前策略重校验：策略收紧后拒绝恢复并说明原因与建单时/当前两个版本，任务保持 `paused`；没有 `mandate` 的旧任务按来源与请求者重判
 - 交付提交按路径拦截敏感文件：`.github/workflows/**`、`.github/actions/**`、`.env*`、`*.pem`、`*.key`、`id_*`、`.npmrc`、`.netrc`、`**/secrets*` 用 `git reset` 剔出索引，回执列出未提交路径；全部被拦时不产生空提交
 - 推送、建 PR、回帖改为经 outbox 执行：失败不再只记日志，退避到期后自动补发；建 PR 失败仍退回 `compare` 链接，任务终态不变
 - README 从配置说明改为产品首页：一句话定位、三类读者路径、30 秒上手、架构图与分层表、三个带预期输出的场景、与 CNB NPC / Copilot cloud agent 的边界对比、FAQ、已知限制、演示 GIF（`docs/assets/demo.gif`）

@@ -10,6 +10,8 @@ interface TgMessage {
   text?: string;
   chat: { id: number; type: string };
   from?: { id: number; username?: string };
+  /** 正文里的 @ 提及（mention/text_mention）：群里点名机器人时出现 */
+  entities?: Array<{ type: string }>;
   reply_to_message?: { message_id: number };
   /** 论坛话题的话题 id：同一话题的消息归为一条线程 */
   message_thread_id?: number;
@@ -64,6 +66,7 @@ export class TelegramChannel implements ChannelAdapter {
             userId: String(m.from?.id ?? m.chat.id),
             text: m.text,
             isDirect: m.chat.type === "private",
+            mentioned: m.entities?.some((e) => e.type === "mention" || e.type === "text_mention") || undefined,
             replyToMessageId: m.reply_to_message?.message_id,
             receivedAt: (m.edit_date ?? m.date ?? 0) * 1000,
             threadKey: m.message_thread_id ? `telegram:${m.chat.id}:topic:${m.message_thread_id}` : undefined,

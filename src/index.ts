@@ -8,6 +8,7 @@ import { Proactive } from "./proactive";
 import { GithubWatcher } from "./github-watcher";
 import { Scheduler } from "./scheduler";
 import { Retention } from "./retention";
+import { policyVersion } from "./policy";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import { ReplyBus, startWebServer, type WebServer } from "./web";
@@ -81,6 +82,8 @@ async function main(): Promise<void> {
       channel,
     });
   }
+
+  console.log(`[pisa] 准入策略版本 ${policyVersion(cfg)}（/pisa policy 查看规则）`);
 
   const recovered = router.recoverInterrupted();
   if (recovered.paused > 0 || recovered.failed > 0 || recovered.cancelled > 0) {

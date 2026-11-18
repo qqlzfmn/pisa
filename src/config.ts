@@ -112,6 +112,27 @@ export interface TriggersConfig {
   fileWatch?: FileWatchTriggerConfig;
 }
 
+/** 准入方式：off 拒绝、observe 只记录、auto 派活 */
+export type AcceptMode = "off" | "observe" | "auto";
+
+/** 准入单元：名单内外 × 是否点名机器人 */
+export type AdmissionCell = "member.mentioned" | "member.unmentioned" | "stranger.mentioned" | "stranger.unmentioned";
+
+/** 单个来源的准入策略；未写的字段沿用默认（见 src/policy.ts） */
+export interface SourcePolicy {
+  /** 该来源认可的发起人；缺省沿用 whitelist.users */
+  allowed?: string[];
+  /** 来源级闸门：off / observe 覆盖所有单元，auto 交给 cells 判定 */
+  accept?: AcceptMode;
+  /** 单元级覆盖 */
+  cells?: Partial<Record<AdmissionCell, AcceptMode>>;
+}
+
+/** 来源准入表：键是 IncomingMessage.channel */
+export interface PolicyConfig {
+  sources?: Record<string, SourcePolicy>;
+}
+
 /** events 与 progress 的默认保留天数 */
 export const DEFAULT_RETENTION_DAYS = 30;
 
@@ -120,6 +141,8 @@ export interface Config {
   /** 私聊里不带触发词也当成任务 */
   dmWithoutTrigger: boolean;
   whitelist: { users: string[]; repos: string[] };
+  /** 来源准入表；缺省时所有来源共用默认单元（名单内放行、名单外拒绝） */
+  policy?: PolicyConfig;
   repos: RepoConfig[];
   worker: {
     adapter: string;
@@ -316,7 +339,8 @@ export type CommandKind =
   | "confirm"
   | "verbose"
   | "gc"
-  | "reconcile";
+  | "reconcile"
+  | "policy";
 
 /** 帮助分组：派活（新任务与续跑）、查询（状态与用法）、维护（改撤合）、集成（不经 IM 的入口） */
 export type HelpGroup = "派活" | "查询" | "维护" | "集成";
@@ -342,6 +366,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "status", alias: "状态", description: "查看任务看板", group: "查询", menu: true },
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
+  { command: "policy", alias: "策略", description: "查看准入策略与版本", group: "查询", menu: true },
   { command: "verbose", alias: "进度", description: "过程消息开关（on/off）", args: "[on|off]", group: "查询", menu: true },
   { command: "gc", alias: "清理", description: "清理已结束任务的分支/工作副本/PR", args: "[天数] [--dry]", group: "维护", menu: true },
   { command: "reconcile", alias: "对账", description: "对比任务记录与分支/工作副本/PR", args: "[任务号] [--fix]", group: "维护", menu: true },

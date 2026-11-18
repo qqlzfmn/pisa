@@ -115,7 +115,9 @@ export class FeishuAdapter implements TriggerAdapter<HttpTriggerRequest, FeishuP
     }
     const raw = record(content)?.text;
     if (typeof raw !== "string") throw new TriggerError(400, "message.content 缺少 text");
-    // 群聊里 @机器人 会在正文里留下 @_user_1 之类的占位
+    // 群聊里 @机器人 会在正文里留下 @_user_1 之类的占位；飞书不给机器人自己的 open_id，
+    // 任何 @ 都按「点名」算（只会放宽准入单元，不会越过名单）
+    const mentioned = /@_user_\d+|@_all/.test(raw) || (Array.isArray(message.mentions) && message.mentions.length > 0);
     const text = raw.replace(/@_user_\d+/g, "").replace(/@_all/g, "").trim();
     if (!text) return null;
 
@@ -132,6 +134,7 @@ export class FeishuAdapter implements TriggerAdapter<HttpTriggerRequest, FeishuP
           actor: openId,
           repo: this.opts.repo,
           isDirect: chatType === "p2p",
+          mentioned,
           text: commandText(this.opts.trigger, text),
           threadKey: `feishu:${chatId}`,
           messageKey: dedupeKey,

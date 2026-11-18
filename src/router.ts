@@ -35,6 +35,7 @@ import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
 import { formatStatusBoard } from "./status";
+import { decide, formatPolicy } from "./policy";
 
 export { formatDuration } from "./status";
 
@@ -50,6 +51,14 @@ export interface RouterDeps {
   effects?: EffectQueue;
   /** 注入以便测试 */
   now?: () => number;
+}
+
+/**
+ * 是否点名机器人：入口显式给出优先；缺省按「不是群聊即点名」推断，
+ * 私聊与 webhook/cron/web 这类显式调用都是直接找机器人。
+ */
+function mentionedOf(msg: IncomingMessage): boolean {
+  return msg.mentioned ?? msg.isDirect !== false;
 }
 
 /** 单英文词任务的待确认正文，10 分钟过期 */
@@ -267,6 +276,7 @@ export class Router {
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
+      else if (t === "/policy" || t === "策略") cmd = { kind: "policy", body: "" };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
@@ -387,6 +397,11 @@ export class Router {
       return;
     }
 
+    if (cmd.kind === "policy") {
+      await this.reply(msg.chatId, formatPolicy(cfg));
+      return;
+    }
+
     if (cmd.kind === "schedules") {
       const jobs = cfg.schedules ?? [];
       if (jobs.length === 0) {
@@ -469,7 +484,18 @@ export class Router {
 
     const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
 
-    const denied = this.checkAccess(msg, repo);
+    // 准入先于仓库校验：谁能派活由来源策略决定，仓库白名单只决定落在哪
+    const mandate = decide(
+      cfg,
+      { source: msg.channel, principal: msg.userId, mentioned: mentionedOf(msg) },
+      this.now(),
+    );
+    if (mandate.mode === "observe") {
+      // 观察态只记录不派活；事件占位让重复投递不再重复提示
+      if (store.claimEvent(msg.eventId, "observe")) await this.reply(msg.chatId, mandate.reason);
+      return;
+    }
+    const denied = mandate.mode === "off" ? mandate.reason : this.checkAccess(msg, repo);
     if (denied) {
       const last = this.deniedAt.get(msg.userId) ?? 0;
       if (this.now() - last > 24 * 3600 * 1000) {
@@ -517,6 +543,7 @@ export class Router {
       replyRepo: msg.replyRepo ?? null,
       summary: null,
       error: null,
+      mandate,
       createdAt: this.now(),
       startedAt: null,
       endedAt: null,
@@ -710,9 +737,9 @@ export class Router {
     return { repos, worktrees };
   }
 
+  /** 仓库侧的准入：谁能派活已经由来源策略判定，这里只看落在哪 */
   private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
     const { cfg } = this.deps;
-    if (!cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
     if (!repo) return `仓库未配置：${msg.repo ?? "(默认)"}`;
     if (!cfg.whitelist.repos.includes(repo.alias)) return `无权限：仓库 ${repo.alias} 不在白名单。`;
     if (!isGitRepo(repo.path)) return `仓库路径不是 git 仓库：${repo.path}`;
@@ -983,6 +1010,27 @@ export class Router {
     }
     if (task.status !== "paused") {
       await this.reply(msg.chatId, `任务 ${id} 不是中断状态（${task.status}），只有中断的任务可以恢复。`);
+      return;
+    }
+    // 策略改动不追溯：已建任务保留建单时的授权，恢复前按当前策略重新判定
+    const recheck = decide(
+      cfg,
+      {
+        source: task.mandate?.source ?? task.channel,
+        principal: task.mandate?.principal ?? task.requester,
+        mentioned: task.mandate?.mentioned ?? true,
+      },
+      this.now(),
+    );
+    if (recheck.mode !== "auto") {
+      await this.reply(
+        msg.chatId,
+        [
+          `拒绝恢复 · ${id}`,
+          recheck.reason,
+          `建单时策略 ${task.mandate?.policyVersion ?? "未知"}，当前策略 ${recheck.policyVersion}。`,
+        ].join("\n"),
+      );
       return;
     }
     if (!existsSync(resolve(cfg.stateDir, "worktrees", id))) {

@@ -9,6 +9,18 @@
       "pisa"
     ]
   },
+  "policy": {
+    "sources": {
+      "telegram": {
+        "cells": {
+          "member.unmentioned": "off"
+        }
+      },
+      "github": {
+        "accept": "observe"
+      }
+    }
+  },
   "repos": [
     {
       "alias": "pisa",

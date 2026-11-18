@@ -1,3 +1,5 @@
+import type { Mandate } from "./policy";
+
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
 /** 任务对外产生的副作用种类：rewind 的依据 */
@@ -22,6 +24,11 @@ export interface IncomingMessage {
   repo?: string;
   /** 私聊（一对一）消息 */
   isDirect?: boolean;
+  /**
+   * 明确点名机器人（@机器人、私聊、显式 API 调用）。
+   * 缺省时 core 按「不是群聊即点名」推断，入口只在群里需要额外判断。
+   */
+  mentioned?: boolean;
   /**
    * 入口已完成本地鉴权（web 用 token 认证操作者）：
    * 跳过单英文词误触防护与原请求者校验，IM 消息不带此字段。
@@ -76,6 +83,11 @@ export interface Task {
   replyRepo: string | null;
   summary: string | null;
   error: string | null;
+  /**
+   * 建单时的准入判定（来源、发起人、是否点名、命中单元、方式、策略版本）。
+   * 策略改动不回写；恢复前按当前策略重新判定。CLI 直接执行的任务没有这一项。
+   */
+  mandate?: Mandate | null;
   createdAt: number;
   startedAt: number | null;
   endedAt: number | null;

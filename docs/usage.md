@@ -56,11 +56,12 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 
 ### 鉴权面
 
-- **IM**：`whitelist.users` 与 `whitelist.repos` 双重白名单，未授权用户不建任务（24 小时内只提示一次）。群里仍需要触发词；私聊可直接说需求。
-- **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，所以它也必须进白名单。要从外网调用，自己加反向代理与 TLS。
-- **Web 控制台**：只监听 `127.0.0.1`，`/ui` 与 `/api/*` 全部要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、`HttpOnly` cookie 任一），否则 401。页面派出的任务归 `web.userId`，同样要进白名单；取消与合并不再校验原请求者，因为浏览器里的操作由 token 直接认证。
+- **准入**：谁能派活由 `policy.sources.<来源>` 决定，按来源 + 名单内外 + 是否点名机器人分成四格，每格 `off` / `observe` / `auto`。没单独配置的来源沿用默认：名单内放行、名单外拒绝。`/pisa policy` 看当前规则与版本，配置见 [operations.md](./operations.md#准入策略)。
+- **IM**：`whitelist.users` 是默认准入名单（来源可以覆盖），`whitelist.repos` 只决定落在哪个仓库。未授权用户不建任务（24 小时内只提示一次）。群里仍需要触发词；私聊可直接说需求。
+- **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，所以它也必须进该来源的准入名单（默认是 `whitelist.users`）。要从外网调用，自己加反向代理与 TLS。
+- **Web 控制台**：只监听 `127.0.0.1`，`/ui` 与 `/api/*` 全部要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、`HttpOnly` cookie 任一），否则 401。页面派出的任务归 `web.userId`，同样要进准入名单；取消与合并不再校验原请求者，因为浏览器里的操作由 token 直接认证。
 - **GitHub**：只处理正文以 `/pisa ` 开头的评论；评论作者不参与鉴权，任务归属由各仓库条目配置的 `chatId` / `userId` 决定。`gh` token 从 `tokenEnv` 指定的环境变量读取。
-- **定时、探针、关键词**：都用配置里的身份开单，同样走白名单；触发不了的根因通常是身份不在白名单或缺少 `scheduler` 配置。
+- **定时、探针、关键词**：都用配置里的身份开单，同样走准入；触发不了的根因通常是身份不在名单或缺少 `scheduler` 配置。
 - **密钥**：Telegram bot token、webhook token 只从环境变量或 `~/.pisa/` 下的文件读取，不写入配置文件与 launchd plist。
 
 ## 消息太多怎么办

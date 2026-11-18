@@ -12,6 +12,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 - [Agent CLI 与 skill](#agent-cli-与-skill)
 - [Web 控制台](#web-控制台)
 - [多仓库](#多仓库)
+- [准入策略](#准入策略)
 - [主动发现](#主动发现)
 - [定时任务](#定时任务)
 - [数据保留](#数据保留)
@@ -52,6 +53,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
 /pisa status                     任务看板（私聊可用 /status）
+/pisa policy                     准入策略与版本（私聊可用 /policy）
 ```
 
 场景说明、最佳实践与能力边界（无沙箱、回滚范围、单机、并发、鉴权面）见 [usage.md](./usage.md)。
@@ -247,6 +249,41 @@ curl -s http://127.0.0.1:8787/health
 - 接单回执写明 `仓库：<别名>`，不用回忆默认仓库是哪个
 - 续跑固定在父任务所在仓库，别名不会把续跑带到别的仓库
 
+## 准入策略
+
+谁能派活由 `policy.sources.<来源>` 决定，来源就是 `IncomingMessage.channel`（`telegram`、`feishu`、`wecom`、`webhook`、`github`、`cron`、`web`、`cli` …）。没单独配置的来源走默认规则，行为与旧版一致：名单内放行、名单外拒绝。
+
+```json
+{
+  "whitelist": { "users": ["<telegram user id>"], "repos": ["pisa"] },
+  "policy": {
+    "sources": {
+      "telegram": {
+        "cells": { "member.unmentioned": "off", "stranger.mentioned": "observe" }
+      },
+      "webhook": { "allowed": ["svc-webhook"], "accept": "auto" },
+      "github": { "accept": "observe" }
+    }
+  }
+}
+```
+
+判定顺序：来源 → 名单内外 → 是否点名 → 单元。
+
+| 字段 | 含义 | 缺省 |
+| --- | --- | --- |
+| `allowed` | 该来源认可哪些发起人 | 沿用 `whitelist.users` |
+| `accept` | 来源级闸门，非 `auto` 时覆盖所有单元 | `auto` |
+| `cells` | 按单元覆盖方式 | `member.* = auto`、`stranger.* = off` |
+
+四种单元：`member.mentioned`、`member.unmentioned`、`stranger.mentioned`、`stranger.unmentioned`。三种方式：`auto` 建任务、`observe` 只记录事件并回一条「已记录」、`off` 拒绝（同一用户 24 小时只提示一次）。
+
+- **点名**指明确 @ 机器人：Telegram 看 `entities`，飞书看 `@_user_` 占位，私聊与 webhook/cron/web 这类显式调用都算点名。群里没 @ 就是 `unmentioned`。
+- **仓库白名单与准入分离**：准入决定谁能派活，`whitelist.repos` 只决定落在哪个仓库。
+- **策略版本**是准入相关配置的指纹，启动日志会打印；`/pisa policy` 输出当前版本、默认规则与每个已配置来源的生效规则。
+- **改动不追溯**：任务建单时把判定写进 `mandate`（来源、发起人、是否点名、命中单元、方式、策略版本），之后改策略不回写。
+- **恢复要复核**：`/pisa resume` 按当前策略重新判定，不再放行就拒绝，回执写明原因与建单时/当前两个版本，任务保持 `paused`。
+
 ## 主动发现
 
 两种触发方式，都不需要人 @：
@@ -385,6 +422,6 @@ token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.
 
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `policy`、`worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
 
 解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。

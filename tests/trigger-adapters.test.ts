@@ -278,6 +278,15 @@ describe("飞书适配器", () => {
     expect(msg.threadKey).toBe("feishu:oc_1");
     expect(msg.messageKey).toBe("feishu:om_1");
     expect(msg.actor).toBe("ou_1");
+    expect(msg.mentioned).toBe(true);
+  });
+
+  test("群消息没 @ 机器人时 mentioned 为假，正文原样保留", async () => {
+    const messages: IncomingMessage[] = [];
+    const res = await makeHandler(on, record(messages))(feishuRequest(feishuBody({ text: "/pisa 修一下登录页" })));
+    expect(res.status).toBe(200);
+    expect(messages[0]!.mentioned).toBe(false);
+    expect(messages[0]!.text).toBe("/pisa 修一下登录页");
   });
 
   test("签名错误与时间戳过窗都 401", async () => {
