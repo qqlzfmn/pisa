@@ -81,9 +81,9 @@ async function main(): Promise<void> {
   }
 
   const recovered = router.recoverInterrupted();
-  if (recovered.paused > 0 || recovered.failed > 0) {
+  if (recovered.paused > 0 || recovered.failed > 0 || recovered.cancelled > 0) {
     console.log(
-      `[pisa] 中断任务：${recovered.paused} 个可恢复（paused），${recovered.failed} 个标记 failed`,
+      `[pisa] 中断任务：${recovered.paused} 个可恢复（paused），${recovered.failed} 个标记 failed，${recovered.cancelled} 个按取消请求置 cancelled`,
     );
   }
 

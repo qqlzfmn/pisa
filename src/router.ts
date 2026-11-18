@@ -93,13 +93,18 @@ export class Router {
   }
 
   /**
-   * 进程重启后的分流：工作副本仍在且有会话 id 的 running 任务转 paused，
-   * 其余 running 任务标 failed。工作副本一律保留，交给恢复者复用。
+   * 进程重启后的分流：已请求取消的 running 任务转 cancelled（取消是对写操作的否决，
+   * 不得因重启变成可 resume 的 paused）；工作副本仍在且有会话 id 的转 paused；
+   * 其余标 failed。工作副本一律保留。
    */
-  recoverInterrupted(): { paused: number; failed: number } {
+  recoverInterrupted(): { paused: number; failed: number; cancelled: number } {
     const { cfg, store } = this.deps;
-    const result = { paused: 0, failed: 0 };
+    const result = { paused: 0, failed: 0, cancelled: 0 };
     for (const task of store.runningTasks()) {
+      if (task.cancelRequested) {
+        if (store.transition(task.id, "cancelled", { endedAt: this.now() })) result.cancelled += 1;
+        continue;
+      }
       const workdir = resolve(cfg.stateDir, "worktrees", task.id);
       if (task.sessionId && existsSync(workdir)) {
         if (store.transition(task.id, "paused")) result.paused += 1;

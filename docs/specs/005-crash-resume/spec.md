@@ -33,6 +33,7 @@
 - `queued` 不能直接进入 `paused`（从未开始的任务没有可续的东西）
 - `paused` 不自动恢复，必须由请求者显式发起
 - `paused` 与 `running` 都可以被请求者取消
+- `running` 任务的 `cancel_requested` 已置位时，启动分流优先落地 `cancelled`，不进入 `paused`；取消是写操作的否决票，重启不得把它改写成可 `resume` 的待办
 
 中断归属由两条事实决定，缺一不可：
 
@@ -46,7 +47,7 @@
 | ID | 需求 |
 | --- | --- |
 | FR-001 | 任务状态新增 `paused`；状态机允许 `running → paused → running`、`paused → cancelled`，拒绝 `queued → paused` |
-| FR-002 | 进程启动时对所有遗留 `running` 任务分流：可恢复的转 `paused`，其余标 `failed`；分流过程不删除任何工作副本 |
+| FR-002 | 进程启动时对所有遗留 `running` 任务分流：已请求取消的转 `cancelled`，可恢复的转 `paused`，其余标 `failed`；分流过程不删除任何工作副本 |
 | FR-003 | 新增恢复命令：`/pisa resume <任务号>`，私聊可直接 `/resume <任务号>` |
 | FR-004 | 恢复前校验：任务存在、请求者为本人、状态为 `paused`、工作副本存在；任一不满足则拒绝并说明原因 |
 | FR-005 | 恢复时任务从 `paused` 转回 `running`，复用原工作副本（不新建、不重置分支），再次调用 Worker |
@@ -64,7 +65,7 @@
 ## 6. 验收
 
 1. 状态机：`running → paused → running` 成功；`queued → paused` 被拒
-2. 启动分流：工作副本与会话都存在的 `running` 任务变 `paused`；缺任一条的变 `failed`；工作副本不被删除
+2. 启动分流：`cancel_requested` 已置位的 `running` 任务变 `cancelled` 且之后 `resume` 被拒；工作副本与会话都存在的变 `paused`；缺任一条的变 `failed`；工作副本不被删除
 3. `/pisa resume <任务号>` 成功后 Worker 在同一个工作副本目录上再执行一次，任务最终 `succeeded`
 4. 非原请求者、非 `paused` 状态、工作副本缺失的恢复请求都被拒绝，状态不变
 5. 会话恢复参数出现在 Worker 命令行；恢复任务的提示词包含工作目录、`git log` 与 PR 存在性核对，以及「确认外部动作未发生再执行」的要求；新任务的提示词不含该段落

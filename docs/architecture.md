@@ -75,6 +75,7 @@ queued    ──cancel──────────────► cancelled
 running   ──交付成功────────────► succeeded
 running   ──失败/超时/异常──────► failed
 running   ──cancel──────────────► cancelled
+running   ──重启且已请求取消────► cancelled
 running   ──重启且可续跑────────► paused
 paused    ──resume──────────────► running
 paused    ──cancel──────────────► cancelled
@@ -83,7 +84,7 @@ failed    ─┼──rewind────────────► rewound
 cancelled ─┘
 ```
 
-上图的边与 `ALLOWED` 一一对应：`queued` 两条出边、`running` 四条、`paused` 两条、三个终态各一条 `rewound`。
+上图的边与 `ALLOWED` 一一对应：`queued` 两条出边、`running` 五条、`paused` 两条、三个终态各一条 `rewound`。
 
 合法跃迁表定义在 `src/types.ts` 的 `ALLOWED`，由 `canTransition` 与 `store.transition` 共同守护：
 
@@ -95,7 +96,7 @@ cancelled ─┘
 | `running` | `paused` | 重启时工作副本与 agent 会话都在 | `recoverInterrupted`（`src/router.ts`） |
 | `running` | `succeeded` | 交付完成 | `runTask`（`src/router.ts`） |
 | `running` | `failed` | Worker 非零退出、超时、异常、交付抛错、启动失败 | `runTask`（`src/router.ts`） |
-| `running` | `cancelled` | 请求者 `cancel`，Worker 退出后落地 | `handleCancel` 与 `runTask`（`src/router.ts`） |
+| `running` | `cancelled` | 请求者 `cancel`，Worker 退出后落地；或重启时 `cancel_requested` 已置位 | `handleCancel`、`runTask` 与 `recoverInterrupted`（`src/router.ts`） |
 | `paused` | `running` | 请求者 `resume`（人工，不自动） | `handleResume`（`src/router.ts`） |
 | `paused` | `cancelled` | 请求者 `cancel` | `handleCancel`（`src/router.ts`） |
 | `succeeded`/`failed`/`cancelled` | `rewound` | 请求者 `rewind --yes`，执行完且合并状态可确认 | `handleRewind`（`src/router.ts`） |
@@ -111,6 +112,7 @@ cancelled ─┘
 
 | 场景 | 判定依据 | 归宿 | 依据 |
 | --- | --- | --- | --- |
+| 进程在任务执行中退出，且已请求取消 | 重启时 `status='running'` 且 `cancel_requested=1` | `cancelled`，工作副本保留 | 取消是写操作的否决票，重启不得把它改成可 `resume` 的 `paused`（`recoverInterrupted`） |
 | 进程在任务执行中退出 | 重启时 `status='running'` | agent 会话 id 与 `.pisa/worktrees/<id>` 都存在 → `paused` | `recoverInterrupted`（`src/router.ts`） |
 | 同上，缺一样 | — | `failed`，error=`进程重启，任务中断` | 会话或工作副本已无法续跑 |
 | 主动关停（SIGINT/SIGTERM） | `stopping` 标志 | 任务保持 `running`，不落 failed/succeeded，不删 worktree 与分支 | `router.stop()` 最多等 3 秒；`src/index.ts` 退出码 75 交给 supervisor |
@@ -158,7 +160,7 @@ cancelled ─┘
 | `pisa.db` `task_effects` | 仍在生效的分支/推送/PR/回帖/合并 | 撤销或清理时逐条删 |
 | `.pisa/logs/<taskId>.log` | 阶段日志（脱敏） | 不自动清理 |
 | `.pisa/progress/<taskId>.jsonl` | 工具级进度 | 不自动清理 |
-| `.pisa/worktrees/<taskId>` | 工作副本 | 成功、失败、运行中取消后删除；`paused` 及其后续取消保留 |
+| `.pisa/worktrees/<taskId>` | 工作副本 | 成功、失败、运行中取消后删除；`paused`、重启时按取消请求置 `cancelled` 的任务及其后续取消保留 |
 | git 分支 `pisa/<taskId>` | 改动 | 交付前失败/取消时删；成功后保留 |
 
 四类变体：`continue`（IM 续跑原任务，分支与上下文来自父任务）、PR 评论（`taskByPr` 找到父任务，复用同一分支与 PR）、`resume`（`paused` 且工作副本在，同一 worktree + agent `-r` 会话续跑）、`rewind`（终态任务先出计划，`--yes` 再执行，成功项删账本行，失败项留着重试）。
@@ -244,7 +246,7 @@ interface ChannelAdapter {
 | 推送失败 | `pushBranch` 抛错 | `failed` | worktree 删除后本地提交一并消失，远程无残留 | 修远程/凭据后重投 |
 | PR 创建失败 | `gh pr create` 无输出 | 任务仍 `succeeded` | 分支已推 | 手动开 PR，或按回执里的 compare 链接 |
 | 回帖失败 | 抓异常写日志 | 不影响状态 | 无 | 手动补，标记保证不重复 |
-| 进程被杀 | `recoverInterrupted` | `paused` 或 `failed` | worktree 保留（paused） | `resume` 或 `rewind` |
+| 进程被杀 | `recoverInterrupted` | `cancelled`（已请求取消）/ `paused` / `failed` | worktree 一律保留 | 已取消不可 `resume`；`paused` 可 `resume` 或 `rewind` |
 | 重复投递 | `claimEvent` 主键冲突 | 只有一条任务 | — | 自动 |
 | 交付过程抛任意异常 | `runTask` catch | `failed` | 删 worktree 与分支 | 重新投递 |
 

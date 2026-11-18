@@ -624,11 +624,37 @@ describe("Router", () => {
 
     expect(store.claimQueued(b.id, Date.now(), `pisa/${b.id}`)).toBe(true);
 
-    expect(router.recoverInterrupted()).toEqual({ paused: 1, failed: 1 });
+    expect(router.recoverInterrupted()).toEqual({ paused: 1, failed: 1, cancelled: 0 });
     expect(store.get(a.id)?.status).toBe("paused");
     expect(store.get(b.id)?.status).toBe("failed");
     expect(store.get(b.id)?.error).toContain("中断");
     expect(existsSync(workdirA)).toBe(true);
+  });
+
+  test("启动恢复：已请求取消的任务转 cancelled，不能被 resume 复活", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 要取消的任务"));
+    await router.handle(msg("/pisa 对照任务"));
+    const vetoed = store.recentTasks().find((t) => t.prompt === "要取消的任务")!;
+    const control = store.recentTasks().find((t) => t.prompt === "对照任务")!;
+
+    for (const t of [vetoed, control]) {
+      const workdir = join(stateDir, "worktrees", t.id);
+      expect(store.claimQueued(t.id, Date.now(), `pisa/${t.id}`)).toBe(true);
+      expect(createWorktree(repo, workdir, `pisa/${t.id}`).code).toBe(0);
+      store.setSessionId(t.id, `sess-${t.id}`);
+    }
+    // 执行中说 cancel：只置位，不落地；随后进程重启
+    expect(store.requestCancel(vetoed.id)).toBe(true);
+
+    expect(router.recoverInterrupted()).toEqual({ paused: 1, failed: 0, cancelled: 1 });
+    expect(store.get(vetoed.id)?.status).toBe("cancelled");
+    expect(store.get(control.id)?.status).toBe("paused");
+    expect(existsSync(join(stateDir, "worktrees", vetoed.id))).toBe(true);
+
+    await router.handle(msg(`/pisa resume ${vetoed.id}`));
+    expect(channel.sent.at(-1)?.text).toContain("不是中断状态");
+    expect(store.get(vetoed.id)?.status).toBe("cancelled");
   });
 
   test("resume 复用工作副本，Worker 再次执行且任务成功", async () => {
