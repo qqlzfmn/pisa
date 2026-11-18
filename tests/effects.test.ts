@@ -6,8 +6,8 @@ import { Store } from "../src/store";
 import { EffectQueue, effectBackoff } from "../src/effects";
 
 /** 推送类 payload 的最小样例 */
-function pushPayload(taskId = "t1") {
-  return { taskId, repoPath: "/repo", branch: `pisa/${taskId}` };
+function pushPayload(taskId = "t1", branch = `pisa/${taskId}`) {
+  return { taskId, repoPath: "/repo", branch };
 }
 
 describe("effectBackoff", () => {
@@ -55,6 +55,33 @@ describe("EffectQueue", () => {
 
     expect(runs).toBe(1);
     expect(store.effectRow("push", "k")?.status).toBe("done");
+    store.close();
+  });
+
+  test("flush 的快照行被执行中做完后不再跑第二遍", async () => {
+    const store = new Store(":memory:");
+    const queue = new EffectQueue(store, { now: () => 1_000 });
+    const runs: string[] = [];
+    const gate = Promise.withResolvers<void>();
+    queue.register("push", async (p) => {
+      runs.push(p.branch);
+      if (p.branch === "a") await gate.promise;
+      return null;
+    });
+    store.enqueueEffect({ kind: "push", key: "a", taskId: "t1", payload: JSON.stringify(pushPayload("t1", "a")), at: 0 });
+    store.enqueueEffect({ kind: "push", key: "b", taskId: "t1", payload: JSON.stringify(pushPayload("t1", "b")), at: 0 });
+
+    // flush 取到 [a, b] 后卡在 a；此时 exec 把 b 做完，flush 轮到 b 时不能重复执行
+    const tick = Promise.withResolvers<void>();
+    const flushing = queue.flush();
+    setImmediate(tick.resolve);
+    await tick.promise;
+    await queue.exec("push", "b", "t1", pushPayload("t1", "b"));
+    gate.resolve();
+    await flushing;
+
+    expect(runs).toEqual(["a", "b"]);
+    expect(store.effectRow("push", "b")?.status).toBe("done");
     store.close();
   });
 
