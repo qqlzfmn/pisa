@@ -38,6 +38,18 @@ export interface IncomingMessage {
   /** 回帖目标仓库（owner/repo）；缺省时用 github 配置的单仓库 */
   replyRepo?: string;
   receivedAt?: number;
+  /**
+   * 会话线程键：同一线程的后续消息归到这里，由入口按自身语义给出
+   * （Telegram 论坛话题、GitHub Issue/PR、Webhook 调用方的业务单号）。
+   * 缺省时由 core 按「回复的任务」或「本条消息」成线程。
+   */
+  threadKey?: string;
+  /** 线程内的消息标识；缺省用 eventId。评论 id、平台消息 id 比 eventId 更稳定 */
+  messageKey?: string;
+  /** 消息版本（编辑时间等）：同一消息的不同版本落到同一任务，只留痕 */
+  version?: string;
+  /** 触发者：入口侧真实发起人；缺省用 userId（PR 评论这类以配置身份投递的入口要显式给） */
+  actor?: string;
 }
 
 export interface Task {

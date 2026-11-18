@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
+import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
@@ -49,6 +50,21 @@ CREATE TABLE IF NOT EXISTS events (
   seen_at  INTEGER NOT NULL
 );
 
+-- 触发记录：任务之间的去重与线程归属都在这里，是任务创建的唯一入口依据
+CREATE TABLE IF NOT EXISTS triggers (
+  id           TEXT PRIMARY KEY,
+  source       TEXT NOT NULL,
+  thread_key   TEXT NOT NULL,
+  message_key  TEXT NOT NULL,
+  actor        TEXT NOT NULL,
+  at           INTEGER NOT NULL,
+  payload_hash TEXT NOT NULL,
+  version      TEXT NOT NULL,
+  kind         TEXT NOT NULL,
+  task_id      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_triggers_message ON triggers(thread_key, message_key);
+
 CREATE TABLE IF NOT EXISTS task_effects (
   task_id    TEXT NOT NULL,
   kind       TEXT NOT NULL,
@@ -87,6 +103,44 @@ interface Row {
   started_at: number | null;
   ended_at: number | null;
   cancel_requested: number;
+}
+
+/** 一次触发落库的结果 */
+interface TriggerClaim {
+  taskId: string;
+  created: boolean;
+  /** 同一消息的新版本：已挂到原任务上留痕 */
+  edited: boolean;
+  /** 原任务仍在排队，需求正文已换成最新版本 */
+  promptUpdated: boolean;
+}
+
+interface TriggerRow {
+  id: string;
+  source: string;
+  thread_key: string;
+  message_key: string;
+  actor: string;
+  at: number;
+  payload_hash: string;
+  version: string;
+  kind: string;
+  task_id: string | null;
+}
+
+function toTrigger(r: TriggerRow): TriggerRecord {
+  return {
+    id: r.id,
+    source: r.source,
+    threadKey: r.thread_key,
+    messageKey: r.message_key,
+    actor: r.actor,
+    at: r.at,
+    payloadHash: r.payload_hash,
+    version: r.version,
+    kind: r.kind === "context" ? "context" : "task",
+    taskId: r.task_id,
+  };
 }
 
 function toTask(r: Row): Task {
@@ -144,6 +198,35 @@ export class Store {
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
     }
+    this.backfillTriggers();
+  }
+
+  /**
+   * 旧库的任务没有触发器记录：按任务自身的入口信息补一条，重放旧事件才不会新建任务。
+   * 只写 triggers，不动 tasks；线程键与 core 的缺省成线程规则一致。
+   */
+  private backfillTriggers(): void {
+    const rows = this.db
+      .query("SELECT * FROM tasks WHERE id NOT IN (SELECT task_id FROM triggers WHERE task_id IS NOT NULL)")
+      .all() as Row[];
+    if (rows.length === 0) return;
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const task = toTask(row);
+        this.insertTrigger(
+          makeTrigger({
+            source: task.channel,
+            threadKey: `${task.channel}:${task.chatId}:${task.source}`,
+            messageKey: task.source,
+            actor: task.requester,
+            at: task.createdAt,
+            text: task.prompt,
+          }),
+          "task",
+          task.id,
+        );
+      }
+    })();
   }
 
   /** 记录「哪条发出的消息属于哪个任务」，用于回复接续 */
@@ -209,12 +292,92 @@ export class Store {
     return Number.isSafeInteger(n) ? n : null;
   }
 
-  /** 事件 id 反查任务：CLI 重试时返回已有任务而不是再建一个 */
-  taskByEvent(eventId: string): Task | null {
+  /** 线程里某条消息最新的触发记录：重复投递与编辑都靠它认出原任务 */
+  triggerByMessage(threadKey: string, messageKey: string): TriggerRecord | null {
     const row = this.db
-      .query("SELECT t.* FROM tasks t JOIN events e ON e.task_id = t.id WHERE e.event_id = ?")
-      .get(eventId) as Row | null;
+      .query("SELECT * FROM triggers WHERE thread_key = ? AND message_key = ? ORDER BY rowid DESC LIMIT 1")
+      .get(threadKey, messageKey) as TriggerRow | null;
+    return row ? toTrigger(row) : null;
+  }
+
+  /**
+   * 触发器的唯一落库口：新触发建任务；同一条消息的新版本挂到原任务上。
+   *
+   * 整个判断在一个事务里，所以重复投递和并发投递都只会有一个任务。
+   */
+  createTaskFromTrigger(trigger: Trigger, task: Task): TriggerClaim {
+    const claim: TriggerClaim = { taskId: task.id, created: false, edited: false, promptUpdated: false };
+    this.db.transaction(() => {
+      const prior = this.triggerByMessage(trigger.threadKey, trigger.messageKey);
+      if (prior) {
+        claim.taskId = prior.taskId ?? task.id;
+        if (prior.id === trigger.id) return; // 重复投递：原样返回已有任务
+        claim.edited = true;
+        this.insertTrigger(trigger, "context", claim.taskId);
+        claim.promptUpdated = this.updatePrompt(claim.taskId, task.prompt);
+        return;
+      }
+      this.insertTrigger(trigger, "task", task.id);
+      this.insertTask(task);
+      claim.created = true;
+      claim.taskId = task.id;
+    })();
+    return claim;
+  }
+
+  private insertTrigger(trigger: Trigger, kind: "task" | "context", taskId: string | null) {
+    return this.db.run(
+      `INSERT OR IGNORE INTO triggers (id, source, thread_key, message_key, actor, at, payload_hash, version, kind, task_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        trigger.id,
+        trigger.source,
+        trigger.threadKey,
+        trigger.messageKey,
+        trigger.actor,
+        trigger.at,
+        trigger.payloadHash,
+        trigger.version,
+        kind,
+        taskId,
+      ],
+    );
+  }
+
+  /** 编辑排队中的任务：需求按最新版本替换；已开跑的任务不接受改写 */
+  updatePrompt(id: string, prompt: string): boolean {
+    const res = this.db.run("UPDATE tasks SET prompt = ? WHERE id = ? AND status = 'queued'", [prompt, id]);
+    return res.changes > 0;
+  }
+
+  /** 线程里还没结束的任务：同一线程的后续消息据此并进去 */
+  openTaskByThread(threadKey: string): Task | null {
+    const row = this.db
+      .query(
+        `SELECT t.* FROM tasks t JOIN triggers g ON g.task_id = t.id
+         WHERE g.thread_key = ? AND t.status IN ('queued','paused')
+         ORDER BY t.created_at DESC LIMIT 1`,
+      )
+      .get(threadKey) as Row | null;
     return row ? toTask(row) : null;
+  }
+
+  /**
+   * 线程补充说明：记一条 context 触发并写进任务上下文。
+   *
+   * 排队任务开跑、暂停任务恢复时都会读到上下文；重复投递返回 false。
+   */
+  attachThreadNote(trigger: Trigger, taskId: string, note: string): boolean {
+    let added = false;
+    this.db.transaction(() => {
+      if (this.insertTrigger(trigger, "context", taskId).changes === 0) return;
+      added =
+        this.db.run(
+          "UPDATE tasks SET context = COALESCE(context || char(10), '') || ? WHERE id = ? AND status IN ('queued','paused')",
+          [note, taskId],
+        ).changes > 0;
+    })();
+    return added;
   }
 
   /** 幂等：同一事件只能登记一次 */
@@ -282,17 +445,6 @@ export class Store {
         t.replyRepo,
       ],
     );
-  }
-
-  /** 事件与任务同一事务：重复投递不建第二个任务，返回是否新建 */
-  insertTaskOnce(eventId: string, task: Task): boolean {
-    let inserted = false;
-    this.db.transaction(() => {
-      if (!this.claimEvent(eventId, task.id)) return;
-      this.insertTask(task);
-      inserted = true;
-    })();
-    return inserted;
   }
 
   get(id: string): Task | null {

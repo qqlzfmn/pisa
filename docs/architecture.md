@@ -134,15 +134,15 @@ cancelled ─┘
 
 逐步（括号内是代码位置）：
 
-1. **事件进入**。六类触发源都产生 `IncomingMessage`，`eventId` 是唯一键：
+1. **事件进入**。六类触发源都产生 `IncomingMessage`；入口能给出更稳定的身份就填 `threadKey` / `messageKey` / `version` / `actor`，缺省由 core 补齐（见 4.2）：
    - IM：`channel.start(onMessage)` 回调里先喂 `Proactive.observe`，再 `router.handle`（`src/index.ts`）。
-   - webhook：`Bun.serve` 只接 127.0.0.1 的 `POST /event`，校验 `x-pisa-token`，body `{prompt, repo?, eventId?}`，缺省 `eventId` 为 `webhook:<ts>:<rand>`（`src/index.ts`）。
+   - webhook：`Bun.serve` 只接 127.0.0.1 的 `POST /event`，校验 `x-pisa-token`，body `{prompt, repo?, eventId?, threadKey?, version?}`，缺省 `eventId` 为 `webhook:<ts>:<rand>`（`src/index.ts`）；带上 `threadKey`（业务单号）就能和别的入口命中同一个任务。
    - Web 控制台：`Bun.serve` 只接 127.0.0.1 的 `/ui` 与 `/api/*`，token 鉴权通过后把派活/取消/合并拼成 `IncomingMessage`（`admin: true`）交给 `router.handle`，回执经 `ReplyBus` 收集后回给页面（`src/web.ts`）。`admin` 让 Router 跳过单英文词误触防护与原请求者校验——浏览器里的操作由 token 直接认证，没有可回 `confirm` 的聊天。
-   - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由 `eventId` 去重）。
+   - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由触发身份去重，编辑按 `updated_at` 区分）。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
-2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
-3. **去重与鉴权**（`claimEvent` 与 `checkAccess`，`src/router.ts`）。`newId()` 先出任务号，`store.claimEvent(eventId, taskId)` 用主键抢占事件，抢不到直接丢弃；随后 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库。被拒事件同样占用 `eventId`。
-4. **落库与回执**（`Router.handle`，`src/router.ts`）。`insertTask`（`status=queued`）后立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
+2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 线程解析（`threadKeyOf`：入口声明 > 被回复任务 > 本条消息）→ 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
+3. **去重与鉴权**（`src/trigger.ts` 与 `checkAccess`，`src/router.ts`）。先 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库，再校验仓库与需求：被拦下的消息不写触发器，改完配置重发同一条即可。通过后 `makeTrigger` 算出触发身份，`store.triggerByMessage(threadKey, messageKey)` 命中同一条消息时，同版本同载荷即重复投递直接丢弃，版本不同即编辑（见 4.2）。
+4. **落库与回执**（`Router.handle`，`src/router.ts`）。`store.createTaskFromTrigger` 在同一事务里写触发器与任务（`status=queued`），立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
 5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
 7. **执行**（`Worker.run`，`src/worker.ts`）。`adapter.buildArgs` 生成命令行（omp：`-e <extension> [-r <sessionId>] --mode=json -p <prompt> --cwd <workdir>`），`Bun.spawn` 的 cwd 就是工作副本，环境变量附带 `PISA_WORKDIR`、`PISA_PROGRESS_FILE`。超时按 `worker.timeoutSec`（默认 3600s）`SIGTERM`，10s 后 `SIGKILL`；取消每 2s 轮询一次，同样先礼后兵。stdout 按行交给 `adapter.parseLine`，最终 `summary` 与 `error` 都过 `redact`。
@@ -156,7 +156,8 @@ cancelled ─┘
 | --- | --- | --- |
 | `pisa.db` `tasks` | 任务全字段 | 永不 |
 | `pisa.db` `task_messages` | 信道消息 → 任务 | 永不 |
-| `pisa.db` `events` | 事件去重键 | 永不 |
+| `pisa.db` `triggers` | 触发身份（线程 / 消息 / 版本 / 载荷）与归属任务 | 永不 |
+| `pisa.db` `events` | 定时与保留任务的占位键 | 超出保留期的终态任务对应行 |
 | `pisa.db` `task_effects` | 仍在生效的分支/推送/PR/回帖/合并 | 撤销或清理时逐条删 |
 | `.pisa/logs/<taskId>.log` | 阶段日志（脱敏） | 不自动清理 |
 | `.pisa/progress/<taskId>.jsonl` | 工具级进度 | 不自动清理 |
@@ -194,18 +195,41 @@ interface WorkerAdapter {
 
 ### 4.2 Trigger：加事件源
 
-契约只有一条：产出 `IncomingMessage` 并调用 `router.handle`，`eventId` 必须稳定（同一物理事件重复投递得到同一个字符串）。内置六种触发源都按这个模式接：
+契约两条：产出 `IncomingMessage` 并调用 `router.handle`；同一件事在重复投递、跨入口转发、编辑后重新投递时都落到同一个任务。身份由 `src/trigger.ts` 算出：
 
-| 触发源 | 代码 | eventId 形态 | 稳定性来源 |
+```
+id = hex(sha256(source, threadKey, messageKey, version, payloadHash))[:32]
+```
+
+- `source`：入口名（`msg.channel`）。
+- `threadKey`：会话线程。入口能声明就声明（Telegram 论坛话题、GitHub Issue/PR、调用方的业务单号），否则 core 按「被回复的任务 → `task:<任务号>`」或「本条消息 → `<channel>:<chatId>:<eventId>`」成线程。
+- `messageKey`：线程内的消息标识，缺省 `eventId`。评论 id、平台消息 id 比自造事件号稳定。
+- `version`：消息版本（编辑时间等），没有版本概念时为空串。
+- `payloadHash`：解析后的需求正文的摘要（CRLF 归一 + trim），因此 `/pisa X` 与裸 `X` 命中同一个指纹。
+
+`triggers` 表（`src/store.ts`）记录 `id`、`source`、`thread_key`、`message_key`、`actor`、`at`、`payload_hash`、`version`、`kind`、`task_id`，覆盖下面四种情形：
+
+| 情形 | 处理 |
+| --- | --- |
+| 同线程同消息、同版本同载荷 | 重复投递：丢弃，不新建任务 |
+| 同线程同消息、版本或载荷不同 | 编辑：记 `kind=context` 留痕；任务仍排队则用新正文覆盖需求，已开跑只留痕 |
+| 同线程不同消息、不带命令 | 并进该线程未结束任务（`queued`/`paused`）的上下文，不新建任务 |
+| 同线程不同消息、带命令 | 新任务：同一会话里的第二次明确请求是另一件事 |
+
+内置六种触发源都按这个模式接：
+
+| 触发源 | 代码 | threadKey | messageKey / version |
 | --- | --- | --- | --- |
-| IM | 通道 → `handle` | cli：`cli:<ts>:<rand>`；telegram：`telegram:<chatId>:<messageId>` | cli 一次投递一次；telegram 靠消息 id 幂等 |
-| webhook | `src/index.ts` | `webhook:<ts>:<rand>`，可由调用方覆盖 | 调用方提供即可重放去重 |
-| Web 控制台 | `src/web.ts` | `web:<uuid>` | 一次点击一次事件 |
-| GitHub 评论 | `github-watcher.ts` | `github:comment:<repo>:<commentId>` | 评论 id，天然幂等 |
-| cron | `scheduler.ts` | `cron:<jobId>:<minuteKey>`，先 `cron-claim:<jobId>:<minuteKey>` 抢占 | 分钟键，同一分钟只投一次 |
-| 主动发现 | `proactive.ts` | `proactive:kw:<ts>` / `proactive:probe:<ts>` | 一次机会一次事件 |
+| IM | 通道 → `handle` | telegram 论坛话题 `telegram:<chatId>:topic:<id>`，其余本条消息 | 平台消息 id / `edit_date` |
+| webhook | `src/index.ts` | body 的 `threadKey`，缺省本条消息 | `eventId` / body 的 `version` |
+| Web 控制台 | `src/web.ts` | 本次提交 | `web:<uuid>` |
+| GitHub 评论 | `github-watcher.ts` | `github:<repo>:issue:<n>` | 评论 id / `updated_at` |
+| cron | `scheduler.ts` | 本条消息 | 分钟键 |
+| 主动发现 | `proactive.ts` | 本条消息 | 事件号 |
 
-新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。冷却与去重这类「触发源自己的节流」放在触发源内部（例如 `Proactive` 的 cooldown、`GithubWatcher` 的 `since` 下界，跨越重启的进度写进 `store` 的 `meta`），core 只负责事件级去重。
+触发记录不随保留策略清理：它是「这件事已经做过」的唯一凭据，删掉会让重放复活成新任务。
+
+新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。冷却与去重这类「触发源自己的节流」放在触发源内部（例如 `Proactive` 的 cooldown、`GithubWatcher` 的 `since` 下界，跨越重启的进度写进 `store` 的 `meta`），core 只负责按触发身份去重。
 
 ### 4.3 入口客户端：加通道
 
@@ -236,7 +260,7 @@ interface ChannelAdapter {
 
 | 失败点 | 检测方式 | 任务归宿 | 副作用处理 | 恢复路径 |
 | --- | --- | --- | --- | --- |
-| 非白名单 / 非 git 仓库 | `checkAccess` | 不建任务 | 事件键已占用 | 改配置后换 eventId 重投 |
+| 非白名单 / 非 git 仓库 | `checkAccess` | 不建任务 | 未写触发器 | 改配置后重发同一条 |
 | 工作副本创建失败（分支被占用） | `createWorktree` 报 `already checked out` | `failed` | 无 | 先 `cancel` 占用它的任务 |
 | Worker 非零退出 | 退出码 + 最后 20 行 | `failed` | 删 worktree 与 `pisa/<id>` 分支 | 重新投递 |
 | 执行超时 | `worker.timeoutSec` | `failed`（`执行超时`） | 同上 | 拆小任务 |
@@ -247,7 +271,8 @@ interface ChannelAdapter {
 | PR 创建失败 | `gh pr create` 无输出 | 任务仍 `succeeded` | 分支已推 | 手动开 PR，或按回执里的 compare 链接 |
 | 回帖失败 | 抓异常写日志 | 不影响状态 | 无 | 手动补，标记保证不重复 |
 | 进程被杀 | `recoverInterrupted` | `cancelled`（已请求取消）/ `paused` / `failed` | worktree 一律保留 | 已取消不可 `resume`；`paused` 可 `resume` 或 `rewind` |
-| 重复投递 | `claimEvent` 主键冲突 | 只有一条任务 | — | 自动 |
+| 重复投递 | `triggerByMessage` 命中同版本同载荷 | 只有一条任务 | — | 自动 |
+| 编辑已开跑任务的消息 | 版本不同但任务非 `queued` | 原任务不变 | 留一条 `kind=context` 触发记录 | 需要改需求就重新投递 |
 | 交付过程抛任意异常 | `runTask` catch | `failed` | 删 worktree 与分支 | 重新投递 |
 
 失败一律有可见原因：`error` 写库并出现在最终回执里，不允许静默消失（001 的目标项）。
@@ -258,8 +283,8 @@ interface ChannelAdapter {
 2. **单机**。SQLite、worktree、日志、agent 会话都在本机 `.pisa` 与 agent 自己的存储里。`supervise.sh` 在本机按 1→30s 退避重启，机器下线即系统下线；没有跨机器接管。
 3. **并发**。上限是 `worker.concurrency`（默认 2），以进程内活跃 Promise 计；多任务共享同一 `.git` 对象库，交付只 `git add -A` 自己的工作副本；同一分支不能有两个 worktree，续跑同一分支的第二个任务会直接失败；`merge` 要求主工作区停在 base 分支，并先 rebase 到最新主干（否则历史前进后快进必然失败）。
 4. **信号只到直接子进程**：超时与取消对 agent 进程 `SIGTERM`→`SIGKILL`，它派生的孙进程可能残留。
-5. **去重先于鉴权**：`claimEvent`（`src/router.ts`）在 `checkAccess` 之前，被拒或被参数校验拦下的事件也占用了 `eventId`，同一 id 不会重试。
-6. **内存态丢失**：24h 拒绝提示节流、单字确认的 10 分钟待确认态、主动发现冷却都在内存。重启后这些窗口归零（去重靠 `events` 表长期有效；GitHub 评论游标已落库，停机期间的评论会补拉）。
+5. **去重按触发身份**：鉴权与参数校验通过才写 `triggers`，同一触发身份只会有一个任务；载荷指纹取解析后的需求正文，同一条消息换入口包装（`/pisa X` 与裸 `X`）仍命中同一个触发。旧库升级时 `Store` 构造会按任务自身信息补齐触发器，重放旧事件不会重复建任务。
+6. **内存态丢失**：24h 拒绝提示节流、单字确认的 10 分钟待确认态、主动发现冷却都在内存。重启后这些窗口归零（去重靠 `triggers` 表长期有效；GitHub 评论游标已落库，停机期间的评论会补拉）。
 7. **调度不补跑**：cron 粒度到分钟、tick 30s，停机错过的时间窗不补；同一分钟只投一次。
 8. **`gh pr create` 未在生产验证**（README「已知限制」）：没配远程的仓库只得到 compare 链接。
 9. **撤销有边界**：只覆盖记账的副作用（分支、推送、PR、回帖、工作副本、合并）。已发出的评论不可撤回；PR 状态无法确认时保留分支且不标 `rewound`；只允许原请求者操作，运行中的任务要求先取消。

@@ -7,6 +7,7 @@ import { Store } from "./store";
 import { isGitRepo } from "./git";
 import type { Task, TaskStatus } from "./types";
 import { newTaskId } from "./ids";
+import { makeTrigger } from "./trigger";
 import { continuationContext } from "./task-context";
 import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
@@ -147,15 +148,26 @@ function newCliTask(init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "b
 
 function enqueue(io: Io, store: Store, args: ParsedArgs, task: Task): number {
   const eventId = flagString(args, "event-id") ?? `cli:${randomUUID()}`;
-  const existing = store.taskByEvent(eventId);
-  if (existing) {
-    emitTask(io, args, existing, "事件已存在，返回原任务");
-    return EXIT.ok;
-  }
-  if (!store.insertTaskOnce(eventId, task)) {
-    // 并发下同一事件被另一个进程抢先写入
-    const winner = store.taskByEvent(eventId);
-    if (winner) emitTask(io, args, winner, "事件已存在，返回原任务");
+  const trigger = makeTrigger({
+    source: "cli",
+    // 每条 CLI 提交自成一册线程；--event-id 相同即视为同一件事
+    threadKey: `cli:${eventId}`,
+    messageKey: eventId,
+    actor: task.requester,
+    at: task.createdAt,
+    text: task.prompt,
+  });
+  const claim = store.createTaskFromTrigger(trigger, task);
+  if (!claim.created) {
+    const existing = store.get(claim.taskId);
+    if (existing) {
+      const note = claim.promptUpdated
+        ? "事件已存在，需求已按最新版本更新"
+        : claim.edited
+          ? "事件已存在，任务已开跑，本次内容只做了留痕"
+          : "事件已存在，返回原任务";
+      emitTask(io, args, existing, note);
+    }
     return EXIT.ok;
   }
 

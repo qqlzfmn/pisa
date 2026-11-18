@@ -4,16 +4,23 @@ type Handler = (m: IncomingMessage) => Promise<void> | void;
 
 const API = "https://api.telegram.org";
 
+interface TgMessage {
+  message_id: number;
+  date: number;
+  text?: string;
+  chat: { id: number; type: string };
+  from?: { id: number; username?: string };
+  reply_to_message?: { message_id: number };
+  /** 论坛话题的话题 id：同一话题的消息归为一条线程 */
+  message_thread_id?: number;
+  /** 编辑时间（秒）：有它说明是 edited_message，按版本区分 */
+  edit_date?: number;
+}
+
 interface TgUpdate {
   update_id: number;
-  message?: {
-    message_id: number;
-    date: number;
-    text?: string;
-    chat: { id: number; type: string };
-    from?: { id: number; username?: string };
-    reply_to_message?: { message_id: number };
-  };
+  message?: TgMessage;
+  edited_message?: TgMessage;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -43,12 +50,12 @@ export class TelegramChannel implements ChannelAdapter {
         const data = await this.api<TgUpdate[]>("getUpdates", {
           offset: this.offset,
           timeout: 30,
-          allowed_updates: ["message"],
+          allowed_updates: ["message", "edited_message"],
         });
         backoff = 1000;
         for (const u of data.result ?? []) {
           this.offset = Math.max(this.offset, u.update_id + 1);
-          const m = u.message;
+          const m = u.message ?? u.edited_message;
           if (!m?.text) continue;
           await onMessage({
             eventId: `telegram:${m.chat.id}:${m.message_id}`,
@@ -58,7 +65,11 @@ export class TelegramChannel implements ChannelAdapter {
             text: m.text,
             isDirect: m.chat.type === "private",
             replyToMessageId: m.reply_to_message?.message_id,
-            receivedAt: (m.date ?? 0) * 1000,
+            receivedAt: (m.edit_date ?? m.date ?? 0) * 1000,
+            threadKey: m.message_thread_id ? `telegram:${m.chat.id}:topic:${m.message_thread_id}` : undefined,
+            messageKey: String(m.message_id),
+            version: String(m.edit_date ?? m.date ?? ""),
+            actor: String(m.from?.username ?? m.from?.id ?? m.chat.id),
           });
         }
       } catch (err) {

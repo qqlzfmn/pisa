@@ -103,7 +103,15 @@ curl -X POST http://127.0.0.1:8799/event \
   -d '{"prompt":"跑测试并修掉失败","eventId":"ci:12345"}'
 ```
 
-执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。`eventId` 相同的事件只建一个任务。
+执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
+
+同一 `eventId` 的重复投递只建一个任务。要让不同入口（CI、监控、聊天）里的同一件事落到同一个任务，带同一个 `threadKey`（业务单号即可）：
+
+```bash
+-d '{"prompt":"修掉 CI 失败","eventId":"ci:12345","threadKey":"pull/1287","version":"3"}'
+```
+
+同 `threadKey` + `eventId` 再投一次、内容不同视为编辑（任务还在排队就更新需求）；`version` 没有编辑语义时可以不传。
 
 ## Agent CLI 与 skill
 
