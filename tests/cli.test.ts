@@ -53,6 +53,8 @@ async function cli(...argv: string[]): Promise<Result> {
 interface TaskJson {
   id: string;
   status: string;
+  stage: string;
+  stageLabel: string;
   repo: string;
   prompt: string;
   summary: string | null;
@@ -262,6 +264,7 @@ describe("查询与操作", () => {
     const text = await cli(...base("status"));
     expect(text.code).toBe(0);
     expect(text.out).toContain("排队（1）");
+    expect(text.out).toContain("working/queued（等空闲槽位）");
     expect(text.out).toContain("守护进程：未运行");
 
     const store = new Store(join(stateDir, "pisa.db"));
@@ -271,6 +274,9 @@ describe("查询与操作", () => {
     expect(body.daemon.alive).toBe(true);
     expect(body.total).toBe(1);
     expect(body.queued[0]!.prompt).toBe("排队中");
+    expect(body.queued[0]!.status).toBe("queued");
+    expect(body.queued[0]!.stage).toBe("working/queued");
+    expect(body.queued[0]!.stageLabel).toBe("等空闲槽位");
   });
 
   test("show 与 logs", async () => {
@@ -278,6 +284,10 @@ describe("查询与操作", () => {
     const shown = await cli(...base("show", task.id, "--json"));
     expect(shown.code).toBe(0);
     expect(parse<TaskJson>(shown).id).toBe(task.id);
+    expect(parse<TaskJson>(shown).stage).toBe("working/queued");
+
+    const human = await cli(...base("show", task.id));
+    expect(human.out).toContain("阶段：working/queued（等空闲槽位）");
 
     expect((await cli(...base("show", "t_missing"))).code).toBe(3);
 

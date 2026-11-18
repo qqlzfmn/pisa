@@ -11,6 +11,7 @@ import { makeTrigger } from "./trigger";
 import { continuationContext } from "./task-context";
 import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
+import { stageText } from "./stage";
 
 /** 退出码：脚本据此分支，不要在版本间随意改语义 */
 const EXIT = {
@@ -227,6 +228,7 @@ function taskHuman(io: Io, task: Task, logPath: string): void {
   const rows: Array<[string, string]> = [
     ["任务", task.id],
     ["状态", task.status],
+    ["阶段", stageText(task)],
     ["仓库", task.repo],
     ["需求", preview(task.prompt, 120)],
     ["分支", task.branch ?? "(未创建)"],

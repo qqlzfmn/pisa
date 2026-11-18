@@ -584,12 +584,12 @@ describe("Router", () => {
     await router.handle(msg("/pisa status"));
 
     const text = channel.sent.at(-1)!.text;
-    expect(text).toContain("t_running · demo · 已运行 3m12s");
+    expect(text).toContain("t_running · working（执行中） · demo · 已运行 3m12s");
     expect(text).toContain(longPrompt.slice(0, 40));
     expect(text).not.toContain(longPrompt);
     expect(text).toContain("排队（1）");
-    expect(text).toContain("t_queued · demo · 排队中的事");
-    expect(text).toContain("成功 · 4m0s · demo · 加一条校验 · https://github.com/o/r/pull/12");
+    expect(text).toContain("t_queued · working/queued（等空闲槽位） · demo · 排队中的事");
+    expect(text).toContain("成功 · person/review（等你评审） · 4m0s · demo · 加一条校验 · https://github.com/o/r/pull/12");
     expect(text).toContain("汇总：3 个任务 · 成功 1 · 失败 0 · 暂停 0");
   });
 

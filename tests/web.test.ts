@@ -60,14 +60,14 @@ interface BoardResponse {
   counts: Record<string, number>;
   repos: string[];
   repo: string | null;
-  running: Array<{ id: string; prompt: string; statusLabel: string }>;
-  queued: Array<{ id: string; prompt: string }>;
-  finished: Array<{ id: string; statusLabel: string }>;
+  running: Array<{ id: string; prompt: string; statusLabel: string; stage: string; stageLabel: string }>;
+  queued: Array<{ id: string; prompt: string; stage: string }>;
+  finished: Array<{ id: string; statusLabel: string; stage: string }>;
 }
 
 interface DetailResponse {
   ok: boolean;
-  task: { id: string; prompt: string; duration: string; branch: string | null };
+  task: { id: string; prompt: string; duration: string; branch: string | null; stage: string; stageLabel: string };
   effects: Array<{ kind: string; target: string }>;
   logTail: string[];
 }
@@ -224,8 +224,12 @@ describe("web 控制台", () => {
       expect(body.counts.queued).toBe(2);
       expect(body.running.map((t) => t.id)).toEqual(["t_run"]);
       expect(body.running[0]!.statusLabel).toBe("运行中");
+      expect(body.running[0]!.stage).toBe("working");
+      expect(body.running[0]!.stageLabel).toBe("执行中");
       expect(body.queued.map((t) => t.id).sort()).toEqual(["t_other", "t_queue"]);
+      expect(body.queued.every((t) => t.stage === "working/queued")).toBe(true);
       expect(body.finished.map((t) => t.id)).toEqual(["t_ok"]);
+      expect(body.finished[0]!.stage).toBe("idle");
 
       const filtered = (await (await call("/api/tasks?repo=demo", { headers: auth })).json()) as BoardResponse;
       expect(filtered.repo).toBe("demo");
@@ -250,6 +254,8 @@ describe("web 控制台", () => {
       const body = (await res.json()) as DetailResponse;
       expect(res.status).toBe(200);
       expect(body.task.prompt).toBe("看日志");
+      expect(body.task.stage).toBe("working");
+      expect(body.task.stageLabel).toBe("执行中");
       expect(body.task.duration).toMatch(/^\d+s$/);
       expect(body.logTail).toHaveLength(3);
       expect(body.logTail[0]).toMatch(/^\d{2}:\d{2}:\d{2} worker 开始执行$/);
