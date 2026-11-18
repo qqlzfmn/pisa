@@ -17,7 +17,7 @@ import { GithubWatcher } from "../src/github-watcher";
 import { Store } from "../src/store";
 import { Router } from "../src/router";
 import { GitDeliverer, prBody } from "../src/deliver";
-import { createWorktree, sh, type ExecResult } from "../src/git";
+import { commitAll, createWorktree, sh, type ExecResult } from "../src/git";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
@@ -994,5 +994,108 @@ describe("GitDeliverer 更新既有 PR", () => {
 
     expect(bodies).toEqual(["任务号：t_issue\n\n---\n\n由 pisa 自动创建。\n\nCloses #20"]);
     expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
+  });
+
+  test("远端已有同 head 的 PR 时认领，不再新建", async () => {
+    const workdir = setup();
+    const created: string[] = [];
+    const queried: Array<[string, string]> = [];
+    const deliverer = new GitDeliverer(cfg, {
+      hasGh: () => true,
+      findPr: (dir, head) => {
+        queried.push([dir, head]);
+        return reply(0, "https://github.com/o/r/pull/9\n");
+      },
+      createPr: () => {
+        created.push("called");
+        return reply(0, "https://github.com/o/r/pull/99");
+      },
+    });
+
+    const res = await deliverer.deliver({ ...baseTask, id: "t_retry", branch: "pisa/parent" }, workdir, cfg.repos[0]!);
+
+    expect(queried).toEqual([[workdir, "pisa/parent"]]);
+    expect(created).toEqual([]);
+    expect(res.prUrl).toBe("https://github.com/o/r/pull/9");
+    expect(res.pushed).toBe(true);
+  });
+
+  test("远端没有 PR 时仍新建", async () => {
+    const workdir = setup();
+    const created: string[] = [];
+    const deliverer = new GitDeliverer(cfg, {
+      hasGh: () => true,
+      findPr: () => reply(0, ""),
+      createPr: (_dir, opts) => {
+        created.push(opts.head);
+        return reply(0, "https://github.com/o/r/pull/99");
+      },
+    });
+
+    const res = await deliverer.deliver({ ...baseTask, id: "t_fresh", branch: "pisa/parent" }, workdir, cfg.repos[0]!);
+
+    expect(created).toEqual(["pisa/parent"]);
+    expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
+  });
+
+  test("查 PR 失败时退回新建", async () => {
+    const workdir = setup();
+    let created = 0;
+    const deliverer = new GitDeliverer(cfg, {
+      hasGh: () => true,
+      findPr: () => reply(1, "", "gh: boom"),
+      createPr: () => {
+        created++;
+        return reply(0, "https://github.com/o/r/pull/99");
+      },
+    });
+
+    const res = await deliverer.deliver({ ...baseTask, id: "t_ghfail", branch: "pisa/parent" }, workdir, cfg.repos[0]!);
+
+    expect(created).toBe(1);
+    expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
+  });
+
+  test("改动已提交时按分支认领 PR，任务收尾带链接与账本", async () => {
+    const store = new Store(":memory:");
+    const breakpointWorker: WorkerRunner = {
+      async run(_task, workdir): Promise<WorkerResult> {
+        // 模拟上次崩溃前：改动已提交、分支已推送，deliver 还没记账
+        writeFileSync(join(workdir, "out.txt"), "hi\n");
+        commitAll(workdir, "崩溃前已提交", "pisa", "pisa@localhost");
+        sh(["git", "-C", workdir, "push", "-u", "origin", "HEAD"]);
+        return { ok: true, summary: "上次已改完", exitCode: 0 };
+      },
+    };
+    let created = 0;
+    const router = new Router({
+      cfg,
+      store,
+      worker: breakpointWorker,
+      deliverer: new GitDeliverer(cfg, {
+        hasGh: () => true,
+        findPr: () => reply(0, "https://github.com/o/r/pull/9"),
+        createPr: () => {
+          created++;
+          return reply(0, "https://github.com/o/r/pull/99");
+        },
+      }),
+      channel: new FakeChannel(),
+    });
+
+    try {
+      await router.handle({ eventId: "e1", channel: "fake", chatId: "c1", userId: "u1", text: "/pisa 崩溃后重试" });
+      await router.drainOnce();
+
+      const task = store.recentTasks()[0]!;
+      expect(task.status).toBe("succeeded");
+      expect(task.prUrl).toBe("https://github.com/o/r/pull/9");
+      expect(created).toBe(0);
+      expect(store.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["pr", "9"]);
+      // PR 评论按 taskByPr 能接上这次交付
+      expect(store.taskByPr(9)?.id).toBe(task.id);
+    } finally {
+      store.close();
+    }
   });
 });

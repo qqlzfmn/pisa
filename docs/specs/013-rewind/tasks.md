@@ -8,5 +8,7 @@
 - [x] `src/router.ts`：副作用记账（worktree / branch / push / pr / comment / merge）、`handleRewind`、私聊 `/rewind`、帮助文本
 - [x] `tests/rewind.test.ts`：预览只读、执行、已合并 revert、部分失败重试、状态未知、共享分支、权限与空任务
 - [x] `tests/telegram.test.ts`：菜单命令加入 `rewind`
+- [x] `src/git.ts` / `src/deliver.ts`：`pushedBranch`、`findPr`，交付前按 head 分支认领已有 PR（`DelivererDeps.findPr` 可注入）
+- [x] `tests/github-comments.test.ts`：认领命中不新建、查不到或查询失败仍新建、无改动续跑后 `pr_url` 与 `pr` 账本齐备
 - [x] `README.md`：命令与撤销说明
 - [x] 验证：`bun test`、`bunx tsc --noEmit`

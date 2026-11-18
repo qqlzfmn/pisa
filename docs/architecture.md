@@ -145,7 +145,7 @@ cancelled ─┘
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
 7. **执行**（`Worker.run`，`src/worker.ts`）。`adapter.buildArgs` 生成命令行（omp：`-e <extension> [-r <sessionId>] --mode=json -p <prompt> --cwd <workdir>`），`Bun.spawn` 的 cwd 就是工作副本，环境变量附带 `PISA_WORKDIR`、`PISA_PROGRESS_FILE`。超时按 `worker.timeoutSec`（默认 3600s）`SIGTERM`，10s 后 `SIGKILL`；取消每 2s 轮询一次，同样先礼后兵。stdout 按行交给 `adapter.parseLine`，最终 `summary` 与 `error` 都过 `redact`。
 8. **进度回传**。skill 把 `session`/`tool`/`blocked`/`done` 追加进 `.pisa/progress/<taskId>.jsonl`；`watchProgress`（`src/router.ts`）每 2s 读增量，节流 6s，转成 `🛠`/`✏️`/`⛔` 消息发到原对话。progress 只是旁路，丢了不影响任务结果。
-9. **交付**（`GitDeliverer.deliver`，`src/deliver.ts`）。`git status --porcelain` 无改动直接返回；有改动则 `commitAll`（`pisa: <首行>`，正文带任务号）→ 若 `delivery.push` 且配置了远程则 `push -u origin <branch>`（失败即抛错，任务落 `failed`）→ 若 `delivery.pr`、远程在 github.com、`gh` 可用则 `gh pr create`（PR 正文带 `Closes #<issue>`），否则退回 `compare` 链接。成功后记 `push`/`pr` 副作用。
+9. **交付**（`GitDeliverer.deliver`，`src/deliver.ts`）。`git status --porcelain` 无改动直接返回；有改动则 `commitAll`（`pisa: <首行>`，正文带任务号）→ 若 `delivery.push` 且配置了远程则 `push -u origin <branch>`（失败即抛错，任务落 `failed`）→ 若 `delivery.pr`、远程在 github.com、`gh` 可用则先 `gh pr list --head <branch>` 认领该分支上已有的开放 PR（上次建好却没来得及记账），没查到才 `gh pr create`（PR 正文带 `Closes #<issue>`），否则退回 `compare` 链接。无改动且任务无 `prUrl` 时，若分支已在 origin 上同样先认领一次。成功后记 `push`/`pr` 副作用。
 10. **收尾**。`transition(succeeded)` 写入 `summary/branch/prUrl/endedAt` → 删工作副本（保留分支与副作用账本）→ `replyToSource` 回 PR/Issue（正文带隐藏标记 `<!-- pisa:reply task=… -->`，重启重跑也不会重复回帖）→ 最终回执（摘要、文件清单、分支、链接、会话 id）。
 
 一次成功任务落盘的东西：
