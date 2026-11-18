@@ -1,11 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import type { CapabilityPatch } from "./capabilities";
 
 export interface RepoConfig {
   alias: string;
   path: string;
   remote?: string;
   baseBranch?: string;
+  /** 仓库默认能力清单；任务未选档位时生效 */
+  capabilities?: CapabilityPatch;
+  /** 任务可选档位；选中时替换仓库 capabilities，并与全局基线合并 */
+  profiles?: Record<string, CapabilityPatch>;
 }
 
 /** 一条定时任务：cron 到点后用 prompt 开单 */
@@ -67,6 +72,8 @@ export interface Config {
     envAllow?: string[];
     /** 多久没有任何输出/进度就算卡死并杀掉，默认 900 秒 */
     idleTimeoutSec?: number;
+    /** 全局能力基线；未声明的读取/域名/GUI 一律拒绝 */
+    capabilities?: CapabilityPatch;
   };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   /** 通知详细程度；progress=false 时只发接单/执行/完成等生命周期消息 */

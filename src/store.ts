@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_pr         INTEGER,
   reply_issue      INTEGER,
   reply_repo       TEXT,
+  capability       TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -161,6 +162,7 @@ interface Row {
   reply_pr: number | null;
   reply_issue: number | null;
   reply_repo: string | null;
+  capability: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -225,6 +227,7 @@ function toTask(r: Row): Task {
     replyPr: r.reply_pr,
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
+    capability: r.capability ?? null,
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -266,6 +269,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "capability")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN capability TEXT");
     }
     this.backfillTriggers();
   }
@@ -554,8 +560,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, capability)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -573,6 +579,7 @@ export class Store {
         t.replyPr,
         t.replyIssue,
         t.replyRepo,
+        t.capability ?? null,
       ],
     );
   }

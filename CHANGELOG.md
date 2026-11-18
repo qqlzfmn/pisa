@@ -6,6 +6,10 @@
 
 ### 新增
 
+- 运行时能力清单（`src/capabilities.ts`，规格 019）：每个任务按 `worker.capabilities` → `repos[].capabilities` → `repos[].profiles.<档位>` 合并出可读目录、密钥 env 名、可访问域名与 GUI 开关，默认全拒；启动时写 `stateDir/capabilities/<任务号>.json` 并向子进程注入 `PISA_CAPABILITIES`，密钥只按名字放行
+- 默认拒绝的执行边界（`extensions/guard.ts`）：工作目录与临时目录之外不写、`readPaths` 之外不读、`domains` 之外不联网、`gui=false` 时禁用 `open`/`osascript` 与浏览器类工具；越界原因带类别文本
+- 越界审计：`blocked` 事件汇总进 `WorkerResult.blocked`，Router 逐条写任务日志（`stage=blocked`），回执追加「越界被拒 N 次」；任务表新增 `capability` 列
+- webhook body 支持 `capability` 选档位，档位不存在时在建单前拒绝并列出可选值
 - 健康与任务指标：`GET /health` 返回 `ok`、`uptimeSec`、队列深度、running 数与最近 24h 成功率/耗时分位/每仓库任务数；`ok` 取守护进程心跳，心跳停止时返回 503。看板与 `pisa status --json` 附带同一口径的 24h 汇总（`src/metrics.ts`）
 - `triggers` 表：任务创建改为按触发身份（`source` + 线程 + 消息 + 版本 + 载荷指纹）落库，触发器与任务同一事务；旧库在 `Store` 构造时按任务自身信息补齐，重放旧事件不会重复建单
 - 编辑与线程归属：同一消息的新版本按 `version` 留痕，任务仍在排队就更新需求正文；同线程不带命令的后续消息并进未结束任务的上下文

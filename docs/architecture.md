@@ -24,15 +24,14 @@
 │ core：编排（全部状态与决策）                                    │
 │   router / store / worker / deliver / effects / git /         │
 │   github / github-watcher / proactive / scheduler / rewind /  │
-│   github-watcher / proactive / scheduler / rewind /           │
-│   config / types / log / adapters                             │
+│   config / types / log / adapters / capabilities              │
 └──────────────▲─────────────────────────────────▼────────────┘
                │ WorkerResult                      │ 提示词 + 进程参数
 ┌──────────────┴─────────────────────────────────┴────────────┐
 │ runtime：执行者                                                │
 │   .pisa/worktrees/<taskId>（git worktree）                     │
 │   agent 进程（omp，cwd 指向工作副本）                            │
-│   .pisa/logs、.pisa/progress、agent 自有会话存储                 │
+│   .pisa/logs、.pisa/progress、.pisa/capabilities、agent 会话    │
 │   └─ skill：extensions/pisa-worker.ts（挂在 agent 进程内）      │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -58,6 +57,7 @@ core 内部模块关系：
 | `store.ts` | SQLite 持久化：任务、消息映射、事件去重、副作用账本、外部动作队列 | `insertTask`、`claimQueued`、`transition`、`taskByPr`、`effectsOf`、`enqueueEffect`、`dueEffects` |
 | `worker.ts` | 拉起 agent 进程、解析输出、超时与取消 | `class Worker implements WorkerRunner` |
 | `adapters/` | 把 pisa 的任务翻译成某个 agent 的命令行与输出格式 | `getAdapter(name)` |
+| `capabilities.ts` | 能力清单：合并全局/仓库/档位、生成 `PISA_CAPABILITIES` 与落盘 manifest | `resolveCapabilities()`、`buildManifest()`、`capabilityEnv()` |
 | `deliver.ts` | 提交 → 推送 → 开 PR；推送与建 PR 交给 outbox 执行 | `GitDeliverer.deliver()`、`effectHandlers()` |
 | `effects.ts` | 外部动作 outbox：先落库再执行，按 `(kind,key)` 去重，失败指数退避，重启后重放 | `EffectQueue.exec()`、`start()/stop()`、`cancelTask()` |
 | `git.ts` | worktree、分支、提交、推送的封装 | `sh()` 之上的命令封装；`merge`、`rev-parse` 这类一次性命令在 `router.ts` 里直接调 `sh` |
@@ -148,12 +148,12 @@ cancelled ─┘
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由触发身份去重，编辑按 `updated_at` 区分）。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 线程解析（`threadKeyOf`：入口声明 > 被回复任务 > 本条消息）→ 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
-3. **去重与鉴权**（`src/trigger.ts` 与 `checkAccess`，`src/router.ts`）。先 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库，再校验仓库与需求：被拦下的消息不写触发器，改完配置重发同一条即可。通过后 `makeTrigger` 算出触发身份，`store.triggerByMessage(threadKey, messageKey)` 命中同一条消息时，同版本同载荷即重复投递直接丢弃，版本不同即编辑（见 4.2）。
+3. **去重与鉴权**（`src/trigger.ts` 与 `checkAccess`，`src/router.ts`）。先 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库，再校验仓库与需求；`capability` 档位不存在时直接回复可选值、不建任务。被拦下的消息不写触发器，改完配置重发同一条即可。通过后 `makeTrigger` 算出触发身份，`store.triggerByMessage(threadKey, messageKey)` 命中同一条消息时，同版本同载荷即重复投递直接丢弃，版本不同即编辑（见 4.2）。
 4. **落库与回执**（`Router.handle`，`src/router.ts`）。`store.createTaskFromTrigger` 在同一事务里写触发器与任务（`status=queued`），立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
 5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
-6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
-7. **执行**（`Worker.run`，`src/worker.ts`）。`adapter.buildArgs` 生成命令行（omp：`-e <extension> [-r <sessionId>] --mode=json -p <prompt> --cwd <workdir>`），`Bun.spawn` 的 cwd 就是工作副本，环境变量附带 `PISA_WORKDIR`、`PISA_PROGRESS_FILE`。超时按 `worker.timeoutSec`（默认 3600s）`SIGTERM`，10s 后 `SIGKILL`；取消每 2s 轮询一次，同样先礼后兵。stdout 按行交给 `adapter.parseLine`，最终 `summary` 与 `error` 都过 `redact`。
-8. **进度回传**。skill 把 `session`/`tool`/`blocked`/`done` 追加进 `.pisa/progress/<taskId>.jsonl`；`watchProgress`（`src/router.ts`）每 2s 读增量，节流 6s，转成 `🛠`/`✏️`/`⛔` 消息发到原对话。progress 只是旁路，丢了不影响任务结果。
+6. **工作副本与能力**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。执行前用 `resolveCapabilities` 按「全局基线 + 仓库基线 + 档位」算出本次能力；档位在任务建单时已校验，执行时配置被删则任务失败并说明原因（配置即真相）。
+7. **执行**（`Worker.run`，`src/worker.ts`）。先按能力清单写 `<stateDir>/capabilities/<taskId>.json`（workdir、readPaths、writable、secrets、domains、gui、blocked）并记一条 `capability` 日志。`adapter.buildArgs` 生成命令行（omp：`-e <extension> [-r <sessionId>] --mode=json -p <prompt> --cwd <workdir>`），`Bun.spawn` 的 cwd 就是工作副本；环境变量 = `envAllow ∪ capabilities.secrets`，再附 `PISA_WORKDIR`、`PISA_PROGRESS_FILE`、`PISA_CAPABILITIES`（`{taskId, readPaths, domains, gui}`）。超时按 `worker.timeoutSec`（默认 3600s）`SIGTERM`，10s 后 `SIGKILL`；取消每 2s 轮询一次，同样先礼后兵。stdout 按行交给 `adapter.parseLine`，最终 `summary` 与 `error` 都过 `redact`。
+8. **进度回传与越界审计**。skill 把 `session`/`tool`/`blocked`/`done` 追加进 `.pisa/progress/<taskId>.jsonl`；`watchProgress`（`src/router.ts`）每 2s 读增量，节流 6s，转成 `🛠`/`✏️`/`⛔` 消息发到原对话。进度只是旁路，丢了不影响任务结果。运行结束后 `blockedEvents` 汇总 `blocked` 事件进 `WorkerResult.blocked`，Router 逐条以 `stage=blocked` 写任务日志（`pisa logs <id>` 可查），回执追加「越界被拒 N 次」——审计不依赖进度推送开关。
 9. **交付**（`GitDeliverer.deliver`，`src/deliver.ts`）。`git status --porcelain` 无改动直接返回；有改动则 `commitAll`（`pisa: <首行>`，正文带任务号）：`git add -A` 后按路径分拣，`.github/workflows/**`、`.github/actions/**`、`.env*`、`*.pem`、`*.key`、`id_*`、`.npmrc`、`.netrc`、`**/secrets*` 命中即 `git reset` 剔出索引，不信任 `.gitignore`；全被拦下时不产生空提交，任务照常成功，回执追加「⚠️ 未提交的敏感路径」。推送与建 PR 都经 outbox（`src/effects.ts`）：先按 `(kind,key)` 落 `effects` 行再执行，`push` 失败抛错让任务落 `failed`，`pr` 失败留在队列里退避重试、本轮退回 `compare` 链接。若 `delivery.pr`、远程在 github.com、`gh` 可用，先 `gh pr list --head <branch>` 认领该分支上已有的开放 PR（上次建好却没来得及记账），没查到才 `gh pr create`（PR 正文带 `Closes #<issue>`）；两者都在仓库根目录执行，工作副本删掉后重试仍可用。成功后由 Router 记 `push`/`pr` 副作用并回填 `pr_url`。无改动且任务无 `prUrl` 时，若分支已在 origin 上同样先认领一次。
 10. **收尾**。`transition(succeeded)` 写入 `summary/branch/prUrl/endedAt` → 删工作副本（保留分支与副作用账本）→ `replyToSource` 经 outbox 回 PR/Issue（正文带隐藏标记 `<!-- pisa:reply task=… -->`，线程里已有同标记即视为发过，退避重试也不会重复回帖）→ 最终回执（摘要、文件清单、分支、链接、会话 id）。任务失败或取消时清掉该任务未完成的 effect 行。
 
@@ -168,7 +168,8 @@ cancelled ─┘
 | `pisa.db` `task_effects` | 仍在生效的分支/推送/PR/回帖/合并 | 撤销或清理时逐条删 |
 | `pisa.db` `effects` | 外部动作队列：推送、建 PR、回帖的待执行/已完成/已终止行 | 不自动清理；任务失败或取消时删该任务的未完成行 |
 | `.pisa/logs/<taskId>.log` | 阶段日志（脱敏） | 不自动清理 |
-| `.pisa/progress/<taskId>.jsonl` | 工具级进度 | 不自动清理 |
+| `.pisa/progress/<taskId>.jsonl` | 工具级进度 | 任务结束超过保留期时删除 |
+| `.pisa/capabilities/<taskId>.json` | 本次运行的能力清单（env 名、可写目录、被禁命令） | 任务结束超过保留期时删除 |
 | `.pisa/worktrees/<taskId>` | 工作副本 | 成功、失败、运行中取消后删除；`paused`、重启时按取消请求置 `cancelled` 的任务及其后续取消保留 |
 | git 分支 `pisa/<taskId>` | 改动 | 交付前失败/取消时删；成功后保留 |
 
@@ -200,6 +201,17 @@ interface WorkerAdapter {
 5. 退出码约定：0 成功，非 0 失败且最后若干行 stdout/stderr 会进 `error`。
 
 策略拦截没有做成适配器的一部分：它依赖 agent 的事件钩子（omp 的 pi 扩展）。换成不提供钩子的 agent 时，拦截会一起消失，`delivery` 与 `git.ts` 里的命令仍然是最后一道限制。
+
+能力清单的判定在 `extensions/guard.ts`，是纯函数，不吃全局状态：
+
+| 判定 | 缺省 | 放行条件 | 说明 |
+| --- | --- | --- | --- |
+| 写入 | 只允许工作目录与临时目录 | 写死在 `writableDirs` | `readPaths` 不放宽写入；重定向到 `/dev/null` 等设备不算写入 |
+| 读取 | 系统目录、临时目录与工作目录 | `capabilities.readPaths` | 由 `AMBIENT_READ_ROOTS` 覆盖二进制与库；用户数据目录必须显式声明 |
+| 网络 | 全拒 | `capabilities.domains`（含子域） | 命令头与显式 URL 都查；没有可确认目标时拒绝 |
+| GUI | 全拒 | `capabilities.gui: true` | 单独开关，`open`/`osascript` 与浏览器类工具都受它控制 |
+
+`blockBash(cmd, workdir, policy?)` 缺省策略是全拒，扩展从 `PISA_CAPABILITIES` 解析出策略后传入；文件类工具用 `checkPath` 按读/写分开判定。拒绝时返回类别化原因（写入范围之外 / 读取范围之外 / 网络目标不在能力清单 / GUI 操作未放行），扩展写进 `blocked` 事件，最终落到任务日志。它是命令级拦截，不做变量展开与命令替换的静态求值，也不替代操作系统沙箱（见 [019 规格](./specs/019-runtime-capabilities/spec.md)）。
 
 ### 4.2 Trigger：加事件源
 
@@ -287,7 +299,7 @@ interface ChannelAdapter {
 
 ### 5.2 已知限制
 
-1. **无沙箱**。agent 进程以当前用户身份运行，能读写工作副本之外的文件；环境变量只继承 `worker.envAllow` 白名单里的键（默认 `PATH`、`HOME`、`LANG`、`LC_ALL`、`TERM`、`TMPDIR`、`SHELL`、`USER`），其余不进子进程。`extensions/pisa-worker.ts` 的拦截是按 bash 命令文本首段匹配的正则 denylist（`git push`、`git reset --hard`、带 `f` 的 `git clean`、`rm -rf /`（`/tmp` 除外）、`sudo`、改 `/etc` 的 `chmod/chown`），`/usr/bin/git push`、`git -c … push`、脚本包装、非 bash 工具写文件都不在覆盖范围。worktree 只隔离同一仓库的分支，不是文件系统隔离。
+1. **不是操作系统沙箱**。agent 进程以当前用户身份运行；能力清单（`capabilities`）在命令级默认拒绝越界的读写、域名与 GUI：写入只允许工作目录与临时目录，读取额外允许 `readPaths`，网络只允许 `domains`，GUI 需 `gui: true`。环境变量只继承 `worker.envAllow ∪ capabilities.secrets` 里的键（默认 `PATH`、`HOME`、`LANG`、`LC_ALL`、`TERM`、`TMPDIR`、`SHELL`、`USER`），其余不进子进程。拦截依赖 bash 命令文本的静态解析，`cat $HOME/.ssh/id_rsa`、命令替换、脚本包装后的路径与隐式联网的 CLI（`gh`、`npm install`）都判不出来；worktree 只隔离同一仓库的分支，不是文件系统隔离。
 2. **单机**。SQLite、worktree、日志、agent 会话都在本机 `.pisa` 与 agent 自己的存储里。`supervise.sh` 在本机按 1→30s 退避重启，机器下线即系统下线；没有跨机器接管。
 3. **并发**。上限是 `worker.concurrency`（默认 2），以进程内活跃 Promise 计；多任务共享同一 `.git` 对象库，交付只 `git add -A` 自己的工作副本；同一分支不能有两个 worktree，续跑同一分支的第二个任务会直接失败；`merge` 要求主工作区停在 base 分支，并先 rebase 到最新主干（否则历史前进后快进必然失败）。
 4. **信号只到直接子进程**：超时与取消对 agent 进程 `SIGTERM`→`SIGKILL`，它派生的孙进程可能残留。

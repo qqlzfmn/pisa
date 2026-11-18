@@ -58,6 +58,7 @@ export function webhookHandler(deps: WebhookDeps): (req: Request) => Promise<Res
       userId: deps.userId,
       text: prompt,
       repo: text(body, "repo"),
+      capability: text(body, "capability"),
       isDirect: true,
       threadKey: text(body, "threadKey"),
       version: text(body, "version"),

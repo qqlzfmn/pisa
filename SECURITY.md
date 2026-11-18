@@ -2,9 +2,9 @@
 
 ## 前提
 
-pisa 是单机自托管工具。Worker 以运行 pisa 的那个用户身份执行任意命令：没有容器、没有网络限制、没有资源配额。扩展里的 guard 只拦截少数破坏性命令与越界路径，是尽力而为的防线，不是沙箱。
+pisa 是单机自托管工具。Worker 以运行 pisa 的那个用户身份执行任意命令：没有容器、没有资源配额。能力清单（`worker.capabilities` / `repos[].capabilities` / `repos[].profiles`）在命令级默认拒绝越界的读写、域名与 GUI 操作，扩展里的 guard 还拦截少数破坏性命令；两者都是尽力而为的防线，不是沙箱。
 
-能力边界（无沙箱、回滚不完整、单机、并发、鉴权面）的完整描述只有一处：[docs/usage.md §能力边界](./docs/usage.md#能力边界)。本文只写信任面划分与上报流程。
+能力边界（无操作系统沙箱、回滚不完整、单机、并发、鉴权面）的完整描述只有一处：[docs/usage.md §能力边界](./docs/usage.md#能力边界)。本文只写信任面划分与上报流程。
 
 **结论：只在受信机器上、只对源码可信的仓库启用。** 把不可信仓库写进 `repos` 等于把任意代码执行的权限交给它。
 
@@ -16,7 +16,7 @@ pisa 是单机自托管工具。Worker 以运行 pisa 的那个用户身份执�
 | webhook（`POST /event`） | 只监听 `127.0.0.1`；请求头 `x-pisa-token` 必须等于环境变量里的 token | 不匹配返回 403 |
 | GitHub 评论 | 只处理正文以 `/pisa ` 开头的评论；**评论作者不参与鉴权** | 不符合前缀一律忽略 |
 | 定时任务 / 探针 / 关键词 | 配置里的 `chatId` / `userId`，同样走白名单 | 身份或配置缺失则不触发 |
-| Worker 执行 | 运行用户权限；guard 拦截少数破坏性命令与 workdir 外路径 | 见 [014 规格](./docs/specs/014-worker-guard/spec.md) |
+| Worker 执行 | 运行用户权限；能力清单默认拒绝越界读写/域名/GUI，guard 拦截破坏性命令与 workdir 外路径 | 见 [014 规格](./docs/specs/014-worker-guard/spec.md) 与 [019 规格](./docs/specs/019-runtime-capabilities/spec.md) |
 | 交付 | 开启 `delivery.push` / `delivery.pr` 才有远程副作用 | 关闭时改动只留在本地分支 |
 
 ## 已知不防护

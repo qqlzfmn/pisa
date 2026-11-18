@@ -3,6 +3,7 @@ import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, DEFAULT_WEB, githubRepos, loadConfig, 
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker, workerEnv } from "./worker";
+import { resolveCapabilities } from "./capabilities";
 import { GitDeliverer } from "./deliver";
 import { Proactive } from "./proactive";
 import { GithubWatcher } from "./github-watcher";
@@ -130,6 +131,12 @@ async function main(): Promise<void> {
   }
   const allowedEnv = Object.keys(workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env));
   console.log(`[pisa] Worker 环境白名单 · ${allowedEnv.join(",") || "(空)"}`);
+  const base = resolveCapabilities({ global: cfg.worker.capabilities, repo: cfg.repos[0]?.capabilities });
+  console.log(
+    `[pisa] Worker 默认能力 · 读=${base.readPaths.join(",") || "仅工作目录与临时目录"} · 域名=${
+      base.domains.join(",") || "无"
+    } · GUI=${base.gui ? "开启" : "关闭"} · 密钥=${base.secrets.join(",") || "无"}`,
+  );
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
   // 通道放在最后启动：CLI 通道会一直等 stdin 结束，放前面会堵住调度、HTTP 入口与 ready 日志

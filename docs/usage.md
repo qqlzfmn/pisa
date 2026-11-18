@@ -37,9 +37,14 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 
 ## 能力边界
 
-### 无沙箱
+### 不是操作系统沙箱
 
-Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命令（`git push`、`git reset --hard`、`git clean -f`、`rm -rf /` 除 `/tmp`、`sudo`、改 `/etc` 权限）。其余命令以当前用户权限直接执行，没有容器或虚拟机隔离，也没有网络限制。只在受信仓库和自己有权限的机器上运行。
+Worker 在独立 git worktree 里跑 agent，没有容器、虚拟机或网络命名空间隔离，进程仍以当前用户权限运行。防线是两层：
+
+- **能力清单**（默认拒绝）：写入只允许工作目录与临时目录；读取只允许工作目录、临时目录与系统目录，其余要在 `capabilities.readPaths` 显式声明；网络默认全拒，`capabilities.domains` 里的域名（含子域）才放行；GUI 默认关闭，`capabilities.gui: true` 才允许 `open`、`osascript` 与浏览器类工具。
+- **破坏性命令拦截**：`git push`、`git reset --hard`、`git clean -f`、`rm -rf /`（`/tmp` 除外）、`sudo`、改 `/etc` 权限。
+
+越界操作会返回类别化原因，写进任务日志（`pisa logs <任务号>` 中 `stage=blocked` 的记录），回执里带「越界被拒 N 次」。拦截是命令级的：不做变量展开与命令替换的静态求值，`cat $HOME/.ssh/id_rsa` 这类写法判不出来；隐式联网的 CLI（`gh`、`npm install`）也不按域名判定。只在受信仓库和自己有权限的机器上运行。
 
 ### 回滚不完整
 

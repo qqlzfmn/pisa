@@ -57,6 +57,11 @@ function writeProgress(dir: string, id: string): void {
   writeFileSync(join(dir, "progress", `${id}.jsonl`), '{"type":"tool"}\n');
 }
 
+function writeManifest(dir: string, id: string): void {
+  mkdirSync(join(dir, "capabilities"), { recursive: true });
+  writeFileSync(join(dir, "capabilities", `${id}.json`), '{"taskId":"' + id + '"}\n');
+}
+
 const eventIds = (store: Store): string[] =>
   (store.db.query("SELECT event_id FROM events ORDER BY event_id").all() as Array<{ event_id: string }>).map(
     (r) => r.event_id,
@@ -81,16 +86,20 @@ describe("每日清理", () => {
     for (const id of ["t_expired", "t_edge", "t_fresh"]) {
       store.claimEvent(`github:comment:1:${id}`, id, NOW - 31 * DAY);
       writeProgress(dir, id);
+      writeManifest(dir, id);
     }
 
     const r = retention.tick(new Date(NOW));
 
     expect(r.events).toBe(1);
     expect(r.progress).toBe(1);
+    expect(r.manifests).toBe(1);
     expect(store.get("t_expired")).not.toBeNull();
     expect(existsSync(join(dir, "progress", "t_expired.jsonl"))).toBe(false);
     expect(existsSync(join(dir, "progress", "t_edge.jsonl"))).toBe(true);
     expect(existsSync(join(dir, "progress", "t_fresh.jsonl"))).toBe(true);
+    expect(existsSync(join(dir, "capabilities", "t_expired.json"))).toBe(false);
+    expect(existsSync(join(dir, "capabilities", "t_edge.json"))).toBe(true);
     expect(eventIds(store)).not.toContain("github:comment:1:t_expired");
     // 结束时间在保留期内的事件即使 seen_at 很旧也不删：判据是任务结束时间
     expect(eventIds(store)).toContain("github:comment:1:t_edge");
@@ -132,7 +141,7 @@ describe("每日清理", () => {
     store.claimEvent("github:comment:1:t_b", "t_b", NOW - 50 * DAY);
     writeProgress(dir, "t_b");
     const again = retention.tick(new Date(NOW));
-    expect(again).toEqual({ events: 0, progress: 0, vacuumed: false });
+    expect(again).toEqual({ events: 0, progress: 0, manifests: 0, vacuumed: false });
     expect(store.get("t_b")).not.toBeNull();
     expect(existsSync(join(dir, "progress", "t_b.jsonl"))).toBe(true);
 

@@ -8,6 +8,7 @@ import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
 import { EffectQueue, type CommentPayload, type PrPayload, type PushPayload } from "./effects";
 import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
+import { assertProfile, resolveCapabilities, type Capabilities } from "./capabilities";
 import {
   defaultRunner,
   formatReply,
@@ -456,6 +457,17 @@ export class Router {
       return;
     }
 
+    // 能力档位在建任务时校验：写错的档位不能被当成「静默用基线」
+    const profile = msg.capability?.trim() || null;
+    if (profile) {
+      try {
+        assertProfile(profile, repo.profiles);
+      } catch (err) {
+        await this.reply(msg.chatId, (err as Error).message);
+        return;
+      }
+    }
+
     // 触发身份只看「线程 + 消息 + 版本 + 载荷」：重复投递与编辑都命中同一条
     const at = msg.receivedAt ?? this.now();
     const trigger = makeTrigger({
@@ -484,6 +496,7 @@ export class Router {
       replyPr: msg.replyPr ?? null,
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
+      capability: profile,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -1043,9 +1056,23 @@ export class Router {
     }
 
     // 占位已在 fill() 完成；这里只做执行
+    const log = new TaskLogger(cfg.stateDir, task.id);
+    let capabilities: Capabilities;
+    try {
+      capabilities = resolveCapabilities(
+        { global: cfg.worker.capabilities, repo: repo.capabilities, profiles: repo.profiles },
+        task.capability ?? null,
+      );
+    } catch (err) {
+      const error = (err as Error).message;
+      log.write("capability", error);
+      store.transition(task.id, "failed", { error, endedAt: this.now() });
+      await this.reply(task.chatId, `失败 · ${task.id}\n${error}`);
+      return;
+    }
+
     // 必须是绝对路径：omp 的 --cwd 按相对路径解析会二次拼接
     const workdir = resolve(cfg.stateDir, "worktrees", task.id);
-    const log = new TaskLogger(cfg.stateDir, task.id);
     // 恢复中断任务：工作副本已存在，直接在其上继续，不重建也不重置分支
     const resuming = existsSync(workdir);
     log.write("start", `${repo.alias} ${branch}`);
@@ -1083,12 +1110,18 @@ export class Router {
         (line) => log.write("worker", line),
         () => store.isCancelRequested(task.id),
         resuming,
+        capabilities,
       );
     } catch (err) {
       result = { ok: false, summary: "", error: (err as Error).message, exitCode: -1 };
     } finally {
       stopWatch();
     }
+
+    // 越界拒绝进任务记录：与进度推送开关无关
+    const blockedCount = result.blocked?.length ?? 0;
+    for (const entry of result.blocked ?? []) log.write("blocked", entry);
+    const blockedNote = blockedCount ? `\n⛔ 越界被拒 ${blockedCount} 次（见任务日志）` : "";
 
     // 关停中：不写终态、不删工作副本与分支，任务留在 running 等下次启动分流为 paused
     if (this.stopping) {
@@ -1111,7 +1144,7 @@ export class Router {
       this.cleanupBranch(repo.path, task, branch);
       this.effects.cancelTask(task.id);
       store.transition(task.id, "failed", { error: result.error ?? "未知错误", endedAt: this.now() });
-      await this.reply(task.chatId, `失败 · ${task.id}\n${(result.error ?? "").slice(0, 800)}`, task.id);
+      await this.reply(task.chatId, `失败 · ${task.id}\n${(result.error ?? "").slice(0, 800)}${blockedNote}`, task.id);
       return;
     }
 
@@ -1150,6 +1183,7 @@ export class Router {
     if (delivery.branch) lines.push(`分支：${delivery.branch}`);
     if (delivery.prUrl) lines.push(`链接：${delivery.prUrl}`);
     if (fresh?.sessionId) lines.push(`会话：${fresh.sessionId.slice(0, 8)}`);
+    if (blockedCount) lines.push(`⛔ 越界被拒 ${blockedCount} 次（见任务日志）`);
     await this.reply(task.chatId, lines.join("\n\n"), task.id);
   }
 }

@@ -129,3 +129,4 @@ describe("outsideWorkdir", () => {
     expect(outsideWorkdir("a.ts", "")).toContain("工作目录");
   });
 });
+

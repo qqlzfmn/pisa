@@ -38,6 +38,8 @@ export interface RetentionResult {
   events: number;
   /** 删除的 progress 文件数 */
   progress: number;
+  /** 删除的能力清单文件数 */
+  manifests: number;
   vacuumed: boolean;
 }
 
@@ -67,8 +69,8 @@ export class Retention {
   private run(): void {
     try {
       const r = this.tick();
-      if (r.events > 0 || r.progress > 0 || r.vacuumed) {
-        const parts = [`events ${r.events} 行`, `progress ${r.progress} 个`];
+      if (r.events > 0 || r.progress > 0 || r.manifests > 0 || r.vacuumed) {
+        const parts = [`events ${r.events} 行`, `progress ${r.progress} 个`, `能力清单 ${r.manifests} 个`];
         if (r.vacuumed) parts.push("已 VACUUM");
         console.log(`[pisa] 数据保留：清理 ${parts.join("、")}`);
       }
@@ -80,7 +82,7 @@ export class Retention {
   /** 执行一次检查；测试直接调用 */
   tick(at = new Date(this.now())): RetentionResult {
     const { cfg, store } = this.deps;
-    const result: RetentionResult = { events: 0, progress: 0, vacuumed: false };
+    const result: RetentionResult = { events: 0, progress: 0, manifests: 0, vacuumed: false };
     const stamp = at.getTime();
     const days = Math.trunc(cfg.retentionDays ?? DEFAULT_RETENTION_DAYS);
 
@@ -92,6 +94,11 @@ export class Retention {
         if (existsSync(file)) {
           rmSync(file, { force: true });
           result.progress += 1;
+        }
+        const manifest = join(resolve(cfg.stateDir), "capabilities", `${id}.json`);
+        if (existsSync(manifest)) {
+          rmSync(manifest, { force: true });
+          result.manifests += 1;
         }
       }
       result.events = store.purgeEvents(cutoff);

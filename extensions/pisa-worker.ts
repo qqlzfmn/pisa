@@ -3,13 +3,17 @@
 // 由 Router 通过 `omp -e extensions/pisa-worker.ts` 挂载。
 
 import { appendFileSync } from "node:fs";
-import { blockBash, outsideWorkdir } from "./guard";
+import { blockBash, blockTool, checkPath, parsePolicy } from "./guard";
 
 const FILE = process.env.PISA_PROGRESS_FILE;
 const WORKDIR = process.env.PISA_WORKDIR ?? "";
+/** 能力清单由 Worker 在启动前注入；缺失或损坏时 guard 全拒 */
+const POLICY = parsePolicy(process.env.PISA_CAPABILITIES);
 
 /** 文件工具的路径参数名，四者同等对待 */
 const PATH_KEYS = ["path", "file_path", "filePath", "target"];
+/** 会写盘的工具；其余按只读处理 */
+const WRITE_TOOL = /write|edit|create|delete|move|rename|mkdir|patch|apply/i;
 
 /** pi 扩展 API 的最小形状（上游没有发布类型） */
 interface WorkerEvent {
@@ -44,7 +48,7 @@ function bashDetail(cmd: string): string {
 }
 
 function denied(tool: string, detail: string, reason: string): Block {
-  emit({ type: "blocked", tool, detail: detail.slice(0, 200) });
+  emit({ type: "blocked", tool, detail: detail.slice(0, 200), reason });
   return { block: true, reason: `pisa guard：${reason}` };
 }
 
@@ -56,25 +60,36 @@ export default async function (pi: Pi) {
     } catch {
       sid = "";
     }
-    emit({ type: "session", sessionId: sid, cwd: ctx?.cwd ?? WORKDIR });
+    emit({
+      type: "session",
+      sessionId: sid,
+      cwd: ctx?.cwd ?? WORKDIR,
+      gui: POLICY.gui,
+      readPaths: POLICY.readPaths.length,
+      domains: POLICY.domains,
+    });
   });
 
   pi.on("tool_call", (event) => {
     const name = String(event?.toolName ?? "");
     const input = event?.input ?? {};
 
+    const guiReason = blockTool(name, POLICY);
+    if (guiReason) return denied(name, "", guiReason);
+
     if (name === "bash") {
       const cmd = String(input.command ?? "");
-      const reason = blockBash(cmd, WORKDIR);
+      const reason = blockBash(cmd, WORKDIR, POLICY);
       if (reason) return denied(name, bashDetail(cmd), reason);
       emit({ type: "tool", tool: "bash", detail: bashDetail(cmd) });
       return;
     }
 
+    const mode = WRITE_TOOL.test(name) ? "write" : "read";
     for (const key of PATH_KEYS) {
       const value = input[key];
       if (typeof value !== "string") continue;
-      const reason = outsideWorkdir(value, WORKDIR);
+      const reason = checkPath(value, WORKDIR, POLICY.readPaths, mode);
       if (reason) return denied(name, value, reason);
     }
 

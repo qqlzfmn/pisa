@@ -20,6 +20,8 @@ export interface IncomingMessage {
   userId: string;
   text: string;
   repo?: string;
+  /** 能力档位名（repos[].profiles 的键）；缺省用仓库基线 */
+  capability?: string;
   /** 私聊（一对一）消息 */
   isDirect?: boolean;
   /**
@@ -74,6 +76,8 @@ export interface Task {
   replyIssue: number | null;
   /** 回帖目标仓库；null 表示回退到 github 配置的单仓库 */
   replyRepo: string | null;
+  /** 创建时选中的能力档位；null 表示仓库基线 */
+  capability?: string | null;
   summary: string | null;
   error: string | null;
   createdAt: number;
@@ -87,6 +91,8 @@ export interface WorkerResult {
   summary: string;
   error?: string;
   exitCode: number;
+  /** 本次运行被 guard 拒绝的操作（审计用） */
+  blocked?: string[];
 }
 
 /** 发送回执：拿到消息 id 才能把「回复」绑定回任务 */

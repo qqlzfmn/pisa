@@ -13,7 +13,21 @@
     {
       "alias": "pisa",
       "path": "/absolute/path/to/repo",
-      "baseBranch": "main"
+      "baseBranch": "main",
+      "capabilities": {
+        "readPaths": [],
+        "secrets": ["GH_TOKEN"],
+        "domains": ["github.com", "api.github.com", "registry.npmjs.org"],
+        "gui": false
+      },
+      "profiles": {
+        "ui": {
+          "readPaths": ["/absolute/path/to/design-assets"],
+          "secrets": ["GH_TOKEN"],
+          "domains": ["github.com", "api.github.com", "registry.npmjs.org"],
+          "gui": true
+        }
+      }
     }
   ],
   "worker": {
@@ -32,7 +46,13 @@
       "SHELL",
       "USER"
     ],
-    "idleTimeoutSec": 900
+    "idleTimeoutSec": 900,
+    "capabilities": {
+      "readPaths": [],
+      "secrets": [],
+      "domains": [],
+      "gui": false
+    }
   },
   "delivery": {
     "push": false,

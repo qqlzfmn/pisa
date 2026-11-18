@@ -113,7 +113,11 @@ curl -X POST http://127.0.0.1:8799/event \
 -d '{"prompt":"修掉 CI 失败","eventId":"webhook:ci:12345","threadKey":"pull/1287","version":"3"}'
 ```
 
-同 `threadKey` + `eventId` 再投一次、内容不同视为编辑（任务还在排队就更新需求）；`version` 没有编辑语义时可以不传。
+同 `threadKey` + `eventId` 再投一次、内容不同视为编辑（任务还在排队就更新需求）；`version` 没有编辑语义时可以不传。要选能力档位时带 `capability`（对应 `repos[].profiles.<name>`，见[能力清单](#能力清单)），档位不存在返回建单前的错误提示，不会静默降级：
+
+```bash
+-d '{"prompt":"调整设计稿","capability":"ui"}'
+```
 
 ## Agent CLI 与 skill
 
@@ -270,7 +274,7 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 
 - `retentionDays` 默认 30；≤ 0 关闭每日清理，回收照常
 - 每小时检查一次，启动时立即跑一次；同一本地日期只清理一次，重启不重复
-- 清理对象：结束时间早于 `now - retentionDays` 的终态任务（成功 / 失败 / 取消 / 撤销）的 `events` 行与 `.pisa/progress/<任务号>.jsonl`；任务行与账本保留，看板与撤销照常可用
+- 清理对象：结束时间早于 `now - retentionDays` 的终态任务（成功 / 失败 / 取消 / 撤销）的 `events` 行、`.pisa/progress/<任务号>.jsonl` 与 `.pisa/capabilities/<任务号>.json`；任务行与账本保留，看板与撤销照常可用
 - 不属于任何任务的占位行（cron 每分钟占位等）按写入时间过期；不这样清它们没有任务行可依附，永远涨
 - 单个任务日志超过 10 MiB 时轮转为 `<任务号>.log.1`，只保留一代，主文件继续写
 - 每周 VACUUM 一次并 checkpoint，数据库文件实际缩小；同一 ISO 周只执行一次
@@ -353,3 +357,40 @@ token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.
 [`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
 
 解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。
+
+### 能力清单
+
+三层，逐层合并（数组取并集，`gui` 取或，缺省全拒）：
+
+| 位置 | 作用 |
+| --- | --- |
+| `worker.capabilities` | 全局基线，所有仓库共享 |
+| `repos[].capabilities` | 仓库基线 |
+| `repos[].profiles.<name>` | 任务档位；存在时**替换**仓库基线，再与全局基线合并 |
+
+档位通过 webhook body 的 `capability` 选中（`{"prompt":"…","capability":"ui"}`），IM 入口暂不暴露。档位名在建任务时校验，不存在直接回复可选值、不建单；执行时按当前配置重新解析，建单后删掉档位会让任务失败并说明原因。规格见 [019](./specs/019-runtime-capabilities/spec.md)。
+
+每个任务启动时写 `stateDir/capabilities/<任务号>.json`：
+
+```json
+{
+  "taskId": "t_…",
+  "profile": "ui",
+  "workdir": "/…/.pisa/worktrees/t_…",
+  "readPaths": ["/…/worktrees/t_…", "/tmp", "/usr", "/…/design-assets"],
+  "writable": ["/…/worktrees/t_…", "/tmp"],
+  "secrets": ["GH_TOKEN"],
+  "domains": ["github.com", "api.github.com"],
+  "gui": true,
+  "blocked": [
+    "git push / rebase / reset --hard / clean -f / 切换分支 / worktree remove|prune / 删除分支 / commit --amend",
+    "sudo、删除根目录、chmod/chown /etc",
+    "写入工作目录与临时目录之外",
+    "读取能力清单之外的路径",
+    "访问域名清单之外的网络目标",
+    "GUI 操作（capabilities.gui=false）"
+  ]
+}
+```
+
+子进程拿到的 `PISA_CAPABILITIES` 只有 `{taskId, readPaths, domains, gui}`，密钥值不落盘、不进清单、不进日志。越界操作以 `stage=blocked` 写任务日志，`pisa logs <任务号>` 可查；回执追加「越界被拒 N 次」。

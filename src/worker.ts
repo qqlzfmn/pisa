@@ -1,9 +1,16 @@
 import { join, resolve } from "node:path";
-import { mkdirSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { DEFAULT_ENV_ALLOW, type Config } from "./config";
 import type { Task, WorkerResult } from "./types";
-import { redact } from "./log";
+import { redact, TaskLogger } from "./log";
 import { getAdapter, type WorkerAdapter } from "./adapters";
+import {
+  buildManifest,
+  capabilityEnv,
+  DENY_ALL,
+  envAllowWithSecrets,
+  type Capabilities,
+} from "./capabilities";
 
 /**
  * 按白名单从源环境里挑变量：只复制允许且实际存在的键，缺省键不生成空值。
@@ -29,7 +36,32 @@ export interface WorkerRunner {
     isCancelled: () => boolean,
     /** 恢复中断任务：接着原会话执行 */
     resume?: boolean,
+    /** 解析后的能力清单；缺省全拒 */
+    capabilities?: Capabilities,
   ): Promise<WorkerResult>;
+}
+
+/** 从进度文件汇总被 guard 拒绝的操作，供任务日志审计 */
+export function blockedEvents(file: string): string[] {
+  let text = "";
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line) as { type?: string; tool?: string; detail?: string; reason?: string };
+      if (e.type !== "blocked") continue;
+      const at = [e.tool, e.detail].filter(Boolean).join(" · ");
+      out.push(e.reason ? `${at}：${e.reason}` : at || "（未说明）");
+    } catch {
+      /* 半行或非 JSON 忽略 */
+    }
+  }
+  return out;
 }
 
 export class Worker implements WorkerRunner {
@@ -48,10 +80,29 @@ export class Worker implements WorkerRunner {
     onLog: (line: string) => void,
     isCancelled: () => boolean,
     resume = false,
+    capabilities: Capabilities = DENY_ALL,
   ): Promise<WorkerResult> {
     const extensionPath = join(import.meta.dir, "..", "extensions", "pisa-worker.ts");
     const progressDir = resolve(this.stateDir, "progress");
     mkdirSync(progressDir, { recursive: true });
+
+    // 能力清单先落盘再启动：任务记录能回答「这次被授予了什么」
+    const manifest = buildManifest({
+      taskId: task.id,
+      profile: task.capability ?? null,
+      workdir,
+      capabilities,
+    });
+    const capsDir = resolve(this.stateDir, "capabilities");
+    mkdirSync(capsDir, { recursive: true });
+    const manifestPath = join(capsDir, `${task.id}.json`);
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    new TaskLogger(this.stateDir, task.id).write(
+      "capability",
+      `能力清单 · 档位 ${manifest.profile ?? "仓库基线"} · 密钥 ${manifest.secrets.join(",") || "无"} · 域名 ${
+        manifest.domains.join(",") || "无"
+      } · GUI ${manifest.gui ? "开启" : "关闭"} · 清单 ${manifestPath}`,
+    );
 
     const input = {
       task,
@@ -66,10 +117,14 @@ export class Worker implements WorkerRunner {
       cwd: workdir,
       stdout: "pipe",
       stderr: "pipe",
-      // 只继承白名单里的变量；适配器注入的 PISA_* 始终放行
+      // 只继承白名单 + 本任务声明的密钥变量；适配器与能力注入的 PISA_* 始终放行
       env: {
-        ...workerEnv(this.cfg.envAllow ?? DEFAULT_ENV_ALLOW, process.env),
+        ...workerEnv(
+          envAllowWithSecrets(this.cfg.envAllow ?? DEFAULT_ENV_ALLOW, capabilities.secrets),
+          process.env,
+        ),
         ...this.adapter.buildEnv(input),
+        ...capabilityEnv(manifest),
       },
     });
 
@@ -149,18 +204,21 @@ export class Worker implements WorkerRunner {
     clearInterval(idleTimer);
     clearInterval(cancelPoll);
 
-    if (cancelled) return { ok: false, summary: "", error: "任务已取消", exitCode };
+    const blocked = blockedEvents(input.progressFile);
+    const audit = blocked.length ? { blocked } : {};
+
+    if (cancelled) return { ok: false, summary: "", error: "任务已取消", exitCode, ...audit };
     if (idleTimedOut) {
-      return { ok: false, summary: "", error: `卡死：超过 ${Math.round(idleMs / 1000)} 秒没有任何输出或进度`, exitCode };
+      return { ok: false, summary: "", error: `卡死：超过 ${Math.round(idleMs / 1000)} 秒没有任何输出或进度`, exitCode, ...audit };
     }
-    if (timedOut) return { ok: false, summary: "", error: `执行超时（${this.cfg.timeoutSec}s）`, exitCode };
+    if (timedOut) return { ok: false, summary: "", error: `执行超时（${this.cfg.timeoutSec}s）`, exitCode, ...audit };
 
     const summary = redact((texts.join("\n\n") || rawTail.slice(-40).join("\n")).trim()).slice(0, 4000);
     if (exitCode !== 0) {
       const err = rawTail.slice(-20).join("\n") || `Worker 退出码 ${exitCode}`;
-      return { ok: false, summary, error: redact(err).slice(0, 2000), exitCode };
+      return { ok: false, summary, error: redact(err).slice(0, 2000), exitCode, ...audit };
     }
-    return { ok: true, summary: summary || "（Worker 未返回文字摘要）", exitCode };
+    return { ok: true, summary: summary || "（Worker 未返回文字摘要）", exitCode, ...audit };
   }
 }
 
