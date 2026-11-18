@@ -336,3 +336,145 @@ describe("查询与操作", () => {
     expect((await cli(...base("task", "x", "--bogus"))).code).toBe(2);
   });
 });
+
+describe("管理命令", () => {
+  const servers: Array<{ stop: (close?: boolean) => Promise<void> }> = [];
+  const SECRET = "{{SECRET_1b2c3d4e}}";
+
+  afterEach(() => {
+    for (const server of servers.splice(0)) void server.stop(true);
+    delete process.env.PISA_WEB_TOKEN;
+  });
+
+  /** 管理接口替身：记录请求，校验请求头凭证，按开关返回成功或拒绝 */
+  function mockApi(): {
+    port: number;
+    seen: Array<{ path: string; method: string; token: string | null; body: Record<string, unknown> }>;
+    reject: (message: string) => void;
+  } {
+    const seen: Array<{ path: string; method: string; token: string | null; body: Record<string, unknown> }> = [];
+    let rejection: string | null = null;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req) {
+        const token = req.headers.get("x-pisa-token");
+        const body = req.method === "POST" ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {};
+        seen.push({ path: new URL(req.url).pathname, method: req.method, token, body });
+        if (token !== SECRET) return Response.json({ ok: false, error: "未授权" }, { status: 401 });
+        if (rejection) return Response.json({ ok: false, message: rejection }, { status: 409 });
+        return Response.json({ ok: true, status: "succeeded", message: "接口完成" });
+      },
+    });
+    servers.push(server);
+    const port = server.port;
+    if (port === undefined) throw new Error("替身服务没有拿到端口");
+    return { port, seen, reject: (message) => (rejection = message) };
+  }
+
+  function useApi(port: number, enabled = true): void {
+    writeConfig({ web: { enabled, port, tokenEnv: "PISA_WEB_TOKEN", userId: "u1", chatId: "web" } });
+  }
+
+  test("merge 成功退出 1，凭证只放请求头", async () => {
+    const api = mockApi();
+    useApi(api.port);
+    process.env.PISA_WEB_TOKEN = SECRET;
+
+    const r = await cli(...base("merge", "t_demo"));
+
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("接口完成");
+    expect(r.out).toContain("需重启");
+    expect(api.seen).toEqual([
+      { path: "/api/tasks/t_demo/merge", method: "POST", token: SECRET, body: { confirm: true } },
+    ]);
+  });
+
+  test("merge 被接口拒绝退出 2", async () => {
+    const api = mockApi();
+    api.reject("合并失败：测试未通过");
+    useApi(api.port);
+    process.env.PISA_WEB_TOKEN = SECRET;
+
+    const r = await cli(...base("merge", "t_demo", "--json"));
+
+    expect(r.code).toBe(2);
+    expect((JSON.parse(r.out) as { message: string }).message).toBe("合并失败：测试未通过");
+  });
+
+  test("未配置 Web 或缺少 token 退出 3，且不发请求", async () => {
+    const api = mockApi();
+    useApi(api.port, false);
+    process.env.PISA_WEB_TOKEN = SECRET;
+    const disabled = await cli(...base("merge", "t_demo"));
+    expect(disabled.code).toBe(3);
+    expect(disabled.err).toContain("待配置");
+
+    useApi(api.port);
+    delete process.env.PISA_WEB_TOKEN;
+    const noToken = await cli(...base("merge", "t_demo"));
+    expect(noToken.code).toBe(3);
+    expect(api.seen).toHaveLength(0);
+  });
+
+  test("凭证被拒退出 3", async () => {
+    const api = mockApi();
+    useApi(api.port);
+    process.env.PISA_WEB_TOKEN = "wrong-token";
+
+    const r = await cli(...base("rewind", "t_demo"));
+
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("待配置");
+    expect(api.seen).toHaveLength(1);
+  });
+
+  test("rewind 默认只预览，--yes 才执行", async () => {
+    const api = mockApi();
+    useApi(api.port);
+    process.env.PISA_WEB_TOKEN = SECRET;
+
+    const preview = await cli(...base("rewind", "t_demo"));
+    expect(preview.code).toBe(0);
+    const execute = await cli(...base("rewind", "t_demo", "--yes"));
+    expect(execute.code).toBe(0);
+
+    expect(api.seen.map((s) => s.body.confirm)).toEqual([false, true]);
+  });
+
+  test("run 是 task 的同义命令", async () => {
+    const r = await cli(...base("run", "跑一下", "--json"));
+    expect(r.code).toBe(0);
+    const body = parse<TaskJson>(r);
+    expect(body.status).toBe("queued");
+    expect(body.prompt).toBe("跑一下");
+
+    const store = new Store(join(stateDir, "pisa.db"));
+    expect(store.get(body.id)!.prompt).toBe("跑一下");
+    store.close();
+  });
+
+  test("logs --json 输出 id 与原始行", async () => {
+    const task = seed();
+    mkdirSync(join(stateDir, "logs"), { recursive: true });
+    writeFileSync(join(stateDir, "logs", `${task.id}.log`), "a\nb\nc\n");
+
+    const r = await cli(...base("logs", task.id, "--tail", "2", "--json"));
+
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual({ id: task.id, lines: ["b", "c"] });
+  });
+
+  test("status 暴露执行器暂停状态", async () => {
+    const store = new Store(join(stateDir, "pisa.db"));
+    store.setExecutorPaused(true);
+    store.close();
+
+    const jsonOut = parse<{ executor: { paused: boolean } }>(await cli(...base("status", "--json")));
+    expect(jsonOut.executor.paused).toBe(true);
+
+    const human = await cli(...base("status"));
+    expect(human.out).toContain("执行器：已暂停");
+  });
+});

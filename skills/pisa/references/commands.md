@@ -7,11 +7,16 @@
 | 命令 | 作用 | 关键选项 |
 | --- | --- | --- |
 | `pisa task <需求>` | 新建 queued 任务 | `--repo <别名>`、`--event-id <幂等键>`、`--requester <名字>`、`--wait`、`--timeout <秒>`、`--interval <毫秒>`、`--json` |
+| `pisa run <需求>` | 与 `task` 同义 | 同上 |
 | `pisa continue <任务号> <新要求>` | 在原分支上续跑 | 同上（`--repo` 被忽略，继承父任务仓库） |
 | `pisa wait <任务号>` | 阻塞到终态 | `--timeout <秒>`（默认 1800）、`--interval <毫秒>`（默认 1000）、`--json` |
 | `pisa cancel <任务号>` | 取消任务 | 无 |
+| `pisa merge <任务号>` | 合入主干，经本机管理接口 | `--json` |
+| `pisa rewind <任务号>` | 撤销任务，经本机管理接口 | `--yes`（默认只预览）、`--json` |
 
 `task` / `continue` 的正文是位置参数，含空格时整体加引号。`--` 之后的内容一律当正文。
+
+`merge` / `rewind` 要求守护进程的 Web 接口已启用，并且 `$PISA_WEB_TOKEN`（或配置 `web.tokenEnv` 指定的变量）有值；它们不直连 SQLite，因为合并要串行验证、撤销要探测 PR 与分支。
 
 ## 查询类
 
@@ -20,7 +25,7 @@
 | `pisa status` | 看板 + 守护进程心跳 | `--json` |
 | `pisa list` | 任务列表 | `--repo`、`--status`、`--limit`（默认 20）、`--pr <编号>`、`--github-repo <owner/repo>`、`--json` |
 | `pisa show <任务号>` | 单个任务详情 | `--json` |
-| `pisa logs <任务号>` | 任务日志尾部 | `--tail <行数>`（默认 80） |
+| `pisa logs <任务号>` | 任务日志尾部 | `--tail <行数>`（默认 80）、`--json` |
 | `pisa repos` | 配置的仓库与授权状态 | `--json` |
 | `pisa help` | 用法与退出码 | 无 |
 
@@ -55,6 +60,7 @@
 ```json
 {
   "daemon": { "alive": true, "ageMs": 412, "lastBeat": 1763424000000 },
+  "executor": { "paused": false },
   "counts": { "queued": 1, "running": 1, "paused": 0, "succeeded": 3, "failed": 0, "cancelled": 0, "rewound": 0 },
   "total": 5,
   "running": [Task],
@@ -63,9 +69,15 @@
 }
 ```
 
+`logs --json`：`{"id":"t_...","lines":["...","..."]}`，行是日志文件原文，默认最后 80 行。
+
+`merge --json` / `rewind --json`：直接透传管理接口响应 `{"ok":true,"status":"succeeded","message":"..."}`。
+
 `list --json`、`show --json`、`repos --json` 都是数组或对象，字段与上面一致。
 
 ## 退出码
+
+任务命令：
 
 | 码 | 语义 |
 | --- | --- |
@@ -75,6 +87,15 @@
 | 3 | 任务号不存在 |
 | 4 | 任务不可运行（paused / cancelled / rewound） |
 | 5 | `wait` 超时 |
+
+管理命令（`merge` / `rewind`）：
+
+| 码 | 语义 |
+| --- | --- |
+| 0 | 完成，无需重启 |
+| 1 | 完成，但需重启守护进程才生效（`merge` 成功） |
+| 2 | 接口拒绝或校验失败（合并冲突、状态不允许、5xx） |
+| 3 | 待配置：Web 未启用、缺少 token、401/403、接口不可达 |
 
 ## 配置要点
 

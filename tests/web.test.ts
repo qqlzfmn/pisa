@@ -371,4 +371,89 @@ describe("web 控制台", () => {
       expect(store.effectsOf("t_queued_merge")).toHaveLength(0);
     });
   });
+
+  describe("管理接口", () => {
+    interface StateResponse extends BoardResponse {
+      executor: { paused: boolean };
+    }
+
+    test("/state 与 /api/state 同源，含执行器状态", async () => {
+      seedTask({ id: "t_mgmt_queued" });
+      const state = (await (await call("/state", { headers: auth })).json()) as StateResponse;
+      const api = (await (await call("/api/state", { headers: auth })).json()) as StateResponse;
+      expect(state.ok).toBe(true);
+      expect(state.executor.paused).toBe(false);
+      expect(state.counts.queued).toBe(1);
+      expect(state.queued.map((t) => t.id)).toEqual(api.queued.map((t) => t.id));
+      expect(state.counts).toEqual(api.counts);
+    });
+
+    test("/tickets 别名读写同一任务", async () => {
+      seedTask({ id: "t_ticket", prompt: "别名" });
+      const detail = (await (await call("/tickets/t_ticket", { headers: auth })).json()) as DetailResponse;
+      expect(detail.task.id).toBe("t_ticket");
+
+      const stop = await post("/tickets/t_ticket/stop", {});
+      expect(stop.status).toBe(200);
+      expect(store.get("t_ticket")!.status).toBe("cancelled");
+    });
+
+    test("retry 新建排队任务并保留原任务", async () => {
+      seedTask({ id: "t_failed", status: "failed", error: "boom", baseRef: "main", context: "上一轮" });
+      const res = await post("/api/tasks/t_failed/retry", {});
+      const body = (await res.json()) as { ok: boolean; taskId: string; status: string };
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(body.status).toBe("queued");
+
+      const fresh = store.get(body.taskId)!;
+      expect(fresh.prompt).toBe("既有任务");
+      expect(fresh.baseRef).toBe("main");
+      expect(fresh.context).toBe("上一轮");
+      expect(fresh.source).toBe("retry:t_failed");
+      expect(fresh.status).toBe("queued");
+      expect(store.get("t_failed")!.status).toBe("failed");
+    });
+
+    test("运行中的任务不能 retry", async () => {
+      seedTask({ id: "t_running", status: "running", startedAt: 1 });
+      const res = await post("/api/tasks/t_running/retry", {});
+      expect(res.status).toBe(409);
+      expect(store.recentTasks().filter((t) => t.source.startsWith("retry:"))).toHaveLength(0);
+    });
+
+    test("暂停后不领取任务，恢复后继续", async () => {
+      seedTask({ id: "t_pause", prompt: "暂停测试" });
+      const paused = (await (await post("/api/executor/pause")).json()) as { executor: { paused: boolean } };
+      expect(paused.executor.paused).toBe(true);
+      expect(store.executorPaused()).toBe(true);
+      expect(await router.drainOnce()).toBe(false);
+      expect(store.get("t_pause")!.status).toBe("queued");
+
+      const state = (await (await call("/api/state", { headers: auth })).json()) as StateResponse;
+      expect(state.executor.paused).toBe(true);
+
+      await post("/executor/resume");
+      expect(store.executorPaused()).toBe(false);
+      expect(await router.drainOnce()).toBe(true);
+      expect(store.get("t_pause")!.status).toBe("succeeded");
+    });
+
+    test("撤销未知任务返回 404", async () => {
+      const res = await post("/api/tasks/t_missing/rewind", {});
+      expect(res.status).toBe(404);
+    });
+
+    test("管理动作与状态都要求凭证", async () => {
+      for (const [path, method] of [
+        ["/state", "GET"],
+        ["/api/tasks/x/retry", "POST"],
+        ["/tickets/x/stop", "POST"],
+        ["/executor/pause", "POST"],
+      ] as const) {
+        const res = await call(path, { method });
+        expect(res.status).toBe(401);
+      }
+    });
+  });
 });

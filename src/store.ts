@@ -405,6 +405,15 @@ export class Store {
     return row?.value ?? null;
   }
 
+  /** 执行器暂停：停派新任务，已运行的任务不受影响；跨重启保持 */
+  executorPaused(): boolean {
+    return this.getMeta("executor_paused") === "1";
+  }
+
+  setExecutorPaused(paused: boolean): void {
+    this.setMeta("executor_paused", paused ? "1" : "0");
+  }
+
   /** 守护进程心跳：CLI 用它判断任务是否真的会被执行 */
   beat(at = Date.now()): void {
     this.setMeta("heartbeat", String(at));
