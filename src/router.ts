@@ -1088,6 +1088,7 @@ export class Router {
     const lines = [`✅ ${task.id} 完成`, result.summary.slice(0, 1200)];
     if (delivery.files.length) lines.push(`改动 ${delivery.files.length} 个文件：${delivery.files.slice(0, 8).join(", ")}`);
     else lines.push("没有代码改动。");
+    if (delivery.blocked.length) lines.push(`⚠️ 未提交的敏感路径：${delivery.blocked.slice(0, 8).join(", ")}`);
     if (delivery.branch) lines.push(`分支：${delivery.branch}`);
     if (delivery.prUrl) lines.push(`链接：${delivery.prUrl}`);
     if (fresh?.sessionId) lines.push(`会话：${fresh.sessionId.slice(0, 8)}`);

@@ -108,6 +108,8 @@ export interface DeliveryResult {
   prUrl?: string;
   files: string[];
   pushed: boolean;
+  /** 命中敏感路径、未进入提交的文件；任务照常成功，但回执要列出 */
+  blocked: string[];
 }
 
 /** 状态机允许的跃迁，唯一事实源 */

@@ -64,23 +64,24 @@ export class GitDeliverer implements Deliverer {
   }
 
   async deliver(task: Task, workdir: string, repo: RepoConfig, effects: EffectQueue): Promise<DeliveryResult> {
-    const files = changedFiles(workdir);
+    const changes = changedFiles(workdir);
     const base = repo.baseBranch ?? "main";
     const branch = task.branch ?? `pisa/${task.id}`;
     const remote = repo.remote ?? remoteUrl(workdir);
     // 建/查 PR 的前提：配置开启、远端是 GitHub、本机有 gh
     const prReady = this.cfg.delivery.pr && remote.includes("github.com") && (this.deps.hasGh ?? hasGh)();
 
-    // 续跑既有 PR 时没有改动也要保住 PR 绑定；上次建好 PR 却没来得及记账时按分支认领
+    const title = `pisa: ${task.prompt.split("\n")[0]?.slice(0, 60) ?? task.id}`;
+    // 有改动才 add + commit；commitAll 会先把敏感路径剔出索引，全被拦下时不产生空提交
+    const commit = changes.length === 0 ? null : commitAll(workdir, `${title}\n\n任务: ${task.id}`, this.cfg.delivery.commitName, this.cfg.delivery.commitEmail);
+    if (commit && commit.code !== 0) throw new Error(`提交失败: ${commit.err || commit.out}`);
+    const { files, blocked } = commit ?? { files: [], blocked: [] };
+
+    // 没有可交付的改动：续跑既有 PR 时也要保住绑定；上次建好 PR 却没记账时按分支认领
     if (files.length === 0) {
       const claimed = !task.prUrl && prReady && pushedBranch(workdir, branch) ? this.claimPr(repo.path, branch) : undefined;
-      return { files: [], pushed: false, prUrl: task.prUrl ?? claimed };
+      return { files: [], blocked, pushed: false, prUrl: task.prUrl ?? claimed };
     }
-
-    const title = `pisa: ${task.prompt.split("\n")[0]?.slice(0, 60) ?? task.id}`;
-
-    const commit = commitAll(workdir, `${title}\n\n任务: ${task.id}`, this.cfg.delivery.commitName, this.cfg.delivery.commitEmail);
-    if (commit.code !== 0) throw new Error(`提交失败: ${commit.err || commit.out}`);
 
     let pushed = false;
     if (this.cfg.delivery.push && remote) {
@@ -90,7 +91,7 @@ export class GitDeliverer implements Deliverer {
 
     // 已有 PR：分支推送即更新 PR，不再新建；远端同 head 的 PR 说明上次建好没记账，认领它
     const existing = task.prUrl ?? (prReady && pushed ? this.claimPr(repo.path, branch) : undefined);
-    if (existing) return { branch, prUrl: existing, files, pushed };
+    if (existing) return { branch, prUrl: existing, files, pushed, blocked };
 
     let prUrl: string | undefined;
     if (prReady && pushed) {
@@ -114,7 +115,7 @@ export class GitDeliverer implements Deliverer {
       prUrl = compareUrl(remote, base, branch) ?? undefined;
     }
 
-    return { branch, prUrl, files, pushed };
+    return { branch, prUrl, files, pushed, blocked };
   }
 
   /** 分支上已有的开放 PR；查不到或 gh 失败按没有处理，交给 createPr */
