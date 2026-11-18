@@ -23,3 +23,5 @@
 - [x] T007 `docs/architecture.md` 模块表、交付与收尾步骤、落盘表更新
 - [x] T008 `CHANGELOG.md` 新增条目
 - [x] T009 `bun test` + `bunx tsc --noEmit` 全量通过
+- [x] T010 推送键带提交号：`resume` 复用任务与分支时新提交仍推送 (FR-013)
+      验证：`bun test tests/github-comments.test.ts`（同一任务两次交付，远端 HEAD 跟上）

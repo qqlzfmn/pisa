@@ -8,6 +8,7 @@ import {
   createPr,
   findPr,
   hasGh,
+  headSha,
   pushedBranch,
   pushBranch,
   remoteUrl,
@@ -84,7 +85,10 @@ export class GitDeliverer implements Deliverer {
 
     let pushed = false;
     if (this.cfg.delivery.push && remote) {
-      await effects.exec("push", `${task.id}:${branch}`, task.id, { taskId: task.id, repoPath: repo.path, branch });
+      // 键带提交号：resume 复用同一任务与分支时新一轮提交仍会推送；崩溃重放同一提交只推一次
+      const head = headSha(workdir);
+      if (!head) throw new Error("读取提交失败：无法确定 HEAD");
+      await effects.exec("push", `${task.id}:${branch}:${head}`, task.id, { taskId: task.id, repoPath: repo.path, branch });
       pushed = true;
     }
 

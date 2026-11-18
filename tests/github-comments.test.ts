@@ -755,6 +755,38 @@ describe("GitHub 评论 → 任务", () => {
     expect(store.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
   });
 
+  test("重启后新 Router 重放未完成的回帖", async () => {
+    const key = "pr:o/r#12:t_replay";
+    store.insertTask({ ...baseTask, id: "t_replay", prompt: "重启重放" });
+    store.enqueueEffect({
+      kind: "comment",
+      key,
+      taskId: "t_replay",
+      payload: JSON.stringify({ taskId: "t_replay", repo: "o/r", number: 12, purpose: "pr", body: "补发" }),
+      at: 0,
+    });
+    const calls: string[][] = [];
+    const ghRunner: Runner = (args) => {
+      calls.push(args);
+      return reply(0);
+    };
+    // 新实例模拟进程重启：构造时注册 handler，start 时立即重放
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner });
+    router.start();
+    try {
+      // start 的立即 flush 全是微任务：等一轮事件循环即可
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setImmediate(resolve);
+      await promise;
+    } finally {
+      await router.stop();
+    }
+
+    expect(store.effectRow("comment", key)!.status).toBe("done");
+    expect(calls.filter((c) => c[1] === "pr").length).toBe(1);
+    expect(store.effectsOf("t_replay").map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
+  });
+
   test("未启用 github 时不回帖", async () => {
     cfg = makeCfg(repo, stateDir);
     const { runner: ghRunner, calls } = scripted(reply(0));
@@ -1064,6 +1096,30 @@ describe("GitDeliverer 更新既有 PR", () => {
     expect(res.prUrl).toBe("https://github.com/o/r/pull/12");
     expect(res.pushed).toBe(true);
     expect(sh(["git", "--git-dir", bare, "rev-parse", "--verify", "pisa/parent"]).code).toBe(0);
+  });
+
+  test("resume 复用同一任务与分支时，新一轮提交仍推到远端", async () => {
+    const workdir = setup();
+    const store = new Store(":memory:");
+    const deliverer = new GitDeliverer(cfg, { hasGh: () => false });
+    const handlers = deliverer.effectHandlers();
+    const queue = new EffectQueue(store, { now: () => Date.now() })
+      .register("push", handlers.push)
+      .register("pr", handlers.pr);
+    const task = { ...baseTask, id: "t_resume", branch: "pisa/parent" };
+
+    await deliverer.deliver(task, workdir, cfg.repos[0]!, queue);
+    const first = sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out.trim();
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out.trim()).toBe(first);
+
+    // /resume：同一任务 id、同一分支，工作副本上再来一版改动
+    writeFileSync(join(workdir, "out.txt"), "second\n");
+    await deliverer.deliver(task, workdir, cfg.repos[0]!, queue);
+
+    const head = sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out.trim();
+    expect(head).not.toBe(first);
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out.trim()).toBe(head);
+    store.close();
   });
 
   test("没有 prUrl 时按原有逻辑创建 PR", async () => {

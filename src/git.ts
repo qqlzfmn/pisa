@@ -59,6 +59,12 @@ export function commitAll(workdir: string, message: string, name: string, email:
   return sh(["git", "-C", workdir, "-c", `user.name=${name}`, "-c", `user.email=${email}`, "commit", "-m", message]);
 }
 
+/** 当前 HEAD 的提交号；不在 git 仓库或读取失败时返回 null */
+export function headSha(workdir: string): string | null {
+  const res = sh(["git", "-C", workdir, "rev-parse", "HEAD"]);
+  return res.code === 0 ? res.out.trim() || null : null;
+}
+
 export function remoteUrl(workdir: string): string {
   return sh(["git", "-C", workdir, "remote", "get-url", "origin"]).out;
 }
