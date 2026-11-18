@@ -688,6 +688,60 @@ describe("Router", () => {
     expect(existsSync(workdir)).toBe(false);
   });
 
+  test(
+    "resume 从进度文件末尾继续，不重放上一轮的工具调用",
+    async () => {
+      cfg.notifications = { progress: true };
+      const gate = Promise.withResolvers<void>();
+      const holding: WorkerRunner = {
+        async run(_task, workdir) {
+          await gate.promise;
+          writeFileSync(join(workdir, "out.txt"), "hi\n");
+          return { ok: true, summary: "继续完成", exitCode: 0 };
+        },
+      };
+      const router = build(holding);
+      await router.handle(msg("/pisa 恢复中的任务"));
+      const task = store.recentTasks()[0]!;
+      const branch = `pisa/${task.id}`;
+      const workdir = join(stateDir, "worktrees", task.id);
+      expect(store.claimQueued(task.id, Date.now(), branch)).toBe(true);
+      expect(createWorktree(repo, workdir, branch).code).toBe(0);
+      store.setSessionId(task.id, "sess-1");
+      expect(store.transition(task.id, "paused")).toBe(true);
+
+      // 上一轮已经推送过的三条进度
+      mkdirSync(join(stateDir, "progress"), { recursive: true });
+      const progress = join(stateDir, "progress", `${task.id}.jsonl`);
+      writeFileSync(
+        progress,
+        [
+          '{"type":"tool","tool":"bash","detail":"old-bash-1"}',
+          '{"type":"tool","tool":"edit","detail":"old-edit-2"}',
+          '{"type":"tool","tool":"bash","detail":"old-bash-3"}',
+          "",
+        ].join("\n"),
+      );
+
+      await router.handle(msg(`/pisa resume ${task.id}`));
+      await Bun.sleep(4200); // 两个 tick
+      expect(channel.sent.some((s) => /old-bash-1|old-edit-2|old-bash-3/.test(s.text))).toBe(false);
+
+      // 新一轮追加一行：6 秒内只应多出这一条
+      writeFileSync(
+        progress,
+        (await Bun.file(progress).text()) + '{"type":"tool","tool":"bash","detail":"new-line-4"}\n',
+      );
+      await Bun.sleep(6000);
+      expect(channel.sent.filter((s) => s.text.includes("new-line-4")).length).toBe(1);
+
+      gate.resolve();
+      await router.drainOnce();
+      expect(store.get(task.id)?.status).toBe("succeeded");
+    },
+    20_000,
+  );
+
   test("resume 拒绝未中断、非本人、无工作副本的请求", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 待办"));
