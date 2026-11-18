@@ -71,7 +71,7 @@ Telegram 启动时用 `setMyCommands` 注册命令菜单（私聊可直接点选
 - **排队**：数量 + 最多 5 条 `任务号 · 仓库 · 需求前 40 字`
 - **最近完成**：最多 5 条 `状态 · 耗时 · 仓库 · 需求前 30 字 · PR 链接`
 
-末尾一行汇总 `总数 / 成功 / 失败 / 暂停`；某段为空时显示 `(无)`。
+末尾一行汇总 `总数 / 成功 / 失败 / 暂停`，再接一行最近 24h 指标 `完成 / 成功 / 失败 / 成功率 / P50 / P95`（窗口内没有完成任务时显示 `最近 24h：无完成`）；某段为空时显示 `(无)`。`pisa status --json` 的 `last24h` 字段是同一份数据。
 
 ### 崩溃恢复
 
@@ -151,6 +151,31 @@ PISA_WEB_TOKEN=<自定义 token> bun run web
 - 支持派活、取消、合并（浏览器二次确认）与复制任务号
 - 没配 `${web.tokenEnv}` 时启动生成一次性 token，只打印到日志，不落盘
 - 写操作走同一个 `Router`：白名单、状态机、合并前的验证与快进逻辑与 IM 完全一致
+
+### 健康采集
+
+控制台的 HTTP 服务上另有一个不鉴权的 `GET /health`，给本机监控采集：
+
+```bash
+curl -s http://127.0.0.1:8787/health
+```
+
+```json
+{
+  "ok": true,
+  "uptimeSec": 8123,
+  "queue": 2,
+  "running": 1,
+  "last24h": { "finished": 12, "succeeded": 11, "failed": 1, "successRate": 0.9166, "durationSamples": 12, "p50Ms": 184000, "p95Ms": 712000 },
+  "repos": [{ "repo": "pisa", "running": 1, "queued": 2, "finished24h": 12 }],
+  "daemon": { "alive": true, "ageMs": 300, "lastBeat": 1732000000000 }
+}
+```
+
+- `ok` 取守护进程心跳：10 秒内有心跳为 `true` 并返回 200，否则 `false` 并返回 503——HTTP 还活着但调度停了，也算不健康
+- `last24h` 只统计 `succeeded` / `failed`，取消与撤销不算样本；耗时分位用最近邻法，缺 `startedAt` 或 `endedAt` 的任务不进耗时样本
+- `repos` 列出配置里的仓库与库里出现过的仓库，任务数全为 0 也保留，便于确认「是没派活还是没跑」
+- 响应只有计数与时间，没有需求正文、分支或日志；服务本身只监听 `127.0.0.1`
 
 ```json
 {

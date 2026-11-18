@@ -65,6 +65,24 @@ interface BoardResponse {
   finished: Array<{ id: string; statusLabel: string; stage: string }>;
 }
 
+interface HealthResponse {
+  ok: boolean;
+  uptimeSec: number;
+  queue: number;
+  running: number;
+  last24h: {
+    finished: number;
+    succeeded: number;
+    failed: number;
+    successRate: number | null;
+    durationSamples: number;
+    p50Ms: number | null;
+    p95Ms: number | null;
+  };
+  repos: Array<{ repo: string; running: number; queued: number; finished24h: number }>;
+  daemon: { alive: boolean; ageMs: number | null };
+}
+
 interface DetailResponse {
   ok: boolean;
   task: { id: string; prompt: string; duration: string; branch: string | null; stage: string; stageLabel: string };
@@ -264,6 +282,67 @@ describe("web 控制台", () => {
 
       const missing = await call("/api/tasks/t_missing", { headers: auth });
       expect(missing.status).toBe(404);
+    });
+  });
+
+  describe("健康检查", () => {
+    /** insertTask 不写时间戳：这里直接把结束时间落库，构造 24h 窗口内的样本 */
+    function seedFinished(id: string, status: "succeeded" | "failed", startedAt: number, endedAt: number): void {
+      seedTask({ id, status, repo: "demo", createdAt: startedAt });
+      store.db.query("UPDATE tasks SET started_at = ?, ended_at = ? WHERE id = ?").run(startedAt, endedAt, id);
+    }
+
+    test("无需 token 即可读取健康快照", async () => {
+      const now = Date.now();
+      seedTask({ id: "t_queue", status: "queued" });
+      seedTask({ id: "t_run", status: "running", startedAt: now - 10_000 });
+      seedFinished("t_ok", "succeeded", now - 60_000, now - 30_000);
+      seedFinished("t_bad", "failed", now - 45_000, now - 35_000);
+      seedTask({ id: "t_other", status: "running", repo: "other", startedAt: now - 5_000 });
+      store.beat();
+
+      const res = await call("/health");
+      const body = (await res.json()) as HealthResponse;
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(body.uptimeSec).toBeGreaterThanOrEqual(0);
+      expect(body.queue).toBe(1);
+      expect(body.running).toBe(2);
+      expect(body.daemon.alive).toBe(true);
+      expect(body.last24h.finished).toBe(2);
+      expect(body.last24h.succeeded).toBe(1);
+      expect(body.last24h.failed).toBe(1);
+      expect(body.last24h.successRate).toBe(0.5);
+      expect(body.last24h.durationSamples).toBe(2);
+      // 耗时 30s 与 10s：最近邻分位 p50 取第 1 个，p95 取第 2 个
+      expect(body.last24h.p50Ms).toBe(10_000);
+      expect(body.last24h.p95Ms).toBe(30_000);
+      expect(body.repos).toEqual([
+        { repo: "demo", running: 1, queued: 1, finished24h: 2 },
+        { repo: "other", running: 1, queued: 0, finished24h: 0 },
+      ]);
+    });
+
+    test("配置内没有任务的仓库也出现在视图里", async () => {
+      store.beat();
+      const body = (await (await call("/health")).json()) as HealthResponse;
+      expect(body.repos).toEqual([{ repo: "demo", running: 0, queued: 0, finished24h: 0 }]);
+      expect(body.last24h.finished).toBe(0);
+      expect(body.last24h.successRate).toBeNull();
+      expect(body.last24h.p50Ms).toBeNull();
+    });
+
+    test("心跳过期时 ok 为 false 且返回 503", async () => {
+      const body = (await (await call("/health")).json()) as HealthResponse;
+      expect(body.ok).toBe(false);
+      expect(body.daemon.ageMs).toBeNull();
+      expect((await call("/health")).status).toBe(503);
+    });
+
+    test("只接受 GET", async () => {
+      const res = await call("/health", { method: "POST", body: "{}" });
+      expect(res.status).toBe(405);
+      expect(res.headers.get("allow")).toBe("GET");
     });
   });
 

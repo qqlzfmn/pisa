@@ -1,6 +1,7 @@
 import type { Task, TaskStatus } from "./types";
 import type { Store } from "./store";
 import { STAGE_LABEL, stageText, taskStage, type TaskStage } from "./stage";
+import { windowMetrics, type WindowMetrics } from "./metrics";
 
 /** 毫秒 → 人类可读时长：不足 1 分钟给秒，不足 1 小时给 XmYs，其余 XhYm */
 export function formatDuration(ms: number): string {
@@ -109,7 +110,17 @@ export function formatStatusBoard(store: Store, now = Date.now()): string {
   }
 
   lines.push("", `汇总：${total} 个任务 · 成功 ${counts.succeeded} · 失败 ${counts.failed} · 暂停 ${counts.paused}`);
+  lines.push(formatWindowMetrics(windowMetrics(store, now)));
   return lines.join("\n");
+}
+
+/** 24h 指标单行：看板与 CLI 文本输出共用 */
+export function formatWindowMetrics(m: WindowMetrics): string {
+  if (m.finished === 0) return "最近 24h：无完成";
+  const rate = m.successRate === null ? "-" : `${Math.round(m.successRate * 100)}%`;
+  const p50 = m.p50Ms === null ? "-" : formatDuration(m.p50Ms);
+  const p95 = m.p95Ms === null ? "-" : formatDuration(m.p95Ms);
+  return `最近 24h：完成 ${m.finished} · 成功 ${m.succeeded} · 失败 ${m.failed} · 成功率 ${rate} · P50 ${p50} · P95 ${p95}`;
 }
 
 /** 守护进程心跳超过该时长视为未运行 */

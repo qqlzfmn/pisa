@@ -11,6 +11,7 @@ import { makeTrigger } from "./trigger";
 import { continuationContext } from "./task-context";
 import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
+import { windowMetrics } from "./metrics";
 import { stageText } from "./stage";
 
 /** 退出码：脚本据此分支，不要在版本间随意改语义 */
@@ -334,6 +335,7 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
             running: snapshot.running.map(taskJson),
             queued: snapshot.queued.map(taskJson),
             finished: snapshot.finished.map(taskJson),
+            last24h: windowMetrics(store),
           });
           return EXIT.ok;
         }

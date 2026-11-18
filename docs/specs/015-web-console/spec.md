@@ -47,7 +47,7 @@ pisa core 的全部能力目前只能经聊天通道使用：定位任务、看�
 | --- | --- |
 | FR-001 | 守护进程启动时，若 `web.enabled` 为真，在 `127.0.0.1:<web.port>` 提供 HTTP 服务；`bun run web` 以同样的默认值直接启动带 Web 控制台的守护进程 |
 | FR-002 | `GET /ui` 返回单页控制台 HTML；`GET /` 重定向到 `/ui` |
-| FR-003 | 所有路由要求 token：请求携带 `?token=`、`Authorization: Bearer`、`x-pisa-token` 头或 `pisa_web` cookie 之一；缺失或不匹配返回 401 |
+| FR-003 | 除 `/health` 外的路由要求 token：请求携带 `?token=`、`Authorization: Bearer`、`x-pisa-token` 头或 `pisa_web` cookie 之一；缺失或不匹配返回 401。`/health` 是监控采集入口，不鉴权，见 018-health-metrics |
 | FR-004 | `GET /ui?token=<token>` 用 `Set-Cookie` 记住 token，之后的同源请求不再需要 URL 参数 |
 | FR-005 | `GET /api/tasks?repo=<别名>` 返回 `{ daemon, counts, total, repos, running, queued, finished }`；`repo` 只过滤三个列表，不过滤汇总计数 |
 | FR-006 | 任务 JSON 字段：`id`、`status`、`repo`、`prompt`、`branch`、`prUrl`、`createdAt`、`startedAt`、`endedAt`、`duration`（人类可读，运行中按当前时间算）、`summary`、`error` |

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { runCli } from "../src/cli";
 import { loadConfig } from "../src/config";
 import { Store } from "../src/store";
+import type { WindowMetrics } from "../src/metrics";
 import { sh } from "../src/git";
 import { newTaskId } from "../src/ids";
 import type { Task } from "../src/types";
@@ -265,13 +266,17 @@ describe("查询与操作", () => {
     expect(text.code).toBe(0);
     expect(text.out).toContain("排队（1）");
     expect(text.out).toContain("working/queued（等空闲槽位）");
+    expect(text.out).toContain("最近 24h：无完成");
     expect(text.out).toContain("守护进程：未运行");
 
     const store = new Store(join(stateDir, "pisa.db"));
     store.beat();
     store.close();
-    const body = parse<{ daemon: { alive: boolean }; total: number; queued: TaskJson[] }>(await cli(...base("status", "--json")));
+    const body = parse<{ daemon: { alive: boolean }; total: number; queued: TaskJson[]; last24h: WindowMetrics }>(
+      await cli(...base("status", "--json")),
+    );
     expect(body.daemon.alive).toBe(true);
+    expect(body.last24h).toEqual({ finished: 0, succeeded: 0, failed: 0, successRate: null, durationSamples: 0, p50Ms: null, p95Ms: null });
     expect(body.total).toBe(1);
     expect(body.queued[0]!.prompt).toBe("排队中");
     expect(body.queued[0]!.status).toBe("queued");
