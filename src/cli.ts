@@ -9,6 +9,7 @@ import type { Task, TaskStatus } from "./types";
 import { newTaskId } from "./ids";
 import { continuationContext } from "./task-context";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot } from "./status";
+import { formatMandate } from "./policy";
 
 /** 退出码：脚本据此分支，不要在版本间随意改语义 */
 const EXIT = {
@@ -112,6 +113,7 @@ function taskJson(t: Task) {
     prompt: t.prompt,
     summary: t.summary,
     error: t.error,
+    mandate: t.mandate,
     createdAt: t.createdAt,
     startedAt: t.startedAt,
     endedAt: t.endedAt,
@@ -153,6 +155,7 @@ function newCliTask(init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "b
     replyPr: null,
     replyIssue: null,
     replyRepo: null,
+    mandate: null,
     summary: null,
     error: null,
     createdAt: Date.now(),
@@ -242,6 +245,7 @@ function taskHuman(io: Io, task: Task, logPath: string): void {
   ];
   if (task.summary) rows.push(["摘要", task.summary]);
   if (task.error) rows.push(["错误", task.error]);
+  if (task.mandate) rows.push(["准入", formatMandate(task.mandate)]);
   for (const [k, v] of rows) io.out(`${k}：${v}`);
 }
 

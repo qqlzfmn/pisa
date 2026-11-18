@@ -131,6 +131,7 @@ const baseTask: Task = {
   replyPr: null,
   replyIssue: null,
   replyRepo: null,
+  mandate: null,
   summary: null,
   error: null,
   createdAt: 0,
@@ -366,6 +367,27 @@ describe("GitHub 评论 → 任务", () => {
     expect(listCall(calls)[2]).toContain("since=2023-11-14T22%3A13%3A20.000Z");
     // 类型判定按编号单独查询
     expect(calls[1]).toEqual(["gh", "api", "repos/o/r/issues/20", "--jq", ".pull_request // empty"]);
+  });
+
+  test("评论作者作为派活主体：默认放行，收紧矩阵后按作者拒绝", async () => {
+    const { runner } = ghRouter([{ id: 1, body: "/pisa 修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/20" }]);
+    const { w } = watcher(runner);
+    await w.poll();
+
+    const task = store.recentTasks()[0]!;
+    expect(task.mandate?.source).toBe("github");
+    expect(task.mandate?.principal).toBe("alice");
+    expect(task.mandate?.cell).toBe("outMention");
+    expect(task.mandate?.outcome).toBe("accept");
+
+    cfg.policy = { sources: { github: { cells: { outMention: "deny" } } } };
+    const tightened = ghRouter([{ id: 2, body: "/pisa 再改一处", issue_url: "https://api.github.com/repos/o/r/issues/20" }]);
+    const { w: w2 } = watcher(tightened.runner);
+    await w2.poll();
+
+    expect(store.recentTasks()).toHaveLength(1);
+    expect(channel.sent.at(-1)?.text).toContain("无权限");
+    expect(channel.sent.at(-1)?.text).toContain("alice");
   });
 
   test("同一评论轮询两轮只建一个任务", async () => {

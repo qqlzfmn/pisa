@@ -96,6 +96,7 @@ export class GithubWatcher {
         userId,
         text,
         replyRepo: repo,
+        principal: comment.userLogin,
       };
       if (isPr.value) {
         await this.deps.enqueue({ ...base, continueFrom: this.deps.store.taskByPr(n, repo)?.id, replyPr: n });

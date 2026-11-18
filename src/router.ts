@@ -23,6 +23,7 @@ import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { continuationContext } from "./task-context";
 import { formatStatusBoard } from "./status";
+import { decideAdmission, effectivePolicy, formatPolicy, type Mandate, type PolicySource } from "./policy";
 
 export { formatDuration } from "./status";
 
@@ -40,6 +41,16 @@ export interface RouterDeps {
 
 /** 单英文词任务的待确认正文，10 分钟过期 */
 const PENDING_TTL_MS = 10 * 60 * 1000;
+
+/** 通道归类：IM 的两个通道共用一份策略；未知通道按 IM 处理 */
+const CHANNEL_SOURCE: Record<string, PolicySource> = {
+  telegram: "im",
+  cli: "im",
+  github: "github",
+  webhook: "webhook",
+  cron: "cron",
+  proactive: "proactive",
+};
 
 interface PendingTask {
   prompt: string;
@@ -166,6 +177,7 @@ export class Router {
       if (t === "/start" || t === "/help" || t === "帮助") cmd = { kind: "help", body: "" };
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
+      else if (t === "/policy" || t === "策略") cmd = { kind: "policy", body: "" };
       else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
@@ -266,6 +278,11 @@ export class Router {
       return;
     }
 
+    if (cmd.kind === "policy") {
+      await this.reply(msg.chatId, formatPolicy(effectivePolicy(cfg.policy, cfg.whitelist.users)));
+      return;
+    }
+
     if (cmd.kind === "status") {
       await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now()));
       return;
@@ -317,7 +334,8 @@ export class Router {
     // 去重：同一事件只登记一次；重复投递直接丢弃
     if (!store.claimEvent(msg.eventId, taskId)) return;
 
-    const denied = this.checkAccess(msg, repo);
+    const mandate = this.admit(msg);
+    const denied = this.checkAccess(msg, repo, mandate);
     if (denied) {
       const last = this.deniedAt.get(msg.userId) ?? 0;
       if (this.now() - last > 24 * 3600 * 1000) {
@@ -352,6 +370,7 @@ export class Router {
       replyPr: msg.replyPr ?? null,
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
+      mandate,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -360,7 +379,8 @@ export class Router {
       cancelRequested: false,
     };
     store.insertTask(task);
-    await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库：${repo.alias}\n排队中。`);
+    const note = mandate.outcome === "observe" ? `\n准入：观察档，未拦截（策略 ${mandate.policyVersion}）` : "";
+    await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库：${repo.alias}\n排队中。${note}`);
   }
 
   /** 待确认任务按人与会话隔离，避免群里互相确认别人的任务 */
@@ -399,9 +419,19 @@ export class Router {
     }
   }
 
-  private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
+  /** 按来源准入表判定这次派活；来源与主体由入口在 IncomingMessage 里标注 */
+  private admit(msg: IncomingMessage): Mandate {
     const { cfg } = this.deps;
-    if (!cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
+    return decideAdmission(effectivePolicy(cfg.policy, cfg.whitelist.users), {
+      source: msg.origin ?? CHANNEL_SOURCE[msg.channel] ?? "im",
+      principal: msg.principal ?? msg.userId,
+      mentioned: msg.mentioned ?? (msg.isDirect === true || msg.text.includes(cfg.trigger)),
+    });
+  }
+
+  private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined, mandate: Mandate): string | null {
+    const { cfg } = this.deps;
+    if (mandate.outcome === "deny") return `无权限：${mandate.reason}（策略 ${mandate.policyVersion}）`;
     if (!repo) return `仓库未配置：${msg.repo ?? "(默认)"}`;
     if (!cfg.whitelist.repos.includes(repo.alias)) return `无权限：仓库 ${repo.alias} 不在白名单。`;
     if (!isGitRepo(repo.path)) return `仓库路径不是 git 仓库：${repo.path}`;
@@ -621,6 +651,11 @@ export class Router {
       await this.reply(msg.chatId, `任务 ${id} 不是中断状态（${task.status}），只有中断的任务可以恢复。`);
       return;
     }
+    const recheck = this.recheckMandate(task);
+    if (recheck) {
+      await this.reply(msg.chatId, recheck);
+      return;
+    }
     if (!existsSync(resolve(cfg.stateDir, "worktrees", id))) {
       await this.reply(msg.chatId, `任务 ${id} 的工作副本已不存在，无法恢复。`);
       return;
@@ -638,6 +673,24 @@ export class Router {
     }
     await this.reply(msg.chatId, `恢复执行 · ${id}\n分支 ${task.branch ?? `pisa/${id}`}`, id);
     this.launch({ ...task, status: "running", startedAt });
+  }
+
+  /** 恢复前用当前策略复核任务授权；返回拒绝说明，null 表示通过 */
+  private recheckMandate(task: Task): string | null {
+    const granted = task.mandate;
+    if (!granted) return null;
+    const policy = effectivePolicy(this.deps.cfg.policy, this.deps.cfg.whitelist.users);
+    const now = decideAdmission(policy, {
+      source: granted.source,
+      principal: granted.principal,
+      mentioned: granted.mentioned,
+    });
+    if (now.outcome !== "deny") return null;
+    const versions =
+      now.policyVersion === granted.policyVersion
+        ? `策略 ${now.policyVersion}`
+        : `任务授权策略 ${granted.policyVersion}，当前 ${now.policyVersion}`;
+    return `拒绝恢复 · ${task.id}\n${now.reason}（${versions}）\n任务保持中断状态。`;
   }
 
   /** 取一个排队任务执行；返回是否真的执行了 */

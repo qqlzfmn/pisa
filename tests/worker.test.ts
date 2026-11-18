@@ -23,6 +23,7 @@ const task: Task = {
   replyPr: null,
   replyIssue: null,
   replyRepo: null,
+  mandate: null,
   summary: null,
   error: null,
   createdAt: 0,

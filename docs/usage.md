@@ -23,6 +23,7 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 | CI 失败 | `POST /event` 带 `x-pisa-token` | 与 IM 相同的执行链路 |
 | PR 内派活 | PR 评论 `/pisa 把错误处理补上` | 接续原分支并更新原 PR |
 | 到点自动开单 | `schedules` 里的 cron | 队列与执行链路同 IM |
+| 看准入规则 | `/pisa policy` | 每个来源的开关、档位、名单、四格结果与版本号 |
 
 ## 最佳实践
 
@@ -55,10 +56,13 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 
 ### 鉴权面
 
-- **IM**：`whitelist.users` 与 `whitelist.repos` 双重白名单，未授权用户不建任务（24 小时内只提示一次）。群里仍需要触发词；私聊可直接说需求。
-- **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，所以它也必须进白名单。要从外网调用，自己加反向代理与 TLS。
-- **GitHub**：只处理正文以 `/pisa ` 开头的评论；评论作者不参与鉴权，任务归属由各仓库条目配置的 `chatId` / `userId` 决定。`gh` token 从 `tokenEnv` 指定的环境变量读取。
-- **定时、探针、关键词**：都用配置里的身份开单，同样走白名单；触发不了的根因通常是身份不在白名单或缺少 `scheduler` 配置。
+准入由 `policy` 一张表统一描述，五类来源各自一套：`im`（cli 与 telegram 共用）、`github`、`webhook`、`cron`、`proactive`。每个来源有 `allowed`、`principals`、四格矩阵（名单内@ / 名单内未@ / 名单外@ / 名单外未@）与档位 `accept`（`auto` 按矩阵、`observe` 全放行只记账、`off` 全拒）。不写 `policy` 时等于改造前的行为。`/pisa policy` 查看当前规则与版本。
+
+- **IM**：主体是 telegram / cli 用户 id，名单缺省取 `whitelist.users`；「@」指带触发词或私聊。默认名单外拒绝，24 小时内只提示一次。
+- **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；主体是配置的 `userId`。默认不看主体，靠 token 把关。要从外网调用，自己加反向代理与 TLS。
+- **GitHub**：只处理正文以 `/pisa ` 开头的评论，主体是评论作者 login。缺省不看主体（与改造前一致），用 `sources.github.cells` 收紧到「只认名单」时，把评审人写进 `principals`；任务归属（回帖到哪、挂谁的会话）仍是各仓库条目的 `chatId` / `userId`。`gh` token 从 `tokenEnv` 指定的环境变量读取。
+- **定时、探针**：主体是配置里的 `userId`；关键词误触的主体是真实发信人，且不算「@」，落在「未@」列。触发不了的根因通常是身份不在名单、`allowed: false`，或缺少 `scheduler` 配置。
+- **策略版本与恢复**：每条任务落库时记下 `mandate`（来源、主体、命中格、判定、档位、策略版本）。改配置不影响已接任务；`resume` 前按当前策略复核同一份 `mandate`，不通过就拒绝并说明原因与新旧版本。
 - **密钥**：Telegram bot token、webhook token 只从环境变量或 `~/.pisa/` 下的文件读取，不写入配置文件与 launchd plist。
 
 ## 不该交给它

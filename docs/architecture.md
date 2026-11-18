@@ -40,7 +40,7 @@
 | --- | --- | --- | --- |
 | web | 外部系统 | 提供事件；承接回执 | 不做判定，不碰数据库 |
 | cli | `src/index.ts`、`src/channels/`、`scripts/supervise.sh` | 读配置、装配依赖、启动/停止、信号与退出码 | 不含任务语义，不写业务状态 |
-| core | `src/` 其余文件 | 唯一的状态机与调度中心：去重、鉴权、排队、编排、交付、记账、恢复 | 不直接执行任务动作：不调模型、不改业务文件 |
+| core | `src/` 其余文件 | 唯一的状态机与调度中心：去重、准入、排队、编排、交付、记账、恢复 | 不直接执行任务动作：不调模型、不改业务文件 |
 | runtime | worktree + agent 进程 | 真正改代码、跑测试、产出提交 | 不直接对用户说话，不改任务状态 |
 | skill | `extensions/pisa-worker.ts` | 在 agent 进程内采集进度、拦截危险命令 | 只写 progress jsonl，不反向调用 core |
 
@@ -88,7 +88,7 @@ cancelled ─┘
 
 | 从 | 到 | 触发者 | 入口 |
 | --- | --- | --- | --- |
-| — | `queued` | 鉴权通过后的新事件 | `store.insertTask`（`src/router.ts`） |
+| — | `queued` | 准入通过后的新事件 | `store.insertTask`（`src/router.ts`） |
 | `queued` | `running` | 调度器认领 | `store.claimQueued`（`src/router.ts`），原子 UPDATE，失败即放弃 |
 | `queued` | `cancelled` | 请求者 `cancel` | `handleCancel`（`src/router.ts`） |
 | `running` | `paused` | 重启时工作副本与 agent 会话都在 | `recoverInterrupted`（`src/router.ts`） |
@@ -137,7 +137,7 @@ cancelled ─┘
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
-3. **去重与鉴权**（`claimEvent` 与 `checkAccess`，`src/router.ts`）。`newId()` 先出任务号，`store.claimEvent(eventId, taskId)` 用主键抢占事件，抢不到直接丢弃；随后 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库。被拒事件同样占用 `eventId`。
+3. **去重与准入**（`claimEvent`、`admit` 与 `checkAccess`，`src/router.ts` + `src/policy.ts`）。`newId()` 先出任务号，`store.claimEvent(eventId, taskId)` 用主键抢占事件，抢不到直接丢弃；随后 `admit` 按来源（`origin`，缺省由 `CHANNEL_SOURCE` 从 channel 归类）与主体（`principal`，缺省 `userId`）查准入矩阵，命中格与档位算出 `Mandate`，`deny` 直接回绝（24h 节流），`observe` 照常接单；`checkAccess` 只保留仓库白名单与 git 仓库检查。被拒事件同样占用 `eventId`。
 4. **落库与回执**（`Router.handle`，`src/router.ts`）。`insertTask`（`status=queued`）后立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
 5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
@@ -200,7 +200,7 @@ interface WorkerAdapter {
 | cron | `scheduler.ts` | `cron:<jobId>:<minuteKey>`，先 `cron-claim:<jobId>:<minuteKey>` 抢占 | 分钟键，同一分钟只投一次 |
 | 主动发现 | `proactive.ts` | `proactive:kw:<ts>` / `proactive:probe:<ts>` | 一次机会一次事件 |
 
-新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。冷却与去重这类「触发源自己的节流」放在触发源内部（例如 `Proactive` 的 cooldown、`GithubWatcher` 的 `since` 下界），core 只负责事件级去重。
+新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。冷却与去重这类「触发源自己的节流」放在触发源内部（例如 `Proactive` 的 cooldown、`GithubWatcher` 的 `since` 下界），core 只负责事件级去重。准入归类要同步：在 `src/policy.ts` 的 `PolicySource` 里加来源，并在 `IncomingMessage.origin` 或 `src/router.ts` 的 `CHANNEL_SOURCE` 里给出归类；主体另有其人时用 `principal` 标注（例如 GitHub 评论的 `userLogin`），否则按 `userId` 处理。
 
 ### 4.3 入口客户端：加通道
 
@@ -251,7 +251,7 @@ interface ChannelAdapter {
 2. **单机**。SQLite、worktree、日志、agent 会话都在本机 `.pisa` 与 agent 自己的存储里。`supervise.sh` 在本机按 1→30s 退避重启，机器下线即系统下线；没有跨机器接管。
 3. **并发**。上限是 `worker.concurrency`（默认 2），以进程内活跃 Promise 计；多任务共享同一 `.git` 对象库，交付只 `git add -A` 自己的工作副本；同一分支不能有两个 worktree，续跑同一分支的第二个任务会直接失败；`merge` 要求主工作区停在 base 分支。
 4. **信号只到直接子进程**：超时与取消对 agent 进程 `SIGTERM`→`SIGKILL`，它派生的孙进程可能残留。
-5. **去重先于鉴权**：`claimEvent`（`src/router.ts`）在 `checkAccess` 之前，被拒或被参数校验拦下的事件也占用了 `eventId`，同一 id 不会重试。
+5. **去重先于准入**：`claimEvent`（`src/router.ts`）在 `admit` / `checkAccess` 之前，被拒或被参数校验拦下的事件也占用了 `eventId`，同一 id 不会重试。
 6. **内存态丢失**：24h 拒绝提示节流、单字确认的 10 分钟待确认态、主动发现冷却、`GithubWatcher.since`（启动时设为进程启动时刻）都在内存。重启后去重窗口归零，停机期间发布的评论不会被补拉。
 7. **调度不补跑**：cron 粒度到分钟、tick 30s，停机错过的时间窗不补；同一分钟只投一次。
 8. **`gh pr create` 未在生产验证**（README「当前状态」）：没配远程的仓库只得到 compare 链接。
@@ -292,4 +292,5 @@ interface ChannelAdapter {
 | 换 agent | `src/adapters/`、`src/worker.ts` |
 | 交付与 PR | `src/deliver.ts`、`src/git.ts`、`src/github.ts` |
 | 撤销 | `src/rewind.ts`、`docs/specs/013-rewind/` |
+| 准入策略 | `src/policy.ts`、`docs/specs/015-source-admission/` |
 | 配置项 | `src/config.ts`、`pisa.config.example.json` |

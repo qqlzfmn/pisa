@@ -91,6 +91,22 @@
       "prompt": "自动探针失败，定位原因并修复。"
     }
   },
+  "policy": {
+    "sources": {
+      "im": {
+        "accept": "auto",
+        "cells": { "inMention": "accept", "inPlain": "accept", "outMention": "deny", "outPlain": "deny" }
+      },
+      "github": {
+        "accept": "observe",
+        "principals": ["<github login>"],
+        "cells": { "outMention": "deny" }
+      },
+      "webhook": { "allowed": true },
+      "cron": { "allowed": true },
+      "proactive": { "allowed": true }
+    }
+  },
   "stateDir": ".pisa",
   "retentionDays": 30
 }

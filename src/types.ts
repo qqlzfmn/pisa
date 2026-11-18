@@ -1,3 +1,5 @@
+import type { Mandate, PolicySource } from "./policy";
+
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
 /** 任务对外产生的副作用种类：rewind 的依据 */
@@ -33,6 +35,12 @@ export interface IncomingMessage {
   /** 回帖目标仓库（owner/repo）；缺省时用 github 配置的单仓库 */
   replyRepo?: string;
   receivedAt?: number;
+  /** 派活来源；缺省按 channel 归类（telegram/cli → im，其余同名来源，未知 → im） */
+  origin?: PolicySource;
+  /** 实际派活主体；缺省用 userId（GitHub 评论传评论作者 login，探针传真实发信人） */
+  principal?: string;
+  /** 是否明确点名 pisa；缺省按「私聊或正文含触发词」判断 */
+  mentioned?: boolean;
 }
 
 export interface Task {
@@ -57,6 +65,8 @@ export interface Task {
   replyIssue: number | null;
   /** 回帖目标仓库；null 表示回退到 github 配置的单仓库 */
   replyRepo: string | null;
+  /** 派活时的准入授权记录；null 表示未经准入表（CLI 直投或历史数据） */
+  mandate: Mandate | null;
   summary: string | null;
   error: string | null;
   createdAt: number;

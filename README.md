@@ -20,6 +20,7 @@
 - [架构](#架构)
 - [与 pi 的关系](#与-pi-的关系)
 - [目录结构](#目录结构)
+- [来源准入（policy）](#来源准入policy)
 - [Agent CLI 与 skill](#agent-cli-与-skill)
 - [常驻（launchd）](#常驻launchd)
 - [开发方式](#开发方式)
@@ -327,7 +328,32 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 - 任务成功后把摘要（限 3000 字）回帖到评论所在的仓库；旧任务或没有仓库记录时回退到配置里的单仓库；回帖失败只写日志，任务状态不变
 - GitHub 评论产生的任务仍落在本地默认仓库：配置里没有 GitHub 仓库到本地别名的映射
 
-`gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
+`gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者作为派活主体进入准入表（见下一节），任务归属（回帖到哪、挂谁的会话）仍由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
+
+## 来源准入（policy）
+
+五类来源的权限面不同：IM 有明确的人，GitHub 评论是任意评审人，webhook、cron、探针是固定身份。`policy` 用一张表统一描述「谁能派活」，并给整套规则一个版本号。
+
+```json
+{
+  "policy": {
+    "sources": {
+      "im": { "accept": "auto", "cells": { "outMention": "deny" } },
+      "github": { "allowed": true, "cells": { "outMention": "deny" }, "accept": "observe" },
+      "cron": { "allowed": true }
+    }
+  }
+}
+```
+
+- 五个来源：`im`（cli 与 telegram 共用）、`github`、`webhook`、`cron`、`proactive`
+- 每个来源四个开关：`allowed`（false 时一律不接单，优先于档位）、`principals`（主体名单，缺省沿用 `whitelist.users`）、`cells`（四格矩阵）、`accept`
+- 四格矩阵：名单内@ / 名单内未@ / 名单外@ / 名单外未@，每格 `accept` 或 `deny`。IM 的「@」指带触发词或私聊；GitHub 评论本身带触发词，所以落在「@」那一列
+- 档位 `accept`：`auto` 按矩阵执行；`observe` 一律接单但把矩阵判定记进任务（灰度用）；`off` 一律不接单
+- 缺省值沿用改造前的判定强度：IM 只认 `whitelist.users`，其余四个来源不看主体、一律接单（评论作者本来就不参与判定；webhook、cron、探针的配置身份也不再单独比对白名单，要收紧就配 `cells` 或 `principals`）
+- 版本是配置内容的哈希（8 位）。每条任务落库时记下 `mandate`（来源、主体、命中格、判定、档位、策略版本），之后改配置不追溯已接任务；`pisa show <任务号>` 的「准入」行带出这份记录
+- `resume` 前用当前策略重校验同一份 `mandate`，拒绝时回执写明原因与新旧版本，任务保持「中断」
+- `/pisa policy`（私聊 `/policy`）列出当前每个来源的开关、档位、名单与四格结果，以及版本
 
 ## 自举
 
@@ -410,9 +436,10 @@ specify → plan → tasks → implement → converge
 - GitHub 评论：`/pisa` 触发多仓库轮询（`github.repos`，旧的单仓库写法兼容），按仓库隔离增量下界、去重与回帖；PR 上已有任务则接续分支，普通 Issue 从主干开新分支；完成后回帖到评论所在仓库，Issue 来源的 PR 带 `Closes #<n>`
 - 主动发现：群聊关键词 + 定时探针
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
+- 来源准入：IM、GitHub、webhook、cron、主动发现共用一张矩阵（名单内外 × 是否 @）+ 三档 `accept`；任务记 `mandate` 与策略版本，改配置不追溯，`resume` 前重校验，`/pisa policy` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 130 个全绿；`tsc --noEmit` 无报错
+- 测试 217 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：

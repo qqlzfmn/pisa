@@ -37,7 +37,8 @@
 - `requester` 默认取 `PISA_CLI_USER`、`USER`，或 `--requester`；它是自报名字，不是认证。
 - 真正的边界是本机 shell 权限：能运行 CLI 的人就能提交任务。
 - `whitelist.repos` 非空时限制可提交的仓库别名；空列表表示不限制仓库，但仍要求仓库已配置且是 git 仓库。
-- CLI 不校验 `whitelist.users`；该白名单用于聊天通道。
+- CLI 不校验 `whitelist.users`，也不经过 `policy` 准入表；两者管的是聊天通道（IM、GitHub 评论、webhook、cron、主动发现）。
+- 聊天通道按 `policy` 准入：每个来源有开关、主体名单、四格矩阵（名单内外 × 是否 @）与档位（`auto` / `observe` / `off`）。每条任务记下当时的 `mandate` 与策略版本，`resume` 前按当前策略复核。
 
 ## 数据与隐私
 

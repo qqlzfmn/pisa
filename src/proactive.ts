@@ -41,6 +41,9 @@ export class Proactive {
       chatId: k.chatId ?? msg.chatId,
       userId: k.userId ?? this.cfg.whitelist.users[0] ?? msg.userId,
       isDirect: true,
+      origin: "proactive",
+      principal: msg.userId,
+      mentioned: false,
       text: [
         k.prompt ?? "群里有人报障且没有人接：先定位原因，能修就修，不能修给出可执行的下一步。",
         "",

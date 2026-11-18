@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
+import type { Mandate } from "./policy";
 
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
 const FINISHED_IN = "('succeeded','failed','cancelled','rewound')";
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_pr         INTEGER,
   reply_issue      INTEGER,
   reply_repo       TEXT,
+  mandate          TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -81,6 +83,7 @@ interface Row {
   reply_pr: number | null;
   reply_issue: number | null;
   reply_repo: string | null;
+  mandate: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -107,6 +110,7 @@ function toTask(r: Row): Task {
     replyPr: r.reply_pr,
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
+    mandate: parseMandate(r.mandate),
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -114,6 +118,16 @@ function toTask(r: Row): Task {
     endedAt: r.ended_at,
     cancelRequested: r.cancel_requested === 1,
   };
+}
+
+/** mandate 以 JSON 落库；坏数据当成没有授权记录，不让一行脏数据毁掉整条查询 */
+function parseMandate(raw: string | null): Mandate | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Mandate;
+  } catch {
+    return null;
+  }
 }
 
 export class Store {
@@ -143,6 +157,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "mandate")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN mandate TEXT");
     }
   }
 
@@ -253,8 +270,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mandate)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -272,6 +289,7 @@ export class Store {
         t.replyPr,
         t.replyIssue,
         t.replyRepo,
+        t.mandate ? JSON.stringify(t.mandate) : null,
       ],
     );
   }
