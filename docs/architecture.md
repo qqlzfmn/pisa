@@ -286,7 +286,7 @@ interface ChannelAdapter {
 
 ### 5.2 已知限制
 
-1. **无沙箱**。agent 进程以当前用户身份运行，能读写工作副本之外的文件；环境变量只继承 `worker.envAllow` 白名单里的键（默认 `PATH`、`HOME`、`LANG`、`LC_ALL`、`TERM`、`TMPDIR`、`SHELL`、`USER`），其余不进子进程。`extensions/pisa-worker.ts` 的拦截是按 bash 命令文本首段匹配的正则 denylist（`git push`、`git reset --hard`、带 `f` 的 `git clean`、`rm -rf /`（`/tmp` 除外）、`sudo`、改 `/etc` 的 `chmod/chown`），`/usr/bin/git push`、`git -c … push`、脚本包装、非 bash 工具写文件都不在覆盖范围。worktree 只隔离同一仓库的分支，不是文件系统隔离。
+1. **能力清单不是沙箱**。agent 进程以当前用户身份运行。每个任务 spawn 前生成能力清单（可读/可写目录、继承的环境变量、可访问域名、GUI 开关、额外拒绝前缀），同时决定子进程 env、提示词事实与 `PISA_CAPABILITIES`/`PISA_CAP_GUI`；`extensions/guard.ts` 据此判定命令文本，覆盖 git 破坏性操作、目录越界、常见网络命令与 GUI 命令。符号链接、脚本内部再调用、`python -c`/`node -e` 拼出的命令、未知命令参数、git 远端别名不在覆盖范围。worktree 只隔离同一仓库的分支，不是文件系统隔离。
 2. **单机**。SQLite、worktree、日志、agent 会话都在本机 `.pisa` 与 agent 自己的存储里。`supervise.sh` 在本机按 1→30s 退避重启，机器下线即系统下线；没有跨机器接管。
 3. **并发**。上限是 `worker.concurrency`（默认 2），以进程内活跃 Promise 计；多任务共享同一 `.git` 对象库，交付只 `git add -A` 自己的工作副本；同一分支不能有两个 worktree，续跑同一分支的第二个任务会直接失败；`merge` 要求主工作区停在 base 分支，并先 rebase 到最新主干（否则历史前进后快进必然失败）。
 4. **信号只到直接子进程**：超时与取消对 agent 进程 `SIGTERM`→`SIGKILL`，它派生的孙进程可能残留。
@@ -312,7 +312,7 @@ interface ChannelAdapter {
 | 自愈 | 外部 Watchdog 会话，由模型判断 Worker 是否真有进展/偏航 | `supervise.sh` 按退出码退避重启 + 启动时遗留任务分流 + 任务级超时 | 退出码与超时是确定信号，覆盖了 pisa 当前绝大部分故障；「进展是否有效」暂不做判断 |
 | 主动 | 两级过滤 + 投机执行（后台先做，有价值才交付） | 群聊关键词 + 定时探针，命中即开单 | 投机执行需要「先做再判断价值」，成本与判废机制都还没建 |
 | 交互 | 按信道定制（IM ≤100 词、GitHub 结构化），异步 ReAct Loop 全双工 | 固定回执格式（接单/开始/完成/失败），进度按 6s 节流推送；入口只接收「投递」与「命令」，不做需求澄清 | 人类与 agent 不共享循环：agent 在独立进程里跑完一轮，Router 只处理消息 |
-| 安全 | 明确列为开放问题：云端被攻陷则端侧全失守，凭据进上下文即风险 | 正则 denylist + 白名单 + 无沙箱（限制同 5.2 第 1 条） | 单人可信环境下的最小成本方案；接入多人前必须先解决 |
+| 安全 | 明确列为开放问题：云端被攻陷则端侧全失守，凭据进上下文即风险 | 按仓库/任务的能力清单 + guard 文本判定 + 环境变量白名单（限制同 5.2 第 1 条） | 单人可信环境下的最小成本方案；接入多人前必须先解决 |
 
 共同点：双层拆分（接单与执行分离）、Worker 不直接对外说话、状态与执行分离、主动触发、外部重启回路。分歧集中在**用不用模型做控制面**：dsh 把 Router 也交给模型，pisa 把 Router 做成普通的持久化状态机。
 

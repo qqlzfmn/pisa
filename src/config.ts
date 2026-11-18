@@ -1,11 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import type { CapabilityConfig } from "./capabilities";
 
 export interface RepoConfig {
   alias: string;
   path: string;
   remote?: string;
   baseBranch?: string;
+  /** 该仓库的 Worker 能力；叠加在 worker.capabilities 之上 */
+  capabilities?: CapabilityConfig;
 }
 
 /** 一条定时任务：cron 到点后用 prompt 开单 */
@@ -67,6 +70,8 @@ export interface Config {
     envAllow?: string[];
     /** 多久没有任何输出/进度就算卡死并杀掉，默认 900 秒 */
     idleTimeoutSec?: number;
+    /** Worker 能力基线；仓库与任务可继续叠加，未声明的项默认关闭 */
+    capabilities?: CapabilityConfig;
   };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   /** 通知详细程度；progress=false 时只发接单/执行/完成等生命周期消息 */

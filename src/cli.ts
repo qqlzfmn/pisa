@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { findConfig, loadConfig, repoByAlias, type Config } from "./config";
+import { capabilitySummary, resolveCapabilities, type CapabilityConfig } from "./capabilities";
 import { Store } from "./store";
 import { isGitRepo } from "./git";
 import type { Task, TaskStatus } from "./types";
@@ -43,7 +44,7 @@ interface ParsedArgs {
   flags: Map<string, string | true>;
 }
 
-const BOOL_FLAGS = new Set(["json", "wait", "help"]);
+const BOOL_FLAGS = new Set(["json", "wait", "help", "cap-gui"]);
 const VALUE_FLAGS = new Set([
   "config",
   "repo",
@@ -56,6 +57,11 @@ const VALUE_FLAGS = new Set([
   "pr",
   "github-repo",
   "tail",
+  "cap-read",
+  "cap-write",
+  "cap-env",
+  "cap-domain",
+  "cap-block",
 ]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -126,7 +132,35 @@ function cliRequester(args: ParsedArgs): string {
   return flagString(args, "requester") ?? process.env.PISA_CLI_USER ?? process.env.USER ?? "local";
 }
 
-function newCliTask(init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "baseRef" | "context" | "prUrl">): Task {
+/** 一次性任务的额外放行；只从 CLI 参数进入，不扩大 IM 入口权限。 */
+function capabilityOverride(args: ParsedArgs): CapabilityConfig | undefined {
+  const values = (name: string): string[] | undefined => {
+    const raw = flagString(args, name);
+    if (raw === undefined) return undefined;
+    const items = raw
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return items.length > 0 ? items : undefined;
+  };
+  const override: CapabilityConfig = {};
+  const read = values("cap-read");
+  if (read) override.read = read;
+  const write = values("cap-write");
+  if (write) override.write = write;
+  const env = values("cap-env");
+  if (env) override.env = env;
+  const domains = values("cap-domain");
+  if (domains) override.domains = domains;
+  const blocked = values("cap-block");
+  if (blocked) override.blocked = blocked;
+  if (args.flags.get("cap-gui") === true) override.gui = true;
+  return Object.keys(override).length > 0 ? override : undefined;
+}
+
+function newCliTask(
+  init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "baseRef" | "context" | "prUrl" | "capabilities">,
+): Task {
   return {
     ...init,
     source: "cli",
@@ -237,6 +271,8 @@ function taskHuman(io: Io, task: Task, logPath: string): void {
     ["耗时", task.startedAt ? formatDuration((task.endedAt ?? Date.now()) - task.startedAt) : "-"],
     ["日志", logPath],
   ];
+  if (task.capabilities) rows.push(["能力", capabilitySummary(task.capabilities)]);
+  if (task.audit?.length) rows.push(["审计", `${task.audit.length} 条越界拦截（最近：${task.audit.at(-1)!.detail}）`]);
   if (task.summary) rows.push(["摘要", task.summary]);
   if (task.error) rows.push(["错误", task.error]);
   for (const [k, v] of rows) io.out(`${k}：${v}`);
@@ -258,6 +294,14 @@ export function helpText(): string {
 
 全局选项：
   --config <path>   配置文件；默认 PISA_CONFIG，否则从当前目录向上找 pisa.config.json
+
+单次任务能力（只影响本次 task/continue）：
+  --cap-read <dirs>     追加可读目录，逗号分隔；相对路径按仓库根解析
+  --cap-write <dirs>    追加可写目录
+  --cap-env <names>     追加可继承的环境变量名
+  --cap-domain <hosts>  追加可访问域名
+  --cap-block <cmds>    追加拒绝的命令前缀
+  --cap-gui             允许图形界面命令
 
 退出码：
   0 成功    1 任务失败或命令被拒    2 用法/配置错误
@@ -292,6 +336,7 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
           baseRef: null,
           context: null,
           prUrl: null,
+          capabilities: resolveCapabilities(cfg.worker, repo, capabilityOverride(args)),
         });
         const code = enqueue(io, store, args, task);
         return code === EXIT.ok && args.flags.get("wait") ? await waitTask(io, store, args, task.id) : code;
@@ -312,6 +357,7 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
           baseRef: parent.branch,
           context: continuationContext(parent),
           prUrl: parent.prUrl,
+          capabilities: resolveCapabilities(cfg.worker, repoByAlias(cfg, parent.repo), capabilityOverride(args)),
         });
         const code = enqueue(io, store, args, task);
         return code === EXIT.ok && args.flags.get("wait") ? await waitTask(io, store, args, task.id) : code;

@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
+import { resolveCapabilities } from "./capabilities";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
 import type { EffectRow, Store } from "./store";
 import type { WorkerRunner } from "./worker";
@@ -485,6 +486,7 @@ export class Router {
       startedAt: null,
       endedAt: null,
       cancelRequested: false,
+      capabilities: resolveCapabilities(cfg.worker, repo),
     };
     const claim = store.createTaskFromTrigger(trigger, task);
     if (!claim.created) {
@@ -1030,6 +1032,12 @@ export class Router {
       result = { ok: false, summary: "", error: (err as Error).message, exitCode: -1 };
     } finally {
       stopWatch();
+    }
+
+    const blocked = result.blocked ?? [];
+    if (blocked.length > 0) {
+      store.appendAudit(task.id, blocked, this.now());
+      for (const call of blocked) log.write("guard", `${call.tool} ${call.detail} · ${call.reason}`);
     }
 
     // 关停中：不写终态、不删工作副本与分支，任务留在 running 等下次启动分流为 paused

@@ -1,9 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import { blockBash, outsideWorkdir } from "../extensions/guard";
+import { blockBash, outsidePath, outsideWorkdir, type GuardCapabilities } from "../extensions/guard";
 
 const WORKDIR = "/work/repo";
 
 const blocked = (cmd: string): string | null => blockBash(cmd, WORKDIR);
+
+const CAPS: GuardCapabilities = {
+  readDirs: [WORKDIR, "/tmp", "/data/fixtures"],
+  writeDirs: [WORKDIR, "/tmp", "/data/out"],
+  domains: ["example.com"],
+  gui: true,
+  blocked: ["npm publish"],
+};
+
+const allowed = (cmd: string): string | null => blockBash(cmd, WORKDIR, CAPS);
 
 describe("blockBash · git push", () => {
   test("裸 push 拦截", () => {
@@ -107,6 +117,76 @@ describe("blockBash · 破坏性命令", () => {
     expect(blocked("git status")).toBeNull();
     expect(blocked("git log --oneline -5")).toBeNull();
     expect(blocked("bun test")).toBeNull();
+  });
+});
+
+describe("blockBash · 能力默认拒绝", () => {
+  test("网络、GUI、目录外读取与写入都拦截", () => {
+    expect(blocked("curl https://example.com")).toContain("域名未放行");
+    expect(blocked("ssh root@example.com")).toContain("域名未放行");
+    expect(blocked("open -a Safari")).toContain("图形界面未放行");
+    expect(blocked("osascript -e 'tell app Finder to activate'")).toContain("图形界面未放行");
+    expect(blocked("cat /etc/passwd")).toContain("路径不在允许目录内");
+    expect(blocked("grep root /etc/passwd")).toContain("路径不在允许目录内");
+    expect(blocked("echo x > /Users/lzf/a.ts")).toContain("路径不在允许目录内");
+    expect(blocked("tee /Users/lzf/a.ts")).toContain("路径不在允许目录内");
+    expect(blocked("cp src/a.ts /Users/lzf/a.ts")).toContain("路径不在允许目录内");
+  });
+
+  test("工作目录与临时目录仍可读写", () => {
+    expect(blocked("cat src/a.ts")).toBeNull();
+    expect(blocked("echo x > /tmp/pisa-cap.txt")).toBeNull();
+    expect(blocked("rm -rf /tmp/pisa-cap")).toBeNull();
+    expect(blocked("touch src/new.ts")).toBeNull();
+  });
+});
+
+describe("blockBash · 能力显式放行", () => {
+  test("声明的域名放行，其它域名仍拒绝", () => {
+    expect(allowed("curl https://example.com/a")).toBeNull();
+    expect(allowed("curl -o out.txt https://example.com/a")).toBeNull();
+    expect(allowed("git clone https://example.com/foo/bar")).toBeNull();
+    expect(allowed("curl https://other.com")).toContain("域名未放行");
+    expect(allowed("git clone https://other.com/foo/bar")).toContain("域名未放行");
+  });
+
+  test("GUI 开关单独生效", () => {
+    expect(allowed("open -a Safari")).toBeNull();
+    expect(allowed("osascript -e 'tell app Finder to activate'")).toBeNull();
+  });
+
+  test("可读目录放行，其它绝对路径仍拒绝", () => {
+    expect(allowed("cat /data/fixtures/a.json")).toBeNull();
+    expect(allowed("head -n 5 /data/fixtures/a.json")).toBeNull();
+    expect(allowed("cat /etc/passwd")).toContain("路径不在允许目录内");
+  });
+
+  test("可写目录放行，目录外写入仍拒绝", () => {
+    expect(allowed("echo x > /data/out/a.txt")).toBeNull();
+    expect(allowed("echo x >/data/out/a.txt")).toBeNull();
+    expect(allowed("mkdir -p /data/out/nested")).toBeNull();
+    expect(allowed("cp /data/fixtures/a.json /data/out/a.json")).toBeNull();
+    expect(allowed("echo x > /data/other/a.txt")).toContain("路径不在允许目录内");
+    expect(allowed("cp /data/fixtures/a.json /data/other/a.json")).toContain("路径不在允许目录内");
+  });
+
+  test("切换目录不能绕过读目录边界", () => {
+    expect(allowed("cd /data/fixtures && ls")).toBeNull();
+    expect(allowed("cd /etc && cat passwd")).toContain("路径不在允许目录内");
+    expect(allowed("pushd /etc")).toContain("路径不在允许目录内");
+  });
+
+  test("额外拒绝按命令前缀匹配", () => {
+    expect(allowed("npm publish --tag next")).toContain("npm publish");
+    expect(allowed("npm run build")).toBeNull();
+  });
+});
+
+describe("outsidePath", () => {
+  test("读目录与写目录分别判定", () => {
+    expect(outsidePath("/data/fixtures/a.json", WORKDIR, CAPS.readDirs)).toBeNull();
+    expect(outsidePath("/data/fixtures/a.json", WORKDIR, CAPS.writeDirs)).not.toBeNull();
+    expect(outsidePath("/data/out/a.json", WORKDIR, CAPS.writeDirs)).toBeNull();
   });
 });
 

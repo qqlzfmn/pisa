@@ -1,3 +1,5 @@
+import type { AuditEntry, BlockedCall, Capabilities } from "./capabilities";
+
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
 /** 任务对外产生的副作用种类：rewind 的依据 */
@@ -80,6 +82,10 @@ export interface Task {
   startedAt: number | null;
   endedAt: number | null;
   cancelRequested: boolean;
+  /** 建单时快照的能力清单；旧任务没有快照时按当前配置解析 */
+  capabilities?: Capabilities;
+  /** 运行期越界拦截审计，最近 50 条 */
+  audit?: AuditEntry[];
 }
 
 export interface WorkerResult {
@@ -87,6 +93,8 @@ export interface WorkerResult {
   summary: string;
   error?: string;
   exitCode: number;
+  /** guard 拦下的调用，由 Router 写入任务审计 */
+  blocked?: BlockedCall[];
 }
 
 /** 发送回执：拿到消息 id 才能把「回复」绑定回任务 */

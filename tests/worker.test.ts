@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, DEFAULT_ENV_ALLOW, loadConfig } from "../src/config";
-import { Worker, workerEnv } from "../src/worker";
+import { Worker, readBlocked, workerEnv } from "../src/worker";
 import type { Task } from "../src/types";
 
 const task: Task = {
@@ -75,6 +75,88 @@ describe("workerEnv", () => {
 });
 
 describe("Worker.run", () => {
+  test("能力清单决定可继承的环境变量，并注入 manifest 与 GUI 开关", async () => {
+    const dir = tempDir();
+    const printEnv = join(dir, "printenv.sh");
+    writeFileSync(printEnv, "#!/bin/sh\nexec env\n");
+    chmodSync(printEnv, 0o755);
+
+    const saved = process.env.DEMO_TOKEN;
+    process.env.DEMO_TOKEN = "cap-secret";
+    try {
+      const lines: string[] = [];
+      const worker = new Worker(
+        {
+          adapter: "omp",
+          command: printEnv,
+          timeoutSec: 30,
+          extraArgs: [],
+          concurrency: 1,
+          capabilities: { env: ["DEMO_TOKEN"], domains: ["example.com"], gui: true },
+        },
+        join(dir, "state"),
+      );
+      const result = await worker.run(task, dir, (line) => lines.push(line), () => false);
+      const out = lines.join("\n");
+      expect(result.ok).toBe(true);
+      expect(out).toMatch(/^DEMO_TOKEN=cap-secret$/m);
+      expect(out).toMatch(/^PISA_CAP_GUI=1$/m);
+
+      const raw = out.split("\n").find((line) => line.startsWith("PISA_CAPABILITIES="));
+      expect(raw).toBeDefined();
+      const manifest = JSON.parse(raw!.slice("PISA_CAPABILITIES=".length)) as {
+        domains: string[];
+        gui: boolean;
+        readDirs: string[];
+      };
+      expect(manifest.domains).toEqual(["example.com"]);
+      expect(manifest.gui).toBe(true);
+      expect(manifest.readDirs).toContain(dir);
+      expect(result.blocked).toEqual([]);
+    } finally {
+      if (saved === undefined) delete process.env.DEMO_TOKEN;
+      else process.env.DEMO_TOKEN = saved;
+    }
+  });
+
+  test("恢复执行只回收新增的拦截记录", () => {
+    const dir = tempDir();
+    const path = join(dir, "progress.jsonl");
+    const first = '{"type":"blocked","tool":"bash","detail":"curl a","reason":"域名未放行：a"}\n';
+    const second = '{"type":"blocked","tool":"bash","detail":"curl b","reason":"域名未放行：b"}\n';
+    writeFileSync(path, first);
+    writeFileSync(path, first + second);
+    expect(readBlocked(path)).toHaveLength(2);
+    expect(readBlocked(path, Buffer.byteLength(first))).toEqual([
+      { tool: "bash", detail: "curl b", reason: "域名未放行：b" },
+    ]);
+  });
+
+  test("回收进度文件里的拦截记录", async () => {
+    const dir = tempDir();
+    const script = join(dir, "fake-worker.sh");
+    writeFileSync(
+      script,
+      `#!/bin/sh
+printf '%s\\n' '{"type":"blocked","tool":"bash","detail":"curl https://example.com","reason":"域名未放行：example.com"}' >> "$PISA_PROGRESS_FILE"
+printf '%s\\n' '{"type":"blocked","tool":"read","detail":"/etc/passwd","reason":"路径不在允许目录内"}' >> "$PISA_PROGRESS_FILE"
+echo done
+`,
+    );
+    chmodSync(script, 0o755);
+
+    const worker = new Worker(
+      { adapter: "omp", command: script, timeoutSec: 30, extraArgs: [], concurrency: 1 },
+      join(dir, "state"),
+    );
+    const result = await worker.run(task, dir, () => {}, () => false);
+    expect(result.ok).toBe(true);
+    expect(result.blocked).toEqual([
+      { tool: "bash", detail: "curl https://example.com", reason: "域名未放行：example.com" },
+      { tool: "read", detail: "/etc/passwd", reason: "路径不在允许目录内" },
+    ]);
+  });
+
   test("子进程拿不到未放行的凭据，但保留白名单变量与适配器注入的 PISA_*", async () => {
     const dir = tempDir();
     // env 本身无法接收 omp 适配器追加的 -e/--mode 等参数，用包装脚本代替直接执行 env

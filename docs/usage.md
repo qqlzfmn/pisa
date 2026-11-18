@@ -37,9 +37,22 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 
 ## 能力边界
 
-### 无沙箱
+### 能力清单
 
-Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命令（`git push`、`git reset --hard`、`git clean -f`、`rm -rf /` 除 `/tmp`、`sudo`、改 `/etc` 权限）。其余命令以当前用户权限直接执行，没有容器或虚拟机隔离，也没有网络限制。只在受信仓库和自己有权限的机器上运行。
+每个任务在启动前生成一份能力清单，子进程环境、可写目录与命令判定都以它为准。声明按「全局 `worker.capabilities` → 仓库 `repos[].capabilities` → 单次任务 `--cap-*`」叠加，只能增加放行，不能撤销上一层。
+
+| 字段 | 作用 | 默认 |
+| --- | --- | --- |
+| `read` | 可读目录；相对路径按仓库根解析 | 工作副本与系统临时目录 |
+| `write` | 可写目录 | 工作副本与系统临时目录 |
+| `env` | 额外继承的环境变量名 | 只有 `worker.envAllow` |
+| `domains` | 可访问域名；只对已知网络命令生效 | 空，网络命令一律拒绝 |
+| `gui` | 是否允许 `open`、`osascript`、`xdg-open` | `false` |
+| `blocked` | 额外拒绝的命令前缀，如 `npm publish` | 空 |
+
+单次任务用 `pisa task <需求> --cap-read <目录> --cap-write <目录> --cap-env <变量> --cap-domain <域名> --cap-gui --cap-block <命令>` 追加放行。任务创建时把解析后的清单存进台账，之后改配置不影响已排队任务。启动日志按仓库打印清单与内置拒绝项；拦截事件写入任务审计，`pisa show <任务号>` 显示条数与最近一条。
+
+能力清单是文本判定，不是内核沙箱：agent 仍以当前用户身份运行。符号链接、脚本内部再调用、`python -c` 或 `node -e` 拼出的命令、未知命令的参数不会被完整解析；域名只校验 curl、wget、ssh 等已知命令和显式出现的主机，git 远端别名（如 `git fetch origin`）无法还原域名。需要强隔离时把 pisa 放进容器或单独用户。
 
 ### 回滚不完整
 

@@ -1,8 +1,10 @@
 import { join } from "node:path";
-import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, DEFAULT_WEB, githubRepos, loadConfig, type WebConfig } from "./config";
+import { BOT_COMMANDS, DEFAULT_WEB, githubRepos, loadConfig, type WebConfig } from "./config";
+import { capabilityManifest, resolveCapabilities } from "./capabilities";
+import { BUILTIN_BLOCKED } from "../extensions/guard";
 import { Store } from "./store";
 import { Router } from "./router";
-import { Worker, workerEnv } from "./worker";
+import { Worker } from "./worker";
 import { GitDeliverer } from "./deliver";
 import { Proactive } from "./proactive";
 import { GithubWatcher } from "./github-watcher";
@@ -62,7 +64,7 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, cfg.repos),
       deliverer: new GitDeliverer(cfg),
       channel: bus,
     });
@@ -74,7 +76,7 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, cfg.repos),
       deliverer: new GitDeliverer(cfg),
       channel,
     });
@@ -139,8 +141,14 @@ async function main(): Promise<void> {
       console.log(`[pisa] webhook listening on 127.0.0.1:${cfg.webhook.port}`);
     }
   }
-  const allowedEnv = Object.keys(workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env));
-  console.log(`[pisa] Worker 环境白名单 · ${allowedEnv.join(",") || "(空)"}`);
+  for (const repo of cfg.repos) {
+    const caps = resolveCapabilities(cfg.worker, repo);
+    const manifest = capabilityManifest(caps, join(cfg.stateDir, "worktrees", "<task>"));
+    console.log(
+      `[pisa] 能力 · ${repo.alias} · env=${caps.env.join(",") || "(空)"} · 读=${manifest.readDirs.join(",")} · 写=${manifest.writeDirs.join(",")} · 域名=${caps.domains.join(",") || "(无)"} · gui=${caps.gui ? "on" : "off"} · 额外拒绝=${caps.blocked.join(",") || "(无)"}`,
+    );
+  }
+  console.log(`[pisa] 内置 blocked commands · ${BUILTIN_BLOCKED.join("、")}`);
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
   // 通道放在最后启动：CLI 通道会一直等 stdin 结束，放前面会堵住调度、HTTP 入口与 ready 日志

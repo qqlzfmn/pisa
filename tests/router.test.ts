@@ -882,6 +882,37 @@ describe("Router", () => {
       expect(channel.sent.at(-1)?.text).toContain("/status");
     });
   });
+
+  test("任务保存能力快照，并把 Worker 拦截写入审计", async () => {
+    cfg.repos[0] = {
+      ...cfg.repos[0]!,
+      capabilities: { read: ["/data/fixtures"], domains: ["example.com"], gui: true },
+    };
+    let seen: Task | undefined;
+    const worker: WorkerRunner = {
+      async run(task): Promise<WorkerResult> {
+        seen = task;
+        return {
+          ok: true,
+          summary: "ok",
+          exitCode: 0,
+          blocked: [{ tool: "bash", detail: "curl https://other.com", reason: "域名未放行：other.com" }],
+        };
+      },
+    };
+
+    const router = build(worker, () => 42);
+    await router.handle(msg("/pisa 做个改动"));
+    await router.drainOnce();
+
+    const stored = store.get(seen!.id)!;
+    expect(stored.capabilities?.readDirs).toContain("/data/fixtures");
+    expect(stored.capabilities?.domains).toEqual(["example.com"]);
+    expect(stored.capabilities?.gui).toBe(true);
+    expect(stored.audit).toEqual([
+      { tool: "bash", detail: "curl https://other.com", reason: "域名未放行：other.com", at: 42 },
+    ]);
+  });
 });
 
 describe("状态机", () => {

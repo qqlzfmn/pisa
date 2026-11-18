@@ -1,6 +1,7 @@
 import { join, resolve } from "node:path";
-import { mkdirSync, statSync } from "node:fs";
-import { DEFAULT_ENV_ALLOW, type Config } from "./config";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
+import type { Config, RepoConfig } from "./config";
+import { capabilitiesForTask, capabilityManifest, type BlockedCall } from "./capabilities";
 import type { Task, WorkerResult } from "./types";
 import { redact } from "./log";
 import { getAdapter, type WorkerAdapter } from "./adapters";
@@ -21,6 +22,33 @@ export function workerEnv(
   return out;
 }
 
+/** 从 progress jsonl 回收 guard 拦下的调用；offset 之前的行属于上一次执行，不重复审计。 */
+export function readBlocked(path: string, offset = 0): BlockedCall[] {
+  let buf: Buffer;
+  try {
+    buf = readFileSync(path);
+  } catch {
+    return [];
+  }
+  const text = buf.subarray(Math.min(offset, buf.length)).toString("utf8");
+  const calls: BlockedCall[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line) as { type?: string; tool?: string; detail?: string; reason?: string };
+      if (event.type !== "blocked") continue;
+      calls.push({
+        tool: event.tool ?? "unknown",
+        detail: event.detail ?? "",
+        reason: event.reason ?? "能力边界拒绝",
+      });
+    } catch {
+      /* 忽略 Worker 写坏的进度行 */
+    }
+  }
+  return calls.slice(-50);
+}
+
 export interface WorkerRunner {
   run(
     task: Task,
@@ -38,6 +66,7 @@ export class Worker implements WorkerRunner {
   constructor(
     private cfg: Config["worker"],
     private stateDir = ".pisa",
+    private repos: readonly RepoConfig[] = [],
   ) {
     this.adapter = getAdapter(cfg.adapter ?? "omp");
   }
@@ -53,8 +82,11 @@ export class Worker implements WorkerRunner {
     const progressDir = resolve(this.stateDir, "progress");
     mkdirSync(progressDir, { recursive: true });
 
+    const caps = capabilitiesForTask(task, this.cfg, this.repos);
+    const manifest = capabilityManifest(caps, workdir);
     const input = {
-      task,
+      // 快照交给适配器：prompt 里的能力清单与实际注入的 guard 清单一致
+      task: { ...task, capabilities: caps },
       workdir,
       extensionPath,
       progressFile: join(progressDir, `${task.id}.jsonl`),
@@ -62,14 +94,24 @@ export class Worker implements WorkerRunner {
       resume,
       resumeSessionId: resume ? task.sessionId : null,
     };
+    let auditOffset = 0;
+    if (resume) {
+      try {
+        auditOffset = statSync(input.progressFile).size;
+      } catch {
+        auditOffset = 0;
+      }
+    }
     const proc = Bun.spawn(this.adapter.buildArgs(input), {
       cwd: workdir,
       stdout: "pipe",
       stderr: "pipe",
-      // 只继承白名单里的变量；适配器注入的 PISA_* 始终放行
+      // 只继承能力清单里的变量；清单本身传给 Worker 侧 guard
       env: {
-        ...workerEnv(this.cfg.envAllow ?? DEFAULT_ENV_ALLOW, process.env),
+        ...workerEnv(caps.env, process.env),
         ...this.adapter.buildEnv(input),
+        PISA_CAPABILITIES: JSON.stringify(manifest),
+        PISA_CAP_GUI: manifest.gui ? "1" : "0",
       },
     });
 
@@ -149,18 +191,25 @@ export class Worker implements WorkerRunner {
     clearInterval(idleTimer);
     clearInterval(cancelPoll);
 
-    if (cancelled) return { ok: false, summary: "", error: "任务已取消", exitCode };
+    const blocked = readBlocked(input.progressFile, auditOffset);
+    if (cancelled) return { ok: false, summary: "", error: "任务已取消", exitCode, blocked };
     if (idleTimedOut) {
-      return { ok: false, summary: "", error: `卡死：超过 ${Math.round(idleMs / 1000)} 秒没有任何输出或进度`, exitCode };
+      return {
+        ok: false,
+        summary: "",
+        error: `卡死：超过 ${Math.round(idleMs / 1000)} 秒没有任何输出或进度`,
+        exitCode,
+        blocked,
+      };
     }
-    if (timedOut) return { ok: false, summary: "", error: `执行超时（${this.cfg.timeoutSec}s）`, exitCode };
+    if (timedOut) return { ok: false, summary: "", error: `执行超时（${this.cfg.timeoutSec}s）`, exitCode, blocked };
 
     const summary = redact((texts.join("\n\n") || rawTail.slice(-40).join("\n")).trim()).slice(0, 4000);
     if (exitCode !== 0) {
       const err = rawTail.slice(-20).join("\n") || `Worker 退出码 ${exitCode}`;
-      return { ok: false, summary, error: redact(err).slice(0, 2000), exitCode };
+      return { ok: false, summary, error: redact(err).slice(0, 2000), exitCode, blocked };
     }
-    return { ok: true, summary: summary || "（Worker 未返回文字摘要）", exitCode };
+    return { ok: true, summary: summary || "（Worker 未返回文字摘要）", exitCode, blocked };
   }
 }
 

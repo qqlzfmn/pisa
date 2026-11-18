@@ -144,6 +144,35 @@ describe("pisa task", () => {
     store.close();
   });
 
+  test("能力参数写进本次任务快照", async () => {
+    const r = await cli(
+      ...base(
+        "task",
+        "读夹具",
+        "--json",
+        "--cap-read",
+        "/data/fixtures",
+        "--cap-env",
+        "DEMO_TOKEN",
+        "--cap-domain",
+        "api.example.com",
+        "--cap-gui",
+        "--cap-block",
+        "npm publish",
+      ),
+    );
+    expect(r.code).toBe(0);
+    const body = parse<TaskJson>(r);
+    const store = new Store(join(stateDir, "pisa.db"));
+    const task = store.get(body.id)!;
+    expect(task.capabilities?.readDirs).toContain("/data/fixtures");
+    expect(task.capabilities?.env).toContain("DEMO_TOKEN");
+    expect(task.capabilities?.domains).toEqual(["api.example.com"]);
+    expect(task.capabilities?.gui).toBe(true);
+    expect(task.capabilities?.blocked).toEqual(["npm publish"]);
+    store.close();
+  });
+
   test("守护进程不在时给出警告但仍入队", async () => {
     const r = await cli(...base("task", "修 CI"));
     expect(r.code).toBe(0);
@@ -280,7 +309,17 @@ describe("查询与操作", () => {
   });
 
   test("show 与 logs", async () => {
-    const task = seed();
+    const task = seed({
+      capabilities: {
+        readDirs: ["/data/fixtures"],
+        writeDirs: [],
+        env: ["PATH"],
+        domains: ["api.example.com"],
+        gui: false,
+        blocked: [],
+      },
+      audit: [{ tool: "bash", detail: "curl https://other.com", reason: "域名未放行：other.com", at: 1 }],
+    });
     const shown = await cli(...base("show", task.id, "--json"));
     expect(shown.code).toBe(0);
     expect(parse<TaskJson>(shown).id).toBe(task.id);
@@ -288,6 +327,8 @@ describe("查询与操作", () => {
 
     const human = await cli(...base("show", task.id));
     expect(human.out).toContain("阶段：working/queued（等空闲槽位）");
+    expect(human.out).toContain("能力：读 /data/fixtures");
+    expect(human.out).toContain("审计：1 条越界拦截");
 
     expect((await cli(...base("show", "t_missing"))).code).toBe(3);
 

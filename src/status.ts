@@ -1,3 +1,4 @@
+import type { AuditEntry, Capabilities } from "./capabilities";
 import type { Task, TaskStatus } from "./types";
 import type { Store } from "./store";
 import { STAGE_LABEL, stageText, taskStage, type TaskStage } from "./stage";
@@ -36,6 +37,9 @@ export interface TaskJson {
   startedAt: number | null;
   endedAt: number | null;
   duration: string;
+  /** 能力快照；旧任务为 null */
+  capabilities: Capabilities | null;
+  audit: AuditEntry[];
 }
 
 /**
@@ -61,6 +65,8 @@ export function taskJson(t: Task, now = Date.now()): TaskJson {
     startedAt: t.startedAt,
     endedAt: t.endedAt,
     duration: formatDuration((t.endedAt ?? now) - from),
+    capabilities: t.capabilities ?? null,
+    audit: t.audit ?? [],
   };
 }
 

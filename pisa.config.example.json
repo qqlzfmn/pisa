@@ -13,7 +13,15 @@
     {
       "alias": "pisa",
       "path": "/absolute/path/to/repo",
-      "baseBranch": "main"
+      "baseBranch": "main",
+      "capabilities": {
+        "read": ["/absolute/path/to/fixtures"],
+        "write": [],
+        "env": ["GH_TOKEN"],
+        "domains": ["api.github.com"],
+        "gui": false,
+        "blocked": ["npm publish"]
+      }
     }
   ],
   "worker": {
@@ -32,6 +40,14 @@
       "SHELL",
       "USER"
     ],
+    "capabilities": {
+      "read": [],
+      "write": [],
+      "env": [],
+      "domains": [],
+      "gui": false,
+      "blocked": []
+    },
     "idleTimeoutSec": 900
   },
   "delivery": {

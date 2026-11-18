@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
+import type { AuditEntry, BlockedCall, Capabilities } from "./capabilities";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
@@ -32,7 +33,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at       INTEGER NOT NULL,
   started_at       INTEGER,
   ended_at         INTEGER,
-  cancel_requested INTEGER NOT NULL DEFAULT 0
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  capabilities     TEXT,
+  audit            TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 
@@ -167,6 +170,8 @@ interface Row {
   started_at: number | null;
   ended_at: number | null;
   cancel_requested: number;
+  capabilities: string | null;
+  audit: string | null;
 }
 
 /** 一次触发落库的结果 */
@@ -207,6 +212,15 @@ function toTrigger(r: TriggerRow): TriggerRecord {
   };
 }
 
+function parseJson<T>(value: string | null): T | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
+}
+
 function toTask(r: Row): Task {
   return {
     id: r.id,
@@ -231,6 +245,8 @@ function toTask(r: Row): Task {
     startedAt: r.started_at,
     endedAt: r.ended_at,
     cancelRequested: r.cancel_requested === 1,
+    capabilities: parseJson<Capabilities>(r.capabilities) ?? undefined,
+    audit: parseJson<AuditEntry[]>(r.audit) ?? [],
   };
 }
 
@@ -261,6 +277,12 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "capabilities")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN capabilities TEXT");
+    }
+    if (!cols.some((c) => c.name === "audit")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN audit TEXT");
     }
     this.backfillTriggers();
   }
@@ -549,8 +571,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, capabilities, audit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -568,8 +590,20 @@ export class Store {
         t.replyPr,
         t.replyIssue,
         t.replyRepo,
+        t.capabilities ? JSON.stringify(t.capabilities) : null,
+        t.audit?.length ? JSON.stringify(t.audit) : null,
       ],
     );
+  }
+
+  /** 追加越界审计；只保留最近 50 条，任务不存在时静默跳过。 */
+  appendAudit(id: string, entries: readonly BlockedCall[], at = Date.now()): void {
+    if (entries.length === 0) return;
+    const row = this.db.query("SELECT audit FROM tasks WHERE id = ?").get(id) as { audit: string | null } | null;
+    if (!row) return;
+    const prev = parseJson<AuditEntry[]>(row.audit) ?? [];
+    const next = [...prev, ...entries.map((entry) => ({ ...entry, at }))].slice(-50);
+    this.db.run("UPDATE tasks SET audit = ? WHERE id = ?", [JSON.stringify(next), id]);
   }
 
   get(id: string): Task | null {
