@@ -14,9 +14,19 @@ import { ReplyBus, startWebServer, type WebServer } from "./web";
 import { webhookHandler } from "./webhook";
 import { startTriggers, type TriggersRuntime } from "./triggers";
 import type { ChannelAdapter } from "./types";
+import { loadPrompts, type PromptLibrary } from "./prompts";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
+  // 提示词是启动配置：加载或校验失败直接拒绝启动，避免带着坏覆盖跑到任务中途
+  let prompts: PromptLibrary;
+  try {
+    prompts = loadPrompts({ dir: cfg.prompts?.dir, repos: cfg.repos.map((repo) => repo.alias) });
+  } catch (err) {
+    console.error(`[pisa] 提示词加载失败：${(err as Error).message}`);
+    process.exit(1);
+  }
+  console.log(`[pisa] 提示词 v${prompts.version} · ${prompts.keys().length} 个段落`);
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
   // `--web` 强制开启控制台；没有可用通道时回落到 CLI 通道，只当服务宿主
   const web: WebConfig = { ...(cfg.web ?? DEFAULT_WEB), enabled: cfg.web?.enabled === true || process.argv.includes("--web") };
@@ -64,9 +74,10 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, prompts),
       deliverer: new GitDeliverer(cfg),
       channel: bus,
+      prompts,
     });
     if (!cfg.whitelist.users.includes(web.userId)) {
       console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
@@ -76,9 +87,10 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, prompts),
       deliverer: new GitDeliverer(cfg),
       channel,
+      prompts,
     });
   }
 
@@ -89,7 +101,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const proactive = new Proactive(cfg, (m) => router.handle(m), { store });
+  const proactive = new Proactive(cfg, (m) => router.handle(m), { store, prompts });
   const githubWatcher = new GithubWatcher({ cfg, store, enqueue: (m) => router.handle(m) });
   const scheduler = new Scheduler({ cfg, store, enqueue: (m) => router.handle(m) });
   const retention = new Retention({ cfg, store });

@@ -1,4 +1,5 @@
 import type { Config } from "../config";
+import type { PromptLibrary } from "../prompts";
 import type { Task } from "../types";
 
 export interface AdapterInput {
@@ -7,6 +8,8 @@ export interface AdapterInput {
   extensionPath: string;
   progressFile: string;
   cfg: Config["worker"];
+  /** 生效的提示词库：内置段落 + 团队/仓库覆盖 */
+  prompts: PromptLibrary;
   /** 是否恢复中断任务；决定提示词是否带核对段落，与会话 id 是否存在无关 */
   resume?: boolean;
   /** 恢复中断任务时的原会话 id；新任务为 null */

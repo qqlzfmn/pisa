@@ -148,6 +148,8 @@ export interface Config {
   schedules?: ScheduleJob[];
   /** events 与 progress 的保留天数；≤ 0 关闭每日清理，默认 30 */
   retentionDays?: number;
+  /** 团队/仓库提示词覆盖目录；相对路径以配置文件所在目录为基准，默认 prompts.d */
+  prompts?: { dir?: string };
   proactive?: {
     keywords?: { enabled: boolean; words: string[]; cooldownSec?: number; chatId?: string; userId?: string; prompt?: string };
     probe?: {
@@ -207,6 +209,7 @@ export const DEFAULT_CONFIG: Config = {
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
   web: DEFAULT_WEB,
   retentionDays: DEFAULT_RETENTION_DAYS,
+  prompts: { dir: "prompts.d" },
   stateDir: ".pisa",
 };
 
@@ -233,6 +236,7 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
   if (!isAbsolute(cfg.stateDir)) cfg.stateDir = resolve(baseDir, cfg.stateDir);
   cfg = {
     ...cfg,
+    prompts: { dir: resolve(baseDir, cfg.prompts?.dir ?? "prompts.d") },
     repos: cfg.repos.map((r) => ({
       ...r,
       path: typeof r.path === "string" && !isAbsolute(r.path) ? resolve(baseDir, r.path) : r.path,
@@ -309,6 +313,7 @@ export type CommandKind =
   | "status"
   | "schedules"
   | "examples"
+  | "prompts"
   | "continue"
   | "merge"
   | "resume"
@@ -342,6 +347,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "status", alias: "状态", description: "查看任务看板", group: "查询", menu: true },
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
+  { command: "prompts", alias: "提示词", description: "查看提示词版本与覆盖差异", args: "[diff [键]]", group: "查询", menu: true },
   { command: "verbose", alias: "进度", description: "过程消息开关（on/off）", args: "[on|off]", group: "查询", menu: true },
   { command: "gc", alias: "清理", description: "清理已结束任务的分支/工作副本/PR", args: "[天数] [--dry]", group: "维护", menu: true },
   { command: "reconcile", alias: "对账", description: "对比任务记录与分支/工作副本/PR", args: "[任务号] [--fix]", group: "维护", menu: true },

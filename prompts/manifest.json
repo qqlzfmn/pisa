@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "sections": {
+    "worker.title": 1,
+    "worker.resume": 1,
+    "worker.context": 1,
+    "worker.task": 1,
+    "worker.constraints": 1,
+    "worker.review": 1,
+    "proactive.keywords": 1,
+    "proactive.probe": 1
+  }
+}

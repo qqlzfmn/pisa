@@ -12,6 +12,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 - [Agent CLI 与 skill](#agent-cli-与-skill)
 - [Web 控制台](#web-控制台)
 - [多仓库](#多仓库)
+- [提示词分层](#提示词分层)
 - [主动发现](#主动发现)
 - [定时任务](#定时任务)
 - [数据保留](#数据保留)
@@ -42,6 +43,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 ```
 /pisa <需求>            接一个任务
 /pisa examples          可直接照抄的场景（触发方式 + 预期产出）
+/pisa prompts           提示词版本、来源与覆盖 diff（`prompts diff [键]`）
 /pisa cancel [任务号]   取消
 /pisa help              按用途分组的命令帮助
 
@@ -247,6 +249,47 @@ curl -s http://127.0.0.1:8787/health
 - 接单回执写明 `仓库：<别名>`，不用回忆默认仓库是哪个
 - 续跑固定在父任务所在仓库，别名不会把续跑带到别的仓库
 
+## 提示词分层
+
+Worker 与主动发现的提示词是仓库里的段落文件，带版本号；团队与仓库可以覆盖，不用改代码。
+
+查看生效版本与来源：
+
+```
+/pisa prompts
+/pisa prompts diff                          # 所有被覆盖的段落
+/pisa prompts diff worker.review            # 单个段落与内置版本的 diff
+```
+
+`prompts/manifest.json` 是段落清单，`prompts/<分组>/<段落>.md` 是内置正文；键形如 `worker.review`，版本号由作者维护。覆盖目录由 `prompts.dir` 指定，默认是配置文件旁的 `prompts.d`：
+
+```text
+prompts.d/
+  worker.review.md                 # 团队覆盖
+  repos/
+    pisa/
+      worker.review.md             # 仓库 pisa 覆盖
+```
+
+覆盖文件头部写版本，正文就是提示词：
+
+```markdown
+---
+version: 2
+---
+
+## 完成标准
+- 先跑仓库的全量测试
+- 回执附上改动文件与验证命令
+```
+
+- 优先级：仓库覆盖 > 团队覆盖 > 内置；覆盖目录不存在时只用内置
+- 文件名就是段落键，`repos/<别名>` 必须在 `repos` 配置里
+- 启动时加载并校验：未知段落、未知占位符、非正整数版本、未登记文件、未知仓库别名都会拒绝启动并打印原因
+- 正文只用 `{{taskId}}`、`{{prompt}}`、`{{context}}` 三个占位符
+- 提示词不是热更新：改完重启守护进程
+- 主动发现的关键词与探针提示词取 `proactive.keywords` / `proactive.probe`；配置里显式写了 `prompt` 时以配置为准
+
 ## 主动发现
 
 两种触发方式，都不需要人 @：
@@ -385,6 +428,6 @@ token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.
 
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive`、`prompts` 与 `retentionDays`。
 
 解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。

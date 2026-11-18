@@ -30,6 +30,7 @@ import {
   type WorktreeReality,
 } from "./reconcile";
 import { formatExamples, formatHelp } from "./usage";
+import { loadPrompts, type PromptLibrary } from "./prompts";
 import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
@@ -50,6 +51,8 @@ export interface RouterDeps {
   effects?: EffectQueue;
   /** 注入以便测试 */
   now?: () => number;
+  /** 生效的提示词库；缺省按配置里的覆盖目录加载 */
+  prompts?: PromptLibrary;
 }
 
 /** 单英文词任务的待确认正文，10 分钟过期 */
@@ -77,11 +80,15 @@ export class Router {
   private pending = new Map<string, PendingTask>();
   /** 外部动作的 outbox：推送、建 PR、回帖都先落库再执行 */
   private readonly effects: EffectQueue;
+  private readonly prompts: PromptLibrary;
 
   constructor(private deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
     this.progressOn = deps.cfg.notifications?.progress ?? false;
     this.effects = deps.effects ?? new EffectQueue(deps.store, { now: this.now });
+    this.prompts =
+      deps.prompts ??
+      loadPrompts({ dir: deps.cfg.prompts?.dir, repos: deps.cfg.repos.map((repo) => repo.alias) });
     this.registerEffects(deps.deliverer);
   }
 
@@ -267,6 +274,7 @@ export class Router {
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
+      else if (t === "/prompts" || t.startsWith("/prompts ")) cmd = { kind: "prompts", body: t.slice(8).trim() };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
@@ -343,6 +351,23 @@ export class Router {
 
     if (cmd.kind === "examples") {
       await this.reply(msg.chatId, formatExamples(cfg.trigger));
+      return;
+    }
+
+    if (cmd.kind === "prompts") {
+      const [action, key] = cmd.body.split(/\s+/).filter(Boolean);
+      if (action && action !== "diff") {
+        await this.reply(msg.chatId, `用法：${cfg.trigger} prompts [diff [键]]`);
+        return;
+      }
+      let text: string;
+      try {
+        text = action === "diff" ? this.prompts.diff(msg.repo, key) : this.prompts.describe(msg.repo, cfg.trigger);
+      } catch (err) {
+        text = (err as Error).message;
+      }
+      if (text.length > 3500) text = `${text.slice(0, 3500)}\n…（输出过长已截断）`;
+      await this.reply(msg.chatId, text);
       return;
     }
 

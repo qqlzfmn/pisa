@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { getAdapter } from "../src/adapters";
+import { defaultPrompts } from "../src/prompts";
 import type { Task } from "../src/types";
 
 const task: Task = {
@@ -33,6 +34,7 @@ const input = {
   extensionPath: "/tmp/ext.ts",
   progressFile: "/tmp/p.jsonl",
   cfg: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1 },
+  prompts: defaultPrompts(),
 };
 
 describe("WorkerAdapter", () => {

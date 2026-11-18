@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Config } from "./config";
 import type { Store } from "./store";
 import type { IncomingMessage } from "./types";
+import { defaultPrompts, type PromptLibrary } from "./prompts";
 
 type Enqueue = (m: IncomingMessage) => Promise<void> | void;
 
@@ -18,6 +19,8 @@ export interface ProactiveDeps {
   store: ProbeState;
   now?: () => number;
   runProbe?: (command: string) => ProbeResult;
+  /** 默认提示词来源；缺省只用内置段落 */
+  prompts?: PromptLibrary;
 }
 
 type ProbeConfig = NonNullable<NonNullable<Config["proactive"]>["probe"]>;
@@ -49,6 +52,7 @@ export class Proactive {
   private running = false;
   private readonly now: () => number;
   private readonly runProbe: (command: string) => ProbeResult;
+  private readonly prompts: PromptLibrary;
 
   constructor(
     private cfg: Config,
@@ -57,6 +61,7 @@ export class Proactive {
   ) {
     this.now = deps.now ?? Date.now;
     this.runProbe = deps.runProbe ?? spawnProbe;
+    this.prompts = deps.prompts ?? defaultPrompts();
   }
 
   /** 每条入站消息都过一遍；只有群聊且没带触发词时才可能触发 */
@@ -81,7 +86,7 @@ export class Proactive {
       userId: k.userId ?? this.cfg.whitelist.users[0] ?? msg.userId,
       isDirect: true,
       text: [
-        k.prompt ?? "群里有人报障且没有人接：先定位原因，能修就修，不能修给出可执行的下一步。",
+        k.prompt ?? this.prompts.render("proactive.keywords"),
         "",
         `原消息（来自 ${msg.userId}）：${text}`,
       ].join("\n"),
@@ -135,7 +140,7 @@ export class Proactive {
       repo: p.repo,
       isDirect: true,
       text: [
-        p.prompt ?? "自动探针失败，请定位原因并修复。",
+        p.prompt ?? this.prompts.render("proactive.probe", {}, p.repo),
         "",
         `探针：${p.command}`,
         `退出码：${code}`,

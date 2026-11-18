@@ -57,6 +57,7 @@ core 内部模块关系：
 | `router.ts` | 全局唯一编排者：事件入口、命令、状态跃迁、进度转发、回帖 | `handle()`、`start()/stop()`、`recoverInterrupted()` |
 | `store.ts` | SQLite 持久化：任务、消息映射、事件去重、副作用账本、外部动作队列 | `insertTask`、`claimQueued`、`transition`、`taskByPr`、`effectsOf`、`enqueueEffect`、`dueEffects` |
 | `worker.ts` | 拉起 agent 进程、解析输出、超时与取消 | `class Worker implements WorkerRunner` |
+| `prompts.ts` | 提示词分层：内置段落 + 团队/仓库覆盖、启动校验、列表与 diff | `loadPrompts()`、`PromptLibrary` |
 | `adapters/` | 把 pisa 的任务翻译成某个 agent 的命令行与输出格式 | `getAdapter(name)` |
 | `deliver.ts` | 提交 → 推送 → 开 PR；推送与建 PR 交给 outbox 执行 | `GitDeliverer.deliver()`、`effectHandlers()` |
 | `effects.ts` | 外部动作 outbox：先落库再执行，按 `(kind,key)` 去重，失败指数退避，重启后重放 | `EffectQueue.exec()`、`start()/stop()`、`cancelTask()` |
@@ -191,7 +192,7 @@ interface WorkerAdapter {
 }
 ```
 
-`AdapterInput` 给 `task`、`workdir`、`extensionPath`、`progressFile`、`cfg`（`worker.*`）、`resumeSessionId`。registry 在 `src/adapters/index.ts`，目前只有 `omp`。
+`AdapterInput` 给 `task`、`workdir`、`extensionPath`、`progressFile`、`cfg`（`worker.*`）、`prompts`（生效的提示词库）与 `resumeSessionId`。registry 在 `src/adapters/index.ts`，目前只有 `omp`。
 
 接入一个新 agent 需要满足的契约：
 
