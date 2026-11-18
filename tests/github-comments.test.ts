@@ -755,6 +755,33 @@ describe("GitHub 评论 → 任务", () => {
     expect(store.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
   });
 
+  test("崩溃重放：线程已有同标记时只补记账本，不再回帖", async () => {
+    const taskId = "t_replay";
+    const key = `pr:o/r#12:${taskId}`;
+    const calls: string[][] = [];
+    // 上一轮已经把回帖发出去、标记完成前进程被杀：线程里有标记，账本里没有
+    const ghRunner: Runner = (args) => {
+      calls.push(args);
+      if (args[1] === "api") return threadBodies([`改好了\n\n${replyMarker(taskId, "pr")}`]);
+      return reply(0);
+    };
+    const effects = new EffectQueue(store, { now: () => 1_000 });
+    // 构造 Router 即把 push/pr/comment 三类 handler 注册进队列
+    new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner, effects });
+    store.enqueueEffect({
+      kind: "comment",
+      key,
+      taskId,
+      payload: JSON.stringify({ taskId, repo: "o/r", number: 12, purpose: "pr", body: `${HEADER}改好了` }),
+      at: 0,
+    });
+
+    expect(await effects.flush()).toEqual({ done: 1, failed: 0 });
+    expect(store.effectRow("comment", key)!.status).toBe("done");
+    expect(calls.some((c) => c[1] === "pr")).toBe(false);
+    expect(store.effectsOf(taskId).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
+  });
+
   test("未启用 github 时不回帖", async () => {
     cfg = makeCfg(repo, stateDir);
     const { runner: ghRunner, calls } = scripted(reply(0));

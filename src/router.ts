@@ -100,14 +100,13 @@ export class Router {
     this.deps.store.setPrUrl(taskId, url);
   }
 
-  /** 回帖 effect：线程里已有同标记就是发过了，重试不会重复 */
+  /** 回帖 effect：线程里已有同标记就是发过了，重试不会重复；两种结果都说明回帖存在，账本照记 */
   private commentEffect(p: CommentPayload): Promise<"posted" | "skipped"> {
     const res = postReplyOnce(this.deps.ghRunner ?? defaultRunner, p.repo, p.number, p.purpose, p.taskId, p.body);
     if (!res.ok) return Promise.reject(new Error(res.error));
-    if (res.value === "posted") {
-      const kind = p.purpose === "pr" ? "PR" : "Issue";
-      this.deps.store.effect(p.taskId, "comment", `${p.repo}#${p.number}`, `${kind} 回帖`);
-    }
+    const kind = p.purpose === "pr" ? "PR" : "Issue";
+    // 崩溃在「发出去、标记完成」之间时重放只会 skipped，但回帖确实在，rewind 靠这条账本判断不可撤回
+    this.deps.store.effect(p.taskId, "comment", `${p.repo}#${p.number}`, `${kind} 回帖`);
     return Promise.resolve(res.value);
   }
 
