@@ -8,6 +8,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 - [命令](#命令)
 - [撤销与账本](#撤销与账本)
 - [Webhook 事件入口](#webhook-事件入口)
+- [平台回调（/triggers）](#平台回调triggers)
 - [Agent CLI 与 skill](#agent-cli-与-skill)
 - [Web 控制台](#web-控制台)
 - [多仓库](#多仓库)
@@ -112,6 +113,39 @@ curl -X POST http://127.0.0.1:8799/event \
 ```
 
 同 `threadKey` + `eventId` 再投一次、内容不同视为编辑（任务还在排队就更新需求）；`version` 没有编辑语义时可以不传。
+
+## 平台回调（/triggers）
+
+CI 失败、群里被 @ 这类事件走独立端点，验签在 pisa 内部完成，平台侧不需要再写转发脚本：
+
+```json
+"triggers": {
+  "port": 8798,
+  "chatId": "ops",
+  "userId": "ci-bot",
+  "repo": "demo",
+  "githubActions": { "enabled": true, "secretEnv": "PISA_GH_ACTIONS_SECRET", "repos": ["acme/app"], "workflows": ["ci"] },
+  "feishu": { "enabled": true, "encryptKeyEnv": "PISA_FEISHU_ENCRYPT_KEY", "chats": ["oc_xxx"] },
+  "wecom": { "enabled": true, "tokenEnv": "PISA_WECOM_TOKEN", "aesKeyEnv": "PISA_WECOM_AES_KEY", "corpId": "ww_xxx", "users": ["zhangsan"] }
+}
+```
+
+- 端点：`POST /triggers/github-actions`、`POST /triggers/feishu`、`GET|POST /triggers/wecom`；只监听 127.0.0.1，对外用反代或内网穿透
+- 归属：任务的 `userId` / `chatId` 取 `triggers`，仍要过 `whitelist.users` 与仓库白名单；仓库取适配器的 `repo`，缺省用 `triggers.repo`
+- 白名单：`repos` / `chats` / `users` 空数组等于全部忽略；不在白名单的事件回 `200 {"ok":true,"ignored":"..."}`，平台不会重试
+- 密钥只从环境变量读；变量缺失时该适配器不启动，日志报 `[pisa] <name> 触发器缺少环境变量 ...`
+- 去重：响应体 `{"ok":true,"id":"<去重键>"}`，同一事件重投不新建任务
+- GitHub Actions：只处理 `workflow_run` 的 `completed` + `conclusion=failure`；重跑是新尝试，另开一单
+- 飞书：`X-Lark-Signature` 校验，时间戳超 300 秒拒收；支持 `encrypt` 载荷与 `url_verification` 握手
+- 企业微信：GET 握手返回解密后的 `echostr`，POST 解密后校验 `corpid`
+
+手工验证（伪造签名应得到 401）：
+
+```bash
+curl -X POST http://127.0.0.1:8798/triggers/github-actions \
+  -H "x-github-event: workflow_run" -H "x-hub-signature-256: sha256=deadbeef" \
+  -d '{"action":"completed","workflow_run":{"id":1,"conclusion":"failure"}}'
+```
 
 ## Agent CLI 与 skill
 
@@ -323,6 +357,6 @@ token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.
 
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
 
-解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。
+解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`triggers`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。

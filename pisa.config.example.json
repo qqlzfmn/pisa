@@ -62,6 +62,39 @@
     "chatId": "<telegram chat id>",
     "userId": "<telegram user id>"
   },
+  "triggers": {
+    "port": 8798,
+    "chatId": "<telegram chat id>",
+    "userId": "<telegram user id>",
+    "repo": "pisa",
+    "githubActions": {
+      "enabled": false,
+      "secretEnv": "PISA_GH_ACTIONS_SECRET",
+      "repos": [
+        "owner/pisa"
+      ],
+      "workflows": [
+        "ci"
+      ]
+    },
+    "feishu": {
+      "enabled": false,
+      "encryptKeyEnv": "PISA_FEISHU_ENCRYPT_KEY",
+      "chats": [
+        "oc_xxxxxxxx"
+      ],
+      "users": []
+    },
+    "wecom": {
+      "enabled": false,
+      "tokenEnv": "PISA_WECOM_TOKEN",
+      "aesKeyEnv": "PISA_WECOM_AES_KEY",
+      "corpId": "ww_xxxxxxxx",
+      "users": [
+        "zhangsan"
+      ]
+    }
+  },
   "github": {
     "enabled": false,
     "intervalSec": 120,

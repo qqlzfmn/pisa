@@ -11,6 +11,8 @@ import { Retention } from "./retention";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import { ReplyBus, startWebServer, type WebServer } from "./web";
+import { buildTriggerAdapters } from "./triggers/index";
+import { startTriggerServer, type TriggerServer } from "./triggers/server";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
@@ -139,6 +141,23 @@ async function main(): Promise<void> {
       console.log(`[pisa] webhook listening on 127.0.0.1:${cfg.webhook.port}`);
     }
   }
+  // 平台回调：每个适配器自己验签，归一化后与 webhook 走同一个 Router
+  let triggerServer: TriggerServer | null = null;
+  const triggerAdapters = buildTriggerAdapters(cfg);
+  if (cfg.triggers && triggerAdapters.length > 0) {
+    if (!cfg.whitelist.users.includes(cfg.triggers.userId)) {
+      console.warn(`[pisa] triggers.userId=${cfg.triggers.userId} 不在 whitelist.users，触发器事件会被拒绝`);
+    }
+    triggerServer = startTriggerServer({
+      cfg,
+      adapters: triggerAdapters,
+      port: cfg.triggers.port,
+      handle: (m) => router.handle(m),
+    });
+    console.log(
+      `[pisa] triggers listening on 127.0.0.1:${cfg.triggers.port} · ${triggerAdapters.map((a) => a.name).join(",")}`,
+    );
+  }
   const allowedEnv = Object.keys(workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env));
   console.log(`[pisa] Worker 环境白名单 · ${allowedEnv.join(",") || "(空)"}`);
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
@@ -156,6 +175,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     if (webServer) await webServer.stop();
+    triggerServer?.stop();
     await router.stop(3000);
     proactive.stop();
     githubWatcher.stop();

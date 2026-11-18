@@ -48,6 +48,61 @@ export interface WebConfig {
   chatId: string;
 }
 
+/** GitHub Actions 回调：CI 失败的 run 转成任务 */
+export interface TriggerGithubActionsConfig {
+  enabled: boolean;
+  /** webhook secret 所在的环境变量名 */
+  secretEnv: string;
+  /** 允许的仓库（owner/repo）；空数组即全部忽略 */
+  repos: string[];
+  /** 允许的 workflow 名；缺省全部 */
+  workflows?: string[];
+  /** 任务归属仓库 alias；缺省用 triggers.repo */
+  repo?: string;
+}
+
+/** 飞书事件订阅：群里被 @ 的文本消息转成任务 */
+export interface TriggerFeishuConfig {
+  enabled: boolean;
+  /** Encrypt Key 所在的环境变量名；同时用于验签与解密 */
+  encryptKeyEnv: string;
+  /** 允许的群 chat_id；空数组即全部忽略 */
+  chats: string[];
+  /** 允许的发送者 open_id；缺省不限 */
+  users?: string[];
+  /** 任务归属仓库 alias；缺省用 triggers.repo */
+  repo?: string;
+}
+
+/** 企业微信自建应用回调：成员发的文本消息转成任务 */
+export interface TriggerWecomConfig {
+  enabled: boolean;
+  tokenEnv: string;
+  /** EncodingAESKey 所在的环境变量名 */
+  aesKeyEnv: string;
+  /** 企业 ID：解密后校验 corpid */
+  corpId: string;
+  /** 允许的成员 UserID；空数组即全部忽略 */
+  users: string[];
+  /** 任务归属仓库 alias；缺省用 triggers.repo */
+  repo?: string;
+}
+
+/**
+ * 通用触发适配层：`/triggers/<name>` 按平台验签后转任务。
+ * 事件的归属身份取下面的 userId / chatId，仍要过 whitelist 与 git 仓库校验。
+ */
+export interface TriggersConfig {
+  port: number;
+  chatId: string;
+  userId: string;
+  /** 适配器缺省的任务归属仓库 */
+  repo?: string;
+  githubActions?: TriggerGithubActionsConfig;
+  feishu?: TriggerFeishuConfig;
+  wecom?: TriggerWecomConfig;
+}
+
 /** events 与 progress 的默认保留天数 */
 export const DEFAULT_RETENTION_DAYS = 30;
 
@@ -75,6 +130,8 @@ export interface Config {
   /** 本机 Web 控制台；缺省值见 DEFAULT_WEB */
   web?: WebConfig;
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
+  /** 通用触发适配层；没有该段或没有启用的适配器时不监听 */
+  triggers?: TriggersConfig;
   /** 评论 → 任务 → 回帖；repo 形如 owner/repo */
   github?: GithubConfig;
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */

@@ -23,6 +23,9 @@
 
 ### 新增
 
+- 通用触发适配层（`src/triggers/`）：`TriggerAdapter` 定义验签、归一化、去重键三个环节；`/triggers/<name>` 每个适配器一个端点，白名单与密钥缺失在装配期处理，事件复用 core 的触发身份去重
+- GitHub Actions 入口：`X-Hub-Signature-256` HMAC 验签，只把 `workflow_run` 的失败完成事件转成分诊任务，重跑按尝试号另开单
+- 飞书 / 企业微信入口：各自签名校验、AES 解密、握手回写与群 / 用户白名单；飞书时间戳窗口 300 秒，企业微信解密后校验 `corpid`
 - Outbox（`src/effects.ts` + `effects` 表）：外部动作先落库再执行，同一 `(kind,key)` 只执行一次，失败按 2s→60s 指数退避（最多 10 次），进程重启后继续重放；推送与建 PR 在仓库根目录执行，工作副本删掉后重试仍可用
 - `LICENSE`（MIT），徽章与 GitHub 仓库许可字段据此生效
 - `tests/docs-links.test.ts`：所有 Markdown 的相对链接必须有落点，README 的页内锚点必须落在真实标题上
