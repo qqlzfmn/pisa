@@ -67,6 +67,11 @@ export function pushBranch(workdir: string, branch: string): ExecResult {
   return sh(["git", "-C", workdir, "push", "-u", "origin", branch]);
 }
 
+/** 分支是否已推到 origin：只看本地远端跟踪引用，不联网 */
+export function pushedBranch(workdir: string, branch: string): boolean {
+  return sh(["git", "-C", workdir, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`]).code === 0;
+}
+
 /** 无 PR 能力时给一个可点的对比链接 */
 export function compareUrl(remote: string, base: string, branch: string): string | null {
   if (!remote) return null;
@@ -101,4 +106,9 @@ export function createPr(
     "--head",
     opts.head,
   ], workdir);
+}
+
+/** 分支上已有的开放 PR：远端状态即幂等键，崩溃重试时认领而不是再造一个 */
+export function findPr(workdir: string, branch: string): ExecResult {
+  return sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url"], workdir);
 }
