@@ -84,10 +84,14 @@ export function hasGh(): boolean {
   return sh(["gh", "--version"]).code === 0;
 }
 
-export function createPr(
-  workdir: string,
-  opts: { title: string; body: string; base: string; head: string },
-): ExecResult {
+export interface CreatePrOptions {
+  title: string;
+  body: string;
+  base: string;
+  head: string;
+}
+
+export function createPr(workdir: string, opts: CreatePrOptions): ExecResult {
   return sh([
     "gh",
     "pr",

@@ -1,17 +1,11 @@
 import type { Config, RepoConfig } from "./config";
 import type { DeliveryResult, Task } from "./types";
-import {
-  changedFiles,
-  commitAll,
-  compareUrl,
-  createPr,
-  hasGh,
-  pushBranch,
-  remoteUrl,
-} from "./git";
+import { changedFiles, commitAll, compareUrl, hasGh, remoteUrl, sh } from "./git";
+import type { EffectQueue, PrPayload, PushPayload } from "./effects";
 
 export interface Deliverer {
-  deliver(task: Task, workdir: string, repo: RepoConfig): Promise<DeliveryResult>;
+  /** effects：外部动作入口；交付只负责入队与立即取结果，失败留在队列里重试 */
+  deliver(task: Task, workdir: string, repo: RepoConfig, effects: EffectQueue): Promise<DeliveryResult>;
 }
 
 /** 审核与交付：PR 正文带上任务号与需求；Issue 来源追加 Closes 关联 */
@@ -21,9 +15,8 @@ export function prBody(task: Pick<Task, "id" | "prompt" | "replyIssue">): string
   return lines.filter((line) => line !== "").join("\n\n");
 }
 
-/** gh 能力的注入点：测试用假实现验证「更新既有 PR 时不新建 PR」 */
+/** gh 能力的注入点：测试用假实现验证「已有 PR 时不新建 PR」 */
 export interface DelivererDeps {
-  createPr?: typeof createPr;
   hasGh?: () => boolean;
 }
 
@@ -33,7 +26,7 @@ export class GitDeliverer implements Deliverer {
     private deps: DelivererDeps = {},
   ) {}
 
-  async deliver(task: Task, workdir: string, repo: RepoConfig): Promise<DeliveryResult> {
+  async deliver(task: Task, workdir: string, repo: RepoConfig, effects: EffectQueue): Promise<DeliveryResult> {
     const files = changedFiles(workdir);
     // 续跑既有 PR 时没有改动也要保住 PR 绑定
     if (files.length === 0) return { files: [], pushed: false, prUrl: task.prUrl ?? undefined };
@@ -46,27 +39,35 @@ export class GitDeliverer implements Deliverer {
     if (commit.code !== 0) throw new Error(`提交失败: ${commit.err || commit.out}`);
 
     const remote = repo.remote ?? remoteUrl(workdir);
-    let pushed = false;
+    const wantPush = Boolean(this.cfg.delivery.push && remote);
 
-    if (this.cfg.delivery.push && remote) {
-      const p = pushBranch(workdir, branch);
-      if (p.code !== 0) throw new Error(`推送失败: ${p.err || p.out}`);
-      pushed = true;
+    // 推送按 (branch, head) 去重：同一提交只推一次，失败退避后由队列重试
+    let pushed = false;
+    if (wantPush) {
+      const head = sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out.trim();
+      const key = `${branch}@${head}`;
+      const payload: PushPayload = { taskId: task.id, repoPath: repo.path, branch };
+      effects.enqueue("push", key, payload);
+      pushed = (await effects.runNow("push", key)).ok;
     }
 
     // 已有 PR：分支推送即更新 PR，不再新建
-    if (task.prUrl) return { branch, prUrl: task.prUrl, files, pushed };
-
-    const ghReady = this.deps.hasGh ?? hasGh;
-    let prUrl: string | undefined;
-    if (this.cfg.delivery.pr && pushed && remote.includes("github.com") && ghReady()) {
-      const pr = (this.deps.createPr ?? createPr)(workdir, {
-        title,
-        body: prBody(task),
+    let prUrl: string | undefined = task.prUrl ?? undefined;
+    const wantPr = Boolean(this.cfg.delivery.pr && pushed && remote.includes("github.com") && (this.deps.hasGh ?? hasGh)());
+    if (wantPr && !prUrl) {
+      const key = `${repo.alias}:${branch}`;
+      const payload: PrPayload = {
+        taskId: task.id,
+        alias: repo.alias,
+        repoPath: repo.path,
         base,
         head: branch,
-      });
-      if (pr.code === 0) prUrl = pr.out.split("\n").pop()?.trim();
+        title,
+        body: prBody(task),
+      };
+      effects.enqueue("pr", key, payload);
+      const res = await effects.runNow("pr", key);
+      if (res.ok && typeof res.result === "string") prUrl = res.result;
     }
 
     if (!prUrl && remote) {

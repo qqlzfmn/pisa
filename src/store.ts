@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
-import type { Effect, EffectKind, Task, TaskStatus } from "./types";
+import type { Effect, EffectKind, OutboxKind, QueuedEffect, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
@@ -58,6 +58,21 @@ CREATE TABLE IF NOT EXISTS task_effects (
   PRIMARY KEY (task_id, kind, target)
 );
 
+CREATE TABLE IF NOT EXISTS effects (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind       TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  payload    TEXT NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  next_at    INTEGER NOT NULL,
+  last_error TEXT,
+  result     TEXT,
+  created_at INTEGER NOT NULL,
+  done_at    INTEGER,
+  UNIQUE (kind, key)
+);
+CREATE INDEX IF NOT EXISTS idx_effects_due ON effects(done_at, next_at);
+
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -87,6 +102,34 @@ interface Row {
   started_at: number | null;
   ended_at: number | null;
   cancel_requested: number;
+}
+
+interface EffectRow {
+  id: number;
+  kind: OutboxKind;
+  key: string;
+  payload: string;
+  attempts: number;
+  next_at: number;
+  last_error: string | null;
+  result: string | null;
+  created_at: number;
+  done_at: number | null;
+}
+
+function toQueuedEffect(r: EffectRow): QueuedEffect {
+  return {
+    id: r.id,
+    kind: r.kind,
+    key: r.key,
+    payload: r.payload,
+    attempts: r.attempts,
+    nextAt: r.next_at,
+    lastError: r.last_error,
+    result: r.result,
+    createdAt: r.created_at,
+    doneAt: r.done_at,
+  };
 }
 
 function toTask(r: Row): Task {
@@ -185,6 +228,39 @@ export class Store {
       .query("SELECT task_id, kind, target, detail, created_at FROM task_effects WHERE task_id = ? ORDER BY created_at, kind, target")
       .all(taskId) as Array<{ task_id: string; kind: EffectKind; target: string; detail: string | null; created_at: number }>;
     return rows.map((r) => ({ taskId: r.task_id, kind: r.kind, target: r.target, detail: r.detail, createdAt: r.created_at }));
+  }
+
+  /** Outbox 入队：同一 (kind, key) 只留一行，重复入队返回 false */
+  enqueueEffect(kind: OutboxKind, key: string, payload: string, at: number): boolean {
+    const res = this.db.run("INSERT OR IGNORE INTO effects(kind, key, payload, next_at, created_at) VALUES (?, ?, ?, ?, ?)", [
+      kind,
+      key,
+      payload,
+      at,
+      at,
+    ]);
+    return Number(res.changes) > 0;
+  }
+
+  effectByKey(kind: OutboxKind, key: string): QueuedEffect | null {
+    const row = this.db.query("SELECT * FROM effects WHERE kind = ? AND key = ?").get(kind, key) as EffectRow | null;
+    return row ? toQueuedEffect(row) : null;
+  }
+
+  /** 到期且未完成的 effect，按入队顺序 */
+  dueEffects(at: number, limit = 100): QueuedEffect[] {
+    const rows = this.db
+      .query("SELECT * FROM effects WHERE done_at IS NULL AND next_at <= ? ORDER BY id LIMIT ?")
+      .all(at, limit) as EffectRow[];
+    return rows.map(toQueuedEffect);
+  }
+
+  markEffectDone(id: number, result: string | null, at: number): void {
+    this.db.run("UPDATE effects SET done_at = ?, result = ?, last_error = NULL WHERE id = ?", [at, result, id]);
+  }
+
+  markEffectAttempt(id: number, attempts: number, nextAt: number, error: string): void {
+    this.db.run("UPDATE effects SET attempts = ?, next_at = ?, last_error = ? WHERE id = ?", [attempts, nextAt, error, id]);
   }
 
   /** 守护进程心跳：CLI 用它判断任务是否真的会被执行 */

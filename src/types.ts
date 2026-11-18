@@ -13,6 +13,24 @@ export interface Effect {
   createdAt: number;
 }
 
+/** Outbox 里的外部动作：先落库再执行，重启后接着跑 */
+export type OutboxKind = "push" | "pr" | "comment";
+
+/** effects 表一行：payload 是 JSON，result 是成功后的返回值（PR 链接） */
+export interface QueuedEffect {
+  id: number;
+  kind: OutboxKind;
+  /** 同一动作的稳定标识：推送 `${branch}@${head}`、PR `${repo}:${branch}`、回帖 `${repo}#${n}:${purpose}:${taskId}` */
+  key: string;
+  payload: string;
+  attempts: number;
+  nextAt: number;
+  lastError: string | null;
+  result: string | null;
+  createdAt: number;
+  doneAt: number | null;
+}
+
 export interface IncomingMessage {
   eventId: string;
   channel: string;

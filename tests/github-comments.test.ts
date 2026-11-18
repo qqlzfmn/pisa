@@ -17,6 +17,7 @@ import { GithubWatcher } from "../src/github-watcher";
 import { Store } from "../src/store";
 import { Router } from "../src/router";
 import { GitDeliverer, prBody } from "../src/deliver";
+import { EffectQueue, deliveryEffectHandlers, type DeliveryEffectDeps } from "../src/effects";
 import { createWorktree, sh, type ExecResult } from "../src/git";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
@@ -903,6 +904,7 @@ describe("GitDeliverer 更新既有 PR", () => {
   let bare: string;
   let stateDir: string;
   let cfg: Config;
+  let store: Store;
 
   beforeEach(() => {
     repo = makeRepo();
@@ -910,6 +912,7 @@ describe("GitDeliverer 更新既有 PR", () => {
     sh(["git", "init", "--bare", "-q", bare]);
     sh(["git", "-C", repo, "remote", "add", "origin", bare]);
     stateDir = mkdtempSync(join(tmpdir(), "pisa-gh-deliver-"));
+    store = new Store(":memory:");
     const base = makeCfg(repo, stateDir);
     cfg = {
       ...base,
@@ -920,10 +923,17 @@ describe("GitDeliverer 更新既有 PR", () => {
   });
 
   afterEach(() => {
+    store.close();
     rmSync(repo, { recursive: true, force: true });
     rmSync(bare, { recursive: true, force: true });
     rmSync(stateDir, { recursive: true, force: true });
   });
+
+  function queue(deps: DeliveryEffectDeps = {}): EffectQueue {
+    return new EffectQueue(store, {
+      handlers: { ...deliveryEffectHandlers({ findPr: () => null, ...deps }), comment: async () => {} },
+    });
+  }
 
   /** 父任务分支 + 已挂载的工作副本，带一处改动 */
   function setup(): string {
@@ -937,8 +947,8 @@ describe("GitDeliverer 更新既有 PR", () => {
   test("task.prUrl 非空时只推送分支，不新建 PR", async () => {
     const workdir = setup();
     const calls: string[] = [];
-    const deliverer = new GitDeliverer(cfg, {
-      hasGh: () => true,
+    const deliverer = new GitDeliverer(cfg, { hasGh: () => true });
+    const effects = queue({
       createPr: (_workdir, opts) => {
         calls.push(opts.head);
         return reply(0, "https://github.com/o/r/pull/99");
@@ -949,6 +959,7 @@ describe("GitDeliverer 更新既有 PR", () => {
       { ...baseTask, id: "t_child", branch: "pisa/parent", prUrl: "https://github.com/o/r/pull/12" },
       workdir,
       cfg.repos[0]!,
+      effects,
     );
 
     expect(calls).toEqual([]);
@@ -961,15 +972,20 @@ describe("GitDeliverer 更新既有 PR", () => {
   test("没有 prUrl 时按原有逻辑创建 PR", async () => {
     const workdir = setup();
     const calls: string[] = [];
-    const deliverer = new GitDeliverer(cfg, {
-      hasGh: () => true,
+    const deliverer = new GitDeliverer(cfg, { hasGh: () => true });
+    const effects = queue({
       createPr: (_workdir, opts) => {
         calls.push(opts.head);
         return reply(0, "https://github.com/o/r/pull/99");
       },
     });
 
-    const res = await deliverer.deliver({ ...baseTask, id: "t_new", branch: "pisa/parent" }, workdir, cfg.repos[0]!);
+    const res = await deliverer.deliver(
+      { ...baseTask, id: "t_new", branch: "pisa/parent" },
+      workdir,
+      cfg.repos[0]!,
+      effects,
+    );
 
     expect(calls).toEqual(["pisa/parent"]);
     expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
@@ -978,8 +994,8 @@ describe("GitDeliverer 更新既有 PR", () => {
   test("Issue 来源的任务在 PR 正文追加 Closes", async () => {
     const workdir = setup();
     const bodies: string[] = [];
-    const deliverer = new GitDeliverer(cfg, {
-      hasGh: () => true,
+    const deliverer = new GitDeliverer(cfg, { hasGh: () => true });
+    const effects = queue({
       createPr: (_workdir, opts) => {
         bodies.push(opts.body);
         return reply(0, "https://github.com/o/r/pull/99");
@@ -990,6 +1006,7 @@ describe("GitDeliverer 更新既有 PR", () => {
       { ...baseTask, id: "t_issue", prompt: "", branch: "pisa/parent", replyIssue: 20 },
       workdir,
       cfg.repos[0]!,
+      effects,
     );
 
     expect(bodies).toEqual(["任务号：t_issue\n\n---\n\n由 pisa 自动创建。\n\nCloses #20"]);
