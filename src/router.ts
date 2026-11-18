@@ -2,7 +2,7 @@ import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
-import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
+import type { ChannelAdapter, IncomingMessage, Mandate, Task, WorkerResult } from "./types";
 import type { EffectRow, Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
@@ -25,6 +25,7 @@ import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
 import { formatStatusBoard } from "./status";
+import { admit, formatPolicy, isMentioned, type Admission } from "./policy";
 
 export { formatDuration } from "./status";
 
@@ -258,6 +259,7 @@ export class Router {
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
+      else if (t === "/policy" || t === "策略") cmd = { kind: "policy", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
       else if (t === "/rewind" || t.startsWith("/rewind ")) cmd = { kind: "rewind", body: t.slice(7).trim() };
@@ -331,6 +333,15 @@ export class Router {
 
     if (cmd.kind === "examples") {
       await this.reply(msg.chatId, formatExamples(cfg.trigger));
+      return;
+    }
+
+    if (cmd.kind === "policy") {
+      if (!msg.admin && !cfg.whitelist.users.includes(msg.userId)) {
+        await this.reply(msg.chatId, "无权限：该用户不在白名单。");
+        return;
+      }
+      await this.reply(msg.chatId, formatPolicy(cfg, store.recentAdmissions()));
       return;
     }
 
@@ -438,17 +449,26 @@ export class Router {
 
     const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
 
-    const denied = this.checkAccess(msg, repo);
-    if (denied) {
-      const last = this.deniedAt.get(msg.userId) ?? 0;
-      if (this.now() - last > 24 * 3600 * 1000) {
-        this.deniedAt.set(msg.userId, this.now());
-        await this.reply(msg.chatId, denied);
-      }
+    // 准入按「来源 × 名单内外 × 是否 @」裁决；observe 只登记，不落到任务
+    const admission = admit(cfg, { source: msg.channel, requester: msg.userId, mentioned: isMentioned(msg) });
+    if (!admission.ok) {
+      await this.replyDenied(msg, admission.reason);
+      return;
+    }
+    if (admission.mode === "observe") {
+      await this.recordObserved(msg, admission);
       return;
     }
     if (!repo) {
       await this.reply(msg.chatId, `仓库未配置：${msg.repo ?? "(默认)"}`);
+      return;
+    }
+    if (!cfg.whitelist.repos.includes(repo.alias)) {
+      await this.replyDenied(msg, `无权限：仓库 ${repo.alias} 不在白名单。`);
+      return;
+    }
+    if (!isGitRepo(repo.path)) {
+      await this.replyDenied(msg, `仓库路径不是 git 仓库：${repo.path}`);
       return;
     }
     if (!prompt) {
@@ -467,6 +487,12 @@ export class Router {
       text: prompt,
       version: msg.version,
     });
+    const mandate: Mandate = {
+      source: msg.channel,
+      requester: msg.userId,
+      actor: msg.actor ?? msg.userId,
+      mentioned: admission.mentioned,
+    };
     const task: Task = {
       id: newTaskId(this.now()),
       source: msg.eventId,
@@ -490,6 +516,8 @@ export class Router {
       startedAt: null,
       endedAt: null,
       cancelRequested: false,
+      mandate,
+      policyVersion: admission.version,
     };
     // 事件账本：占位排在鉴权与正文校验之后、任务落库之前，被拒的投递不能占住 eventId。
     // 去重由 triggers 决定，这里不按返回值拦截：同一 eventId 的编辑要能继续进入触发器路径。
@@ -612,13 +640,44 @@ export class Router {
     return out;
   }
 
-  private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
-    const { cfg } = this.deps;
-    if (!cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
-    if (!repo) return `仓库未配置：${msg.repo ?? "(默认)"}`;
-    if (!cfg.whitelist.repos.includes(repo.alias)) return `无权限：仓库 ${repo.alias} 不在白名单。`;
-    if (!isGitRepo(repo.path)) return `仓库路径不是 git 仓库：${repo.path}`;
-    return null;
+  /** 拒绝提示按人节流：同一人在 24 小时内只收到一次，避免刷屏 */
+  private async replyDenied(msg: IncomingMessage, text: string): Promise<void> {
+    const last = this.deniedAt.get(msg.userId) ?? 0;
+    if (this.now() - last <= 24 * 3600 * 1000) return;
+    this.deniedAt.set(msg.userId, this.now());
+    await this.reply(msg.chatId, text);
+  }
+
+  /** observe 模式：不建任务，只按触发器 id 登记一次，并在首次投递时回执 */
+  private async recordObserved(msg: IncomingMessage, admission: Admission): Promise<void> {
+    const at = msg.receivedAt ?? this.now();
+    const trigger = makeTrigger({
+      source: msg.channel,
+      threadKey: threadKeyOf(msg, null),
+      messageKey: msg.messageKey ?? msg.eventId,
+      actor: msg.actor ?? msg.userId,
+      at,
+      text: msg.text.trim(),
+      version: msg.version,
+    });
+    const fresh = this.deps.store.recordAdmission({
+      id: trigger.id,
+      source: msg.channel,
+      requester: msg.userId,
+      actor: msg.actor ?? msg.userId,
+      mentioned: admission.mentioned,
+      listed: admission.listed,
+      mode: "observe",
+      reason: admission.reason,
+      policyVersion: admission.version,
+      createdAt: at,
+    });
+    if (fresh) {
+      await this.reply(
+        msg.chatId,
+        `已记录 · 来源 ${msg.channel} 处于 observe，只登记不派活。\n策略版本：${admission.version}`,
+      );
+    }
   }
 
   /** 自举：把已完成任务的分支验证后合入主干 */
@@ -881,6 +940,31 @@ export class Router {
     }
     if (!msg.admin && task.requester !== msg.userId) {
       await this.reply(msg.chatId, "只有原请求者可以恢复。");
+      return;
+    }
+    // 策略不追溯已入队任务，但恢复等于重新派活：按当前名单与来源规则重校验
+    const mandate: Mandate = task.mandate ?? {
+      source: task.channel,
+      requester: task.requester,
+      actor: task.requester,
+      mentioned: false,
+    };
+    const recheck = admit(cfg, mandate);
+    if (!recheck.ok || recheck.mode !== "auto") {
+      const why = recheck.ok ? `来源 ${mandate.source} 的 accept 现在是 observe，不再自动派活。` : recheck.reason;
+      await this.reply(
+        msg.chatId,
+        [
+          `拒绝恢复 · ${id}`,
+          why,
+          `任务记录的策略版本：${task.policyVersion ?? "未记录"}；当前：${recheck.version}`,
+        ].join("\n"),
+      );
+      return;
+    }
+    const repo = repoByAlias(cfg, task.repo);
+    if (!repo || !cfg.whitelist.repos.includes(repo.alias) || !isGitRepo(repo.path)) {
+      await this.reply(msg.chatId, `拒绝恢复 · ${id}\n仓库 ${task.repo} 已不在白名单或不可用。`);
       return;
     }
     if (task.status !== "paused") {

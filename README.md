@@ -120,7 +120,7 @@ flowchart TB
 | 层 | 代码 | 职责 | 刻意不做 |
 | --- | --- | --- | --- |
 | 入口 | `src/index.ts`、`src/channels/`、`src/web.ts` | 把外部消息翻成 `IncomingMessage`，把回执写回来源 | 不做调度、不碰数据库细节 |
-| Core | `src/router.ts`、`src/store.ts` | 鉴权、命令、状态机（queued → running → succeeded/failed/paused）、去重、账本 | 不认识 Telegram 与 omp |
+| Core | `src/router.ts`、`src/store.ts`、`src/policy.ts` | 准入（来源 × 名单内外 × 是否 @）、命令、状态机（queued → running → succeeded/failed/paused）、去重、账本 | 不认识 Telegram 与 omp |
 | Runtime | `src/worker.ts`、`src/adapters/`、`extensions/` | 起进程、喂 prompt、收进度、超时与卡死判定 | 不改任务状态 |
 | 交付 | `src/git.ts`、`src/deliver.ts` | worktree、提交、push、PR 链接 | 不判断任务成功与否 |
 

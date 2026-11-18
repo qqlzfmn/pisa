@@ -116,6 +116,24 @@
       "prompt": "自动探针失败，定位原因并修复。"
     }
   },
+  "policy": {
+    "version": "2026-11",
+    "sources": {
+      "telegram": {
+        "requireMention": false,
+        "allowGuests": false
+      },
+      "webhook": {
+        "accept": "auto"
+      },
+      "github": {
+        "allowed": true
+      },
+      "cron": {
+        "accept": "auto"
+      }
+    }
+  },
   "stateDir": ".pisa",
   "retentionDays": 30,
   "notifications": {

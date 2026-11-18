@@ -48,6 +48,28 @@ export interface WebConfig {
   chatId: string;
 }
 
+/** 准入后的处理方式：off 拒绝 / observe 只记录 / auto 建任务 */
+export type AcceptMode = "off" | "observe" | "auto";
+
+/** 单个来源的准入规则；缺省值见 DEFAULT_SOURCE_POLICY，与引入策略前一致 */
+export interface SourcePolicy {
+  /** 来源总闸；false 时该来源全部拒绝 */
+  allowed?: boolean;
+  /** 名单内用户是否必须在消息里 @ 机器人；没有 @ 语义的来源显式给 mentioned 可绕过 */
+  requireMention?: boolean;
+  /** 名单外用户是否允许，且仅在被 @ 时 */
+  allowGuests?: boolean;
+  /** 准入之后的处理方式 */
+  accept?: AcceptMode;
+}
+
+/** 来源准入表：谁能派活按来源与是否 @ 决定 */
+export interface PolicyConfig {
+  /** 显式版本号；缺省用规则指纹，改规则自动换版本 */
+  version?: string;
+  sources?: Record<string, SourcePolicy>;
+}
+
 /** events 与 progress 的默认保留天数 */
 export const DEFAULT_RETENTION_DAYS = 30;
 
@@ -82,6 +104,8 @@ export interface Config {
   schedules?: ScheduleJob[];
   /** events 与 progress 的保留天数；≤ 0 关闭每日清理，默认 30 */
   retentionDays?: number;
+  /** 来源准入表；缺省时行为与引入策略前一致 */
+  policy?: PolicyConfig;
   proactive?: {
     keywords?: { enabled: boolean; words: string[]; cooldownSec?: number; chatId?: string; userId?: string; prompt?: string };
     probe?: {
@@ -122,6 +146,14 @@ export const DEFAULT_WEB: WebConfig = {
   chatId: "web",
 };
 
+/** 来源规则的缺省值：与引入策略前一致（总闸开、auto、不要求 @、不放行名单外） */
+export const DEFAULT_SOURCE_POLICY: Required<SourcePolicy> = {
+  allowed: true,
+  requireMention: false,
+  allowGuests: false,
+  accept: "auto",
+};
+
 export const DEFAULT_CONFIG: Config = {
   trigger: "/pisa",
   dmWithoutTrigger: true,
@@ -141,6 +173,7 @@ export const DEFAULT_CONFIG: Config = {
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
   web: DEFAULT_WEB,
   retentionDays: DEFAULT_RETENTION_DAYS,
+  policy: { sources: {} },
   stateDir: ".pisa",
 };
 
@@ -153,6 +186,11 @@ function merge(base: Config, patch: Partial<Config>): Config {
     delivery: { ...base.delivery, ...(patch.delivery ?? {}) },
     channels: { ...base.channels, ...(patch.channels ?? {}) },
     web: { ...(base.web ?? DEFAULT_WEB), ...(patch.web ?? {}) },
+    policy: {
+      ...base.policy,
+      ...(patch.policy ?? {}),
+      sources: { ...(base.policy?.sources ?? {}), ...(patch.policy?.sources ?? {}) },
+    },
   };
 }
 
@@ -235,7 +273,8 @@ export type CommandKind =
   | "rewind"
   | "confirm"
   | "verbose"
-  | "gc";
+  | "gc"
+  | "policy";
 
 /** 帮助分组：派活（新任务与续跑）、查询（状态与用法）、维护（改撤合）、集成（不经 IM 的入口） */
 export type HelpGroup = "派活" | "查询" | "维护" | "集成";
@@ -262,6 +301,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
   { command: "verbose", alias: "进度", description: "过程消息开关（on/off）", args: "[on|off]", group: "查询", menu: true },
+  { command: "policy", alias: "策略", description: "查看来源准入规则与版本", group: "查询", menu: true },
   { command: "gc", alias: "清理", description: "清理已结束任务的分支/工作副本/PR", args: "[天数] [--dry]", group: "维护", menu: true },
   { command: "help", alias: "帮助", description: "查看命令帮助", group: "查询", menu: true },
   { command: "cancel", alias: "取消", description: "取消任务", args: "[任务号]", group: "维护", menu: true },

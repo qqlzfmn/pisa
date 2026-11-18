@@ -107,6 +107,8 @@ export class GithubWatcher {
         messageKey: String(comment.id),
         version: comment.updatedAt,
         actor: comment.userLogin,
+        // 评论必须带触发词才算派活，没有单独的 @ 概念
+        mentioned: true,
       };
       if (isPr.value) {
         await this.deps.enqueue({ ...base, continueFrom: this.deps.store.taskByPr(n, repo)?.id, replyPr: n });

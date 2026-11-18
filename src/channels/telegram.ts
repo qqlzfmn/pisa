@@ -31,6 +31,8 @@ export class TelegramChannel implements ChannelAdapter {
   name = "telegram";
   private offset = 0;
   private stopped = false;
+  /** bot 自己的用户名：群聊里据此判断是否 @ 了机器人 */
+  private username: string | null = null;
   /** 429 后静默到这个时间点 */
   private sendAfter = 0;
 
@@ -40,7 +42,24 @@ export class TelegramChannel implements ChannelAdapter {
   ) {}
 
   async start(onMessage: Handler): Promise<void> {
+    await this.loadIdentity();
     void this.poll(onMessage);
+  }
+
+  /** 拿不到用户名时按未 @ 处理：策略要求 @ 的来源会拒绝并提示，不会误放行 */
+  private async loadIdentity(): Promise<void> {
+    try {
+      const me = await this.api<{ username?: string }>("getMe", {});
+      this.username = me.result?.username ?? null;
+    } catch {
+      this.username = null;
+    }
+  }
+
+  private mentionsBot(text: string): boolean {
+    if (!this.username) return false;
+    // 用户名只含 [A-Za-z0-9_]，可直接进正则；边界防止 @bot 命中 @bot2
+    return new RegExp(`@${this.username}(?![A-Za-z0-9_])`, "i").test(text);
   }
 
   private async poll(onMessage: Handler): Promise<void> {
@@ -64,6 +83,7 @@ export class TelegramChannel implements ChannelAdapter {
             userId: String(m.from?.id ?? m.chat.id),
             text: m.text,
             isDirect: m.chat.type === "private",
+            mentioned: m.chat.type === "private" || this.mentionsBot(m.text),
             replyToMessageId: m.reply_to_message?.message_id,
             receivedAt: (m.edit_date ?? m.date ?? 0) * 1000,
             threadKey: m.message_thread_id ? `telegram:${m.chat.id}:topic:${m.message_thread_id}` : undefined,

@@ -148,8 +148,8 @@ cancelled ─┘
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由触发身份去重，编辑按 `updated_at` 区分）。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 线程解析（`threadKeyOf`：入口声明 > 被回复任务 > 本条消息）→ 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
-3. **去重与鉴权**（`src/trigger.ts` 与 `checkAccess`，`src/router.ts`）。先 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库，再校验仓库与需求：被拦下的消息不写触发器，改完配置重发同一条即可。通过后 `makeTrigger` 算出触发身份，`store.triggerByMessage(threadKey, messageKey)` 命中同一条消息时，同版本同载荷即重复投递直接丢弃，版本不同即编辑（见 4.2）。
-4. **落库与回执**（`Router.handle`，`src/router.ts`）。`store.createTaskFromTrigger` 在同一事务里写触发器与任务（`status=queued`），立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
+3. **去重与准入**（`src/policy.ts` 的 `admit`、`src/router.ts`、`src/trigger.ts`）。先按「来源 × 名单内外 × 是否 @」裁决：拒绝不写触发器，改完配置重发同一条即可；`accept=observe` 只写 `admissions` 表、不建任务。通过后校验仓库（`whitelist.repos`、目录是 git 仓库）与需求，再 `makeTrigger` 算出触发身份，`store.triggerByMessage(threadKey, messageKey)` 命中同一条消息时，同版本同载荷即重复投递直接丢弃，版本不同即编辑（见 4.2）。
+4. **落库与回执**（`Router.handle`，`src/router.ts`）。`store.createTaskFromTrigger` 在同一事务里写触发器与任务（`status=queued`，含准入裁决得到的 `mandate` 与 `policy_version`），立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
 5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
 7. **执行**（`Worker.run`，`src/worker.ts`）。`adapter.buildArgs` 生成命令行（omp：`-e <extension> [-r <sessionId>] --mode=json -p <prompt> --cwd <workdir>`），`Bun.spawn` 的 cwd 就是工作副本，环境变量附带 `PISA_WORKDIR`、`PISA_PROGRESS_FILE`。超时按 `worker.timeoutSec`（默认 3600s）`SIGTERM`，10s 后 `SIGKILL`；取消每 2s 轮询一次，同样先礼后兵。stdout 按行交给 `adapter.parseLine`，最终 `summary` 与 `error` 都过 `redact`。
@@ -166,13 +166,14 @@ cancelled ─┘
 | `pisa.db` `triggers` | 触发身份（线程 / 消息 / 版本 / 载荷）与归属任务 | 永不 |
 | `pisa.db` `events` | 定时与保留任务的占位键 | 超出保留期的终态任务对应行 |
 | `pisa.db` `task_effects` | 仍在生效的分支/推送/PR/回帖/合并 | 撤销或清理时逐条删 |
+| `pisa.db` `admissions` | `accept=observe` 的投递留痕（按触发身份去重） | 不自动清理 |
 | `pisa.db` `effects` | 外部动作队列：推送、建 PR、回帖的待执行/已完成/已终止行 | 不自动清理；任务失败或取消时删该任务的未完成行 |
 | `.pisa/logs/<taskId>.log` | 阶段日志（脱敏） | 不自动清理 |
 | `.pisa/progress/<taskId>.jsonl` | 工具级进度 | 不自动清理 |
 | `.pisa/worktrees/<taskId>` | 工作副本 | 成功、失败、运行中取消后删除；`paused`、重启时按取消请求置 `cancelled` 的任务及其后续取消保留 |
 | git 分支 `pisa/<taskId>` | 改动 | 交付前失败/取消时删；成功后保留 |
 
-四类变体：`continue`（IM 续跑原任务，分支与上下文来自父任务）、PR 评论（`taskByPr` 找到父任务，复用同一分支与 PR）、`resume`（`paused` 且工作副本在，同一 worktree + agent `-r` 会话续跑）、`rewind`（终态任务先出计划，`--yes` 再执行，成功项删账本行，失败项留着重试）。
+四类变体：`continue`（IM 续跑原任务，分支与上下文来自父任务）、PR 评论（`taskByPr` 找到父任务，复用同一分支与 PR）、`resume`（`paused` 且工作副本在，同一 worktree + agent `-r` 会话续跑；执行前按当前策略重校验 `mandate` 与仓库，不通过则拒绝）、`rewind`（终态任务先出计划，`--yes` 再执行，成功项删账本行，失败项留着重试）。
 
 ## 4. 扩展点
 
@@ -214,6 +215,7 @@ id = hex(sha256(source, threadKey, messageKey, version, payloadHash))[:32]
 - `messageKey`：线程内的消息标识，缺省 `eventId`。评论 id、平台消息 id 比自造事件号稳定。
 - `version`：消息版本（编辑时间等），没有版本概念时为空串。
 - `payloadHash`：解析后的需求正文的摘要（CRLF 归一 + trim），因此 `/pisa X` 与裸 `X` 命中同一个指纹。
+- `mentioned`：消息是否明确指向机器人（Telegram 正文 @ bot 用户名；私聊与无 @ 语义的入口视为真）。准入用它区分四格，不参与触发身份。
 
 `triggers` 表（`src/store.ts`）记录 `id`、`source`、`thread_key`、`message_key`、`actor`、`at`、`payload_hash`、`version`、`kind`、`task_id`，覆盖下面四种情形：
 
@@ -268,7 +270,8 @@ interface ChannelAdapter {
 
 | 失败点 | 检测方式 | 任务归宿 | 副作用处理 | 恢复路径 |
 | --- | --- | --- | --- | --- |
-| 非白名单 / 非 git 仓库 | `checkAccess` | 不建任务 | 未写触发器 | 改配置后重发同一条 |
+| 来源关闭 / 非白名单 / 非 git 仓库 | `admit` 与仓库校验 | 不建任务（observe 只留痕） | 未写触发器；observe 写 `admissions` | 改配置后重发同一条 |
+| resume 时策略已收紧 | `admit` 重校验任务 `mandate` | 保持 `paused` | 无 | 恢复白名单后再次 `resume` |
 | 工作副本创建失败（分支被占用） | `createWorktree` 报 `already checked out` | `failed` | 无 | 先 `cancel` 占用它的任务 |
 | Worker 非零退出 | 退出码 + 最后 20 行 | `failed` | 删 worktree 与 `pisa/<id>` 分支 | 重新投递 |
 | 执行超时 | `worker.timeoutSec` | `failed`（`执行超时`） | 同上 | 拆小任务 |
@@ -329,6 +332,7 @@ interface ChannelAdapter {
 | --- | --- |
 | 任务状态与恢复 | `src/types.ts`、`src/store.ts`、`docs/specs/005-crash-resume/` |
 | 事件入口 | `src/router.ts` 的 `handle`、`src/index.ts`、`docs/specs/003-super-agent-loop/` |
+| 准入策略 | `src/policy.ts`、`src/config.ts` 的 `PolicyConfig`、`docs/specs/019-policy-admission/` |
 | 换 agent | `src/adapters/`、`src/worker.ts` |
 | 交付与 PR | `src/deliver.ts`、`src/git.ts`、`src/github.ts` |
 | 撤销 | `src/rewind.ts`、`docs/specs/013-rewind/` |

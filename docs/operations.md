@@ -6,6 +6,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 
 - [安装与配置](#安装与配置)
 - [命令](#命令)
+- [准入策略](#准入策略)
 - [撤销与账本](#撤销与账本)
 - [Webhook 事件入口](#webhook-事件入口)
 - [Agent CLI 与 skill](#agent-cli-与-skill)
@@ -51,6 +52,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
 /pisa status                     任务看板（私聊可用 /status）
+/pisa policy                     当前准入规则与策略版本（私聊可用 /policy，别名 策略）
 ```
 
 场景说明、最佳实践与能力边界（无沙箱、回滚范围、单机、并发、鉴权面）见 [usage.md](./usage.md)。
@@ -84,6 +86,45 @@ Telegram 启动时用 `setMyCommands` 注册命令菜单（私聊可直接点选
 ### 进度回传
 
 执行时会实时回传进度（`🛠 命令` / `✏️ 文件`），破坏性命令会在 agent 内部被拦下。
+
+## 准入策略
+
+准入由三件事共同决定：来源、发送者是否在 `whitelist.users`、消息是否 @ 机器人。默认值与引入策略前一致：所有来源放行，名单内不需要 @，名单外拒绝，通过即建任务。要收紧或先观察，在配置里加 `policy`：
+
+```json
+"policy": {
+  "version": "2026-11",
+  "sources": {
+    "telegram": { "requireMention": true },
+    "webhook": { "accept": "observe" },
+    "github": { "allowed": false }
+  }
+}
+```
+
+| 字段 | 缺省 | 含义 |
+| --- | --- | --- |
+| `allowed` | `true` | 来源总闸，`false` 时该来源一律拒绝 |
+| `requireMention` | `false` | 名单内用户也必须 @ 机器人 |
+| `allowGuests` | `false` | 名单外用户在被 @ 时放行 |
+| `accept` | `"auto"` | `auto` 建任务；`observe` 只登记不派活；`off` 拒绝 |
+
+四格结果里 `requireMention` 与 `allowGuests` 各管一列：
+
+| 发送者 \ 是否 @ | @ 机器人 | 未 @ |
+| --- | --- | --- |
+| 名单内 | 允许 | `requireMention` 决定 |
+| 名单外 | `allowGuests` 决定 | 拒绝 |
+
+@ 来自哪里：Telegram 用 `getMe` 拿到的用户名匹配正文，私聊视为已 @；webhook、Web 控制台、GitHub 评论、cron、主动发现没有 @ 语义，一律视为已 @，`requireMention` 对它们不生效。`pisa task`（CLI）不经 Router，不受准入规则约束：能跑这条命令就能改配置文件，鉴权没有意义。
+
+版本与留痕：`policy.version` 显式写死；不写时用规则指纹（白名单与各来源规则算出的 8 位哈希），改任何一条规则都会变。任务落库时记下 `mandate`（来源、请求者、实际操作人、是否 @）与 `policy_version`。
+
+变更不追溯：已排队与运行中的任务继续执行，新规则只作用于新的派活。`resume` 算重新派活，按当前规则重校验任务记录的 `mandate` 与仓库；失败回「拒绝恢复」，同时给出任务记录的版本与当前版本，任务保持 `paused`。`admin` 不豁免。
+
+`accept=observe` 的投递写 `admissions` 表，按触发身份去重（重复投递只记一条），首次投递回一条「已记录 · 只登记不派活」。用它先观察某来源的流量时，不会真的改动仓库。
+
+`/pisa policy` 打印当前版本与指纹、白名单规模、每个已知来源的生效规则与四格结果、最近 5 条 observe 记录；仅白名单用户与 admin 可用。退回默认行为就删掉 `policy` 段。
 
 ## 撤销与账本
 
@@ -350,6 +391,6 @@ token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.
 
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive`、`policy` 与 `retentionDays`。
 
-解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。
+解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`policy.sources` 例外，按来源名再合并一层，只写要改的来源即可。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。

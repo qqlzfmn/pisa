@@ -9,6 +9,7 @@ import type { Task, TaskStatus } from "./types";
 import { newTaskId } from "./ids";
 import { makeTrigger } from "./trigger";
 import { continuationContext } from "./task-context";
+import { policyVersion } from "./policy";
 import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
 import { windowMetrics } from "./metrics";
@@ -127,7 +128,10 @@ function cliRequester(args: ParsedArgs): string {
   return flagString(args, "requester") ?? process.env.PISA_CLI_USER ?? process.env.USER ?? "local";
 }
 
-function newCliTask(init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "baseRef" | "context" | "prUrl">): Task {
+function newCliTask(
+  cfg: Config,
+  init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "baseRef" | "context" | "prUrl">,
+): Task {
   return {
     ...init,
     source: "cli",
@@ -145,6 +149,9 @@ function newCliTask(init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "b
     startedAt: null,
     endedAt: null,
     cancelRequested: false,
+    // 本机 shell 即授权边界：没有 @ 语义，记录成已 @ 与本机来源
+    mandate: { source: "cli", requester: init.requester, actor: init.requester, mentioned: true },
+    policyVersion: policyVersion(cfg),
   };
 }
 
@@ -285,7 +292,7 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
         const brief = args.positional.slice(1).join(" ").trim();
         if (!brief) throw new UsageError("task 需要需求正文");
         const repo = repoForTask(cfg, flagString(args, "repo") ?? process.env.PISA_REPO);
-        const task = newCliTask({
+        const task = newCliTask(cfg, {
           id: newTaskId(),
           requester: cliRequester(args),
           repo: repo.alias,
@@ -305,7 +312,7 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
         const parent = store.get(parentId);
         if (!parent) throw new NotFoundError(`找不到任务 ${parentId}`);
         if (!parent.branch) throw new UsageError(`任务 ${parent.id} 没有可续跑的分支`);
-        const task = newCliTask({
+        const task = newCliTask(cfg, {
           id: newTaskId(),
           requester: cliRequester(args),
           repo: parent.repo,

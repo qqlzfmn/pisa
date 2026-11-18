@@ -50,6 +50,23 @@ export interface IncomingMessage {
   version?: string;
   /** 触发者：入口侧真实发起人；缺省用 userId（PR 评论这类以配置身份投递的入口要显式给） */
   actor?: string;
+  /**
+   * 这条消息是否显式 @ 了机器人：IM 群按真实 @ 判断；
+   * 没有 @ 语义的程序化入口填 true。缺省时私聊算已 @。
+   */
+  mentioned?: boolean;
+}
+
+/** 任务被准入时的授权依据：策略变更后用它在恢复前重新裁决 */
+export interface Mandate {
+  /** 准入来源，即 IncomingMessage.channel */
+  source: string;
+  /** 请求者：决定是否在 whitelist.users 里 */
+  requester: string;
+  /** 触发者：PR 评论作者这类与归属身份不同的真实发起人，只留痕 */
+  actor: string;
+  /** 派活时是否 @ 了机器人 */
+  mentioned: boolean;
 }
 
 export interface Task {
@@ -80,6 +97,10 @@ export interface Task {
   startedAt: number | null;
   endedAt: number | null;
   cancelRequested: boolean;
+  /** 准入依据；历史任务没有这条记录时为 null */
+  mandate?: Mandate | null;
+  /** 落库时的策略版本（显式 version 或规则指纹） */
+  policyVersion?: string | null;
 }
 
 export interface WorkerResult {

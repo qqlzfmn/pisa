@@ -3,7 +3,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
-import type { Effect, EffectKind, Task, TaskStatus } from "./types";
+import type { AdmissionRecord } from "./policy";
+import type { Effect, EffectKind, Mandate, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
@@ -32,7 +33,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at       INTEGER NOT NULL,
   started_at       INTEGER,
   ended_at         INTEGER,
-  cancel_requested INTEGER NOT NULL DEFAULT 0
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  mandate          TEXT,
+  policy_version   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 
@@ -73,6 +76,21 @@ CREATE TABLE IF NOT EXISTS task_effects (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (task_id, kind, target)
 );
+
+-- observe 模式的留痕：没有任务，也要能查到谁试过派活
+CREATE TABLE IF NOT EXISTS admissions (
+  id             TEXT PRIMARY KEY,
+  source         TEXT NOT NULL,
+  requester      TEXT NOT NULL,
+  actor          TEXT NOT NULL,
+  mentioned      INTEGER NOT NULL,
+  listed         INTEGER NOT NULL,
+  mode           TEXT NOT NULL,
+  reason         TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  created_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_admissions_created ON admissions(created_at);
 
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
@@ -167,6 +185,8 @@ interface Row {
   started_at: number | null;
   ended_at: number | null;
   cancel_requested: number;
+  mandate: string | null;
+  policy_version: string | null;
 }
 
 /** 一次触发落库的结果 */
@@ -231,7 +251,20 @@ function toTask(r: Row): Task {
     startedAt: r.started_at,
     endedAt: r.ended_at,
     cancelRequested: r.cancel_requested === 1,
+    mandate: parseMandate(r.mandate),
+    policyVersion: r.policy_version,
   };
+}
+
+/** 旧行与坏 JSON 一律当作没有授权依据；resume 会按任务自身字段兜底重建 */
+function parseMandate(raw: string | null): Mandate | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Mandate;
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 /** 状态计数的零值：所有计数查询都从同一份状态全集起算 */
@@ -266,6 +299,12 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "mandate")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN mandate TEXT");
+    }
+    if (!cols.some((c) => c.name === "policy_version")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN policy_version TEXT");
     }
     this.backfillTriggers();
   }
@@ -554,8 +593,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mandate, policy_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -573,8 +612,49 @@ export class Store {
         t.replyPr,
         t.replyIssue,
         t.replyRepo,
+        t.mandate ? JSON.stringify(t.mandate) : null,
+        t.policyVersion ?? null,
       ],
     );
+  }
+
+  /** observe 模式的登记；同一消息（触发器 id 相同）重复投递只留一条 */
+  recordAdmission(r: AdmissionRecord): boolean {
+    const res = this.db.run(
+      `INSERT OR IGNORE INTO admissions (id, source, requester, actor, mentioned, listed, mode, reason, policy_version, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [r.id, r.source, r.requester, r.actor, r.mentioned ? 1 : 0, r.listed ? 1 : 0, r.mode, r.reason, r.policyVersion, r.createdAt],
+    );
+    return res.changes > 0;
+  }
+
+  recentAdmissions(limit = 5): AdmissionRecord[] {
+    const rows = this.db
+      .query("SELECT * FROM admissions ORDER BY created_at DESC LIMIT ?")
+      .all(limit) as Array<{
+      id: string;
+      source: string;
+      requester: string;
+      actor: string;
+      mentioned: number;
+      listed: number;
+      mode: string;
+      reason: string;
+      policy_version: string;
+      created_at: number;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      source: r.source,
+      requester: r.requester,
+      actor: r.actor,
+      mentioned: r.mentioned === 1,
+      listed: r.listed === 1,
+      mode: r.mode === "observe" ? "observe" : r.mode === "off" ? "off" : "auto",
+      reason: r.reason,
+      policyVersion: r.policy_version,
+      createdAt: r.created_at,
+    }));
   }
 
   get(id: string): Task | null {
