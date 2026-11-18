@@ -5,6 +5,9 @@ import { prNumberFromIssueUrl } from "./github";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
+/** 终态状态集合：看板「最近完成」与保留策略共用 */
+const FINISHED_IN = "('succeeded','failed','cancelled','rewound')";
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
   id               TEXT PRIMARY KEY,
@@ -207,13 +210,45 @@ export class Store {
   }
 
   /** 幂等：同一事件只能登记一次 */
-  claimEvent(eventId: string, taskId: string): boolean {
+  claimEvent(eventId: string, taskId: string, seenAt = Date.now()): boolean {
     const res = this.db.run("INSERT OR IGNORE INTO events(event_id, task_id, seen_at) VALUES (?, ?, ?)", [
       eventId,
       taskId,
-      Date.now(),
+      seenAt,
     ]);
     return res.changes > 0;
+  }
+
+  /** 终态且结束时间早于 cutoff 的任务；保留策略据此删 progress 文件 */
+  finishedTaskIdsBefore(cutoff: number): string[] {
+    const rows = this.db
+      .query(`SELECT id FROM tasks WHERE status IN ${FINISHED_IN} AND COALESCE(ended_at, created_at) < ?`)
+      .all(cutoff) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * 清掉过期 events，返回删除行数。
+   * 归属终态任务的按任务结束时间算；不属于任何任务的占位行（cron 每分钟占位等）按 seen_at 算，
+   * 否则这类行没有任务行可依附，永远涨。
+   */
+  purgeEvents(cutoff: number): number {
+    const byTask = this.db.run(
+      `DELETE FROM events WHERE task_id IN (
+         SELECT id FROM tasks WHERE status IN ${FINISHED_IN} AND COALESCE(ended_at, created_at) < ?
+       )`,
+      [cutoff],
+    );
+    const orphan = this.db.run("DELETE FROM events WHERE seen_at < ? AND task_id NOT IN (SELECT id FROM tasks)", [
+      cutoff,
+    ]);
+    return byTask.changes + orphan.changes;
+  }
+
+  /** 回收磁盘空间；每周由 Retention 调用。WAL 模式下文件要等 checkpoint 才实际缩小 */
+  vacuum(): void {
+    this.db.exec("VACUUM;");
+    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
   }
 
   insertTask(t: Task): void {
@@ -388,7 +423,7 @@ export class Store {
   /** 终态任务，按创建时间倒序；看板「最近完成」用，先筛后限避免被未完成任务挤掉 */
   recentFinished(limit = 5): Task[] {
     const rows = this.db
-      .query("SELECT * FROM tasks WHERE status IN ('succeeded','failed','cancelled','rewound') ORDER BY created_at DESC LIMIT ?")
+      .query(`SELECT * FROM tasks WHERE status IN ${FINISHED_IN} ORDER BY created_at DESC LIMIT ?`)
       .all(limit) as Row[];
     return rows.map(toTask);
   }

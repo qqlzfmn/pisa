@@ -594,6 +594,12 @@ export class Router {
       await this.reply(msg.chatId, `任务 ${id} 已结束（${task.status}）`);
       return;
     }
+    if (!this.active.has(id)) {
+      // 进程重启后遗留的 running 行没有执行器，requestCancel 对它无效
+      store.transition(id, "cancelled", { endedAt: this.now() });
+      await this.reply(msg.chatId, `已取消（无活跃执行器）· ${id}`);
+      return;
+    }
     store.requestCancel(id);
     await this.reply(msg.chatId, `取消中 · ${id}`);
   }

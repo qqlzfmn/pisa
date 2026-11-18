@@ -37,6 +37,9 @@ export interface GithubConfig {
   repos?: GithubRepoConfig[];
 }
 
+/** events 与 progress 的默认保留天数 */
+export const DEFAULT_RETENTION_DAYS = 30;
+
 export interface Config {
   trigger: string;
   /** 私聊里不带触发词也当成任务 */
@@ -52,6 +55,8 @@ export interface Config {
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
   scheduler?: { chatId: string; userId: string };
   schedules?: ScheduleJob[];
+  /** events 与 progress 的保留天数；≤ 0 关闭每日清理，默认 30 */
+  retentionDays?: number;
   proactive?: {
     keywords?: { enabled: boolean; words: string[]; cooldownSec?: number; chatId?: string; userId?: string; prompt?: string };
     probe?: {
@@ -76,6 +81,7 @@ export const DEFAULT_CONFIG: Config = {
   worker: { adapter: "omp", command: "omp", timeoutSec: 3600, extraArgs: [], concurrency: 2 },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
+  retentionDays: DEFAULT_RETENTION_DAYS,
   stateDir: ".pisa",
 };
 
