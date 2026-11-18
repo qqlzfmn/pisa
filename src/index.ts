@@ -4,6 +4,7 @@ import { Store } from "./store";
 import { Router } from "./router";
 import { Worker, workerEnv } from "./worker";
 import { GitDeliverer } from "./deliver";
+import { EffectQueue } from "./effects";
 import { Proactive } from "./proactive";
 import { GithubWatcher } from "./github-watcher";
 import { Scheduler } from "./scheduler";
@@ -20,6 +21,8 @@ async function main(): Promise<void> {
   const web: WebConfig = { ...(cfg.web ?? DEFAULT_WEB), enabled: cfg.web?.enabled === true || process.argv.includes("--web") };
 
   const store = new Store(join(cfg.stateDir, "pisa.db"));
+  // 外部动作队列：推送、建 PR、回帖先落库再执行，重启后继续
+  const effects = new EffectQueue({ store });
 
   let channel: ChannelAdapter;
   if (wantCli) {
@@ -63,8 +66,9 @@ async function main(): Promise<void> {
       cfg,
       store,
       worker: new Worker(cfg.worker, cfg.stateDir),
-      deliverer: new GitDeliverer(cfg),
+      deliverer: new GitDeliverer(cfg, { store, effects }),
       channel: bus,
+      effects,
     });
     if (!cfg.whitelist.users.includes(web.userId)) {
       console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
@@ -75,8 +79,9 @@ async function main(): Promise<void> {
       cfg,
       store,
       worker: new Worker(cfg.worker, cfg.stateDir),
-      deliverer: new GitDeliverer(cfg),
+      deliverer: new GitDeliverer(cfg, { store, effects }),
       channel,
+      effects,
     });
   }
 
@@ -92,6 +97,7 @@ async function main(): Promise<void> {
   const scheduler = new Scheduler({ cfg, store, enqueue: (m) => router.handle(m) });
   const retention = new Retention({ cfg, store });
   router.start();
+  effects.start();
   proactive.start();
   githubWatcher.start();
   scheduler.start();
@@ -154,6 +160,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     if (webServer) await webServer.stop();
     await router.stop(3000);
+    await effects.stop();
     proactive.stop();
     githubWatcher.stop();
     scheduler.stop();

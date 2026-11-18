@@ -16,7 +16,8 @@ import {
 import { GithubWatcher } from "../src/github-watcher";
 import { Store } from "../src/store";
 import { Router } from "../src/router";
-import { GitDeliverer, prBody } from "../src/deliver";
+import { EffectQueue } from "../src/effects";
+import { GitDeliverer, prBody, type DelivererDeps } from "../src/deliver";
 import { createWorktree, sh, type ExecResult } from "../src/git";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
@@ -335,7 +336,7 @@ describe("GitHub 评论 → 任务", () => {
   });
 
   function watcher(runner: Runner, now = () => 1_700_000_000_000) {
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }), channel });
     const w = new GithubWatcher({ cfg, store, runner, now, enqueue: (m: IncomingMessage) => router.handle(m) });
     return { router, w };
   }
@@ -449,7 +450,7 @@ describe("GitHub 评论 → 任务", () => {
         return { ok: true, summary: "再改一处", exitCode: 0 };
       },
     };
-    const router = new Router({ cfg, store, worker: editingWorker, deliverer: new GitDeliverer(cfg), channel });
+    const router = new Router({ cfg, store, worker: editingWorker, deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }), channel });
     await router.handle({
       eventId: "github:comment:20",
       channel: "github",
@@ -521,7 +522,7 @@ describe("GitHub 评论 → 任务", () => {
       cfg,
       store,
       worker: okWorker,
-      deliverer: new GitDeliverer(cfg),
+      deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }),
       channel,
       ghRunner,
     });
@@ -551,7 +552,7 @@ describe("GitHub 评论 → 任务", () => {
       if (args[1] === "api") return threadBodies([`上一轮回帖\n\n${replyMarker(store.recentTasks()[0]!.id, "pr")}`]);
       return reply(0);
     };
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner });
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }), channel, ghRunner });
     await router.handle({
       eventId: "github:comment:13",
       channel: "github",
@@ -576,7 +577,7 @@ describe("GitHub 评论 → 任务", () => {
       cfg,
       store,
       worker: okWorker,
-      deliverer: new GitDeliverer(cfg),
+      deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }),
       channel,
       ghRunner,
     });
@@ -604,7 +605,7 @@ describe("GitHub 评论 → 任务", () => {
       cfg,
       store,
       worker: okWorker,
-      deliverer: new GitDeliverer(cfg),
+      deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }),
       channel,
       // 列表检查成功、回帖失败
       ghRunner: scripted(reply(0), reply(1, "", "no token")).runner,
@@ -636,7 +637,7 @@ describe("GitHub 评论 → 任务", () => {
       cfg,
       store,
       worker: okWorker,
-      deliverer: new GitDeliverer(cfg),
+      deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }),
       channel,
       // 列表检查成功、回帖失败
       ghRunner: scripted(reply(0), reply(1, "", "no token")).runner,
@@ -665,7 +666,7 @@ describe("GitHub 评论 → 任务", () => {
       cfg,
       store,
       worker: okWorker,
-      deliverer: new GitDeliverer(cfg),
+      deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }),
       channel,
       ghRunner,
     });
@@ -739,7 +740,7 @@ describe("GitHub 多仓库轮询", () => {
   function setup(gh: Config["github"], runner: Runner, clock: () => number) {
     const cfg = makeCfg(repo, stateDir, gh);
     cfg.whitelist.users = ["u1", "ua", "ub"];
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }), channel });
     const w = new GithubWatcher({ cfg, store, runner, now: clock, enqueue: (m: IncomingMessage) => router.handle(m) });
     return { cfg, router, w };
   }
@@ -849,7 +850,7 @@ describe("GitHub 多仓库轮询", () => {
       ],
     });
     const { runner: ghRunner, calls } = scripted(reply(0));
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner });
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }), channel, ghRunner });
 
     await router.handle({
       eventId: "github:comment:o/b:42",
@@ -925,6 +926,17 @@ describe("GitDeliverer 更新既有 PR", () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
+  /** 交付测试只关心动作结果：内存库 + 假的 gh 查询 */
+  function delivererWith(deps: Partial<DelivererDeps>): GitDeliverer {
+    const store = new Store(":memory:");
+    return new GitDeliverer(cfg, {
+      store,
+      effects: new EffectQueue({ store }),
+      findPr: () => ({ ok: true, value: null }),
+      ...deps,
+    });
+  }
+
   /** 父任务分支 + 已挂载的工作副本，带一处改动 */
   function setup(): string {
     expect(sh(["git", "-C", repo, "branch", "pisa/parent", "main"]).code).toBe(0);
@@ -937,7 +949,7 @@ describe("GitDeliverer 更新既有 PR", () => {
   test("task.prUrl 非空时只推送分支，不新建 PR", async () => {
     const workdir = setup();
     const calls: string[] = [];
-    const deliverer = new GitDeliverer(cfg, {
+    const deliverer = delivererWith({
       hasGh: () => true,
       createPr: (_workdir, opts) => {
         calls.push(opts.head);
@@ -961,7 +973,7 @@ describe("GitDeliverer 更新既有 PR", () => {
   test("没有 prUrl 时按原有逻辑创建 PR", async () => {
     const workdir = setup();
     const calls: string[] = [];
-    const deliverer = new GitDeliverer(cfg, {
+    const deliverer = delivererWith({
       hasGh: () => true,
       createPr: (_workdir, opts) => {
         calls.push(opts.head);
@@ -978,7 +990,7 @@ describe("GitDeliverer 更新既有 PR", () => {
   test("Issue 来源的任务在 PR 正文追加 Closes", async () => {
     const workdir = setup();
     const bodies: string[] = [];
-    const deliverer = new GitDeliverer(cfg, {
+    const deliverer = delivererWith({
       hasGh: () => true,
       createPr: (_workdir, opts) => {
         bodies.push(opts.body);

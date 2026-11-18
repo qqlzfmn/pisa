@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store";
 import { Router } from "../src/router";
+import { EffectQueue } from "../src/effects";
 import { GitDeliverer } from "../src/deliver";
 import { parseCommand, type Config } from "../src/config";
 import type { ChannelAdapter, EffectKind, IncomingMessage, Task, WorkerResult } from "../src/types";
@@ -137,7 +138,7 @@ describe("Router.rewind", () => {
       cfg,
       store,
       worker: okWorker,
-      deliverer: new GitDeliverer(cfg),
+      deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }),
       channel,
       ghRunner: gh.runner,
     });
@@ -297,7 +298,7 @@ describe("Router.rewind", () => {
       cfg,
       store,
       worker: okWorker,
-      deliverer: new GitDeliverer(cfg),
+      deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }),
       channel,
       ghRunner: flaky,
     });

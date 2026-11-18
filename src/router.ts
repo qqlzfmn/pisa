@@ -6,6 +6,7 @@ import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./type
 import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
+import { EffectQueue } from "./effects";
 import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
 import {
   defaultRunner,
@@ -13,7 +14,6 @@ import {
   postComment,
   postIssueComment,
   postReplyOnce,
-  prNumberFromIssueUrl,
   prStatus,
   type Runner,
 } from "./github";
@@ -34,8 +34,18 @@ export interface RouterDeps {
   channel: ChannelAdapter;
   /** 回帖用的 gh 执行器；默认走真实命令，测试注入假实现 */
   ghRunner?: Runner;
+  /** 外部动作队列；缺省自建（测试不关心重试循环） */
+  effects?: EffectQueue;
   /** 注入以便测试 */
   now?: () => number;
+}
+
+/** 回帖动作的载荷 */
+interface CommentPayload {
+  repo: string;
+  n: number;
+  purpose: "pr" | "issue";
+  body: string;
 }
 
 /** 单英文词任务的待确认正文，10 分钟过期 */
@@ -59,9 +69,12 @@ export class Router {
   private deniedAt = new Map<string, number>();
   /** 被拦下的单英文词任务：键 `${chatId}:${userId}`，每人只保留一条 */
   private pending = new Map<string, PendingTask>();
+  private readonly effects: EffectQueue;
 
   constructor(private deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
+    this.effects = deps.effects ?? new EffectQueue({ store: deps.store, now: this.now });
+    this.effects.register("comment", (payload, ctx) => this.runComment(payload as CommentPayload, ctx.taskId));
   }
 
   start(intervalMs = 800): void {
@@ -589,7 +602,7 @@ export class Router {
     }
 
     if (plan.actions.length === 0) {
-      if (plan.merge !== "unknown") store.transition(id, "rewound");
+      if (plan.merge !== "unknown") this.markRewound(id);
       const lines = [plan.merge === "unknown" ? `未完成撤销 · ${id}` : `已标记撤销 · ${id}`, "没有需要执行的撤销动作。"];
       if (plan.irreversible.length > 0) lines.push("", "不可撤销", ...plan.irreversible.map((s) => `- ${s}`));
       if (plan.notes.length > 0) lines.push("", "保留", ...plan.notes.map((s) => `- ${s}`));
@@ -607,7 +620,7 @@ export class Router {
     for (const r of results) {
       if (r.ok && r.effect) store.removeEffect(id, r.effect.kind, r.effect.target);
     }
-    if (plan.merge !== "unknown" && results.every((r) => r.ok)) store.transition(id, "rewound");
+    if (plan.merge !== "unknown" && results.every((r) => r.ok)) this.markRewound(id);
     await this.reply(msg.chatId, formatRewindResult(plan, results));
   }
 
@@ -749,37 +762,40 @@ export class Router {
     return () => clearInterval(timer);
   }
 
-  /** 回帖到来源 PR / Issue；失败只记日志，不改任务状态 */
-  private replyToSource(task: Task, summary: string, log: TaskLogger): void {
+  /** 回帖到来源 PR / Issue：先入队再立刻试一次，失败由队列退避重试，不改任务状态 */
+  private async replyToSource(task: Task, summary: string): Promise<void> {
     const gh = this.deps.cfg.github;
     // 多仓库：任务记住评论所在仓库；旧任务与 IM 触发的回帖退回配置里的单仓库
     const repo = task.replyRepo ?? githubRepos(gh)[0]?.repo;
     if (!gh?.enabled || !repo) return;
-    const runner = this.deps.ghRunner ?? defaultRunner;
     const body = formatReply(summary);
-    if (task.replyPr) this.postReply(runner, repo, task.replyPr, "pr", task, body, log);
-    if (task.replyIssue) this.postReply(runner, repo, task.replyIssue, "issue", task, body, log);
+    const targets: Array<{ n: number; purpose: "pr" | "issue" }> = [];
+    if (task.replyPr) targets.push({ n: task.replyPr, purpose: "pr" });
+    if (task.replyIssue) targets.push({ n: task.replyIssue, purpose: "issue" });
+    for (const { n, purpose } of targets) {
+      const key = `${task.id}:${purpose}:${repo}#${n}`;
+      this.effects.enqueue("comment", key, { repo, n, purpose, body } satisfies CommentPayload, task.id);
+      await this.effects.flush("comment", key);
+    }
   }
 
-  /** 带隐藏标记回帖：讨论串已有同标记说明发过，重试不再重复；检查失败则跳过，只记日志 */
-  private postReply(
-    runner: Runner,
-    repo: string,
-    n: number,
-    purpose: "pr" | "issue",
-    task: Task,
-    body: string,
-    log: TaskLogger,
-  ): void {
-    const kind = purpose === "pr" ? "PR" : "Issue";
-    const res = postReplyOnce(runner, repo, n, purpose, task.id, body);
-    if (res.ok && res.value === "posted") this.deps.store.effect(task.id, "comment", `${repo}#${n}`, `${kind} 回帖`);
-    const detail = !res.ok
-      ? `回帖失败：${res.error.slice(0, 500)}`
-      : res.value === "skipped"
-        ? "已存在同标记回帖，跳过"
-        : "已回帖";
-    log.write(`reply-${purpose}`, `${kind} #${n} ${detail}`);
+  /**
+   * 回帖执行器：隐藏标记保证重试不重复；已有同标记也算完成。
+   * 失败抛出交给队列退避，只记日志，不改任务状态。
+   */
+  private runComment(payload: CommentPayload, taskId: string | null): void {
+    if (!taskId) throw new Error("回帖 effect 缺少任务号");
+    const kind = payload.purpose === "pr" ? "PR" : "Issue";
+    const log = new TaskLogger(this.deps.cfg.stateDir, taskId);
+    const runner = this.deps.ghRunner ?? defaultRunner;
+    const res = postReplyOnce(runner, payload.repo, payload.n, payload.purpose, taskId, payload.body);
+    if (!res.ok) {
+      log.write(`reply-${payload.purpose}`, `${kind} #${payload.n} 回帖失败：${res.error.slice(0, 500)}`);
+      throw new Error(res.error);
+    }
+    this.deps.store.effect(taskId, "comment", `${payload.repo}#${payload.n}`, `${kind} 回帖`);
+    const detail = res.value === "skipped" ? "已存在同标记回帖，跳过" : "已回帖";
+    log.write(`reply-${payload.purpose}`, `${kind} #${payload.n} ${detail}`);
   }
 
   /**
@@ -796,6 +812,13 @@ export class Router {
   private dropWorktree(repoPath: string, task: Task, workdir: string): void {
     removeWorktree(repoPath, workdir);
     this.deps.store.removeEffect(task.id, "worktree", workdir);
+  }
+
+  /** 撤销落地：未完成的外部动作不再重试，否则会把刚撤销的分支或评论补回去 */
+  private markRewound(taskId: string): void {
+    if (this.deps.store.transition(taskId, "rewound")) {
+      this.deps.store.cancelEffects(taskId, "任务已撤销");
+    }
   }
 
   private async runTask(task: Task, branch: string): Promise<void> {
@@ -888,11 +911,7 @@ export class Router {
       return;
     }
 
-    // 账本：交付后才有的副作用。PR 只在本任务新建时记账，续跑子任务不背父任务的 PR
-    if (delivery.pushed) store.effect(task.id, "push", "origin", branch);
-    const prN = delivery.prUrl ? prNumberFromIssueUrl(delivery.prUrl) : null;
-    if (prN && !task.prUrl) store.effect(task.id, "pr", String(prN), repo.alias);
-
+    // 账本由动作执行器在成功时写：动作可能延后重试，这里只消费交付结果
     store.transition(task.id, "succeeded", {
       summary: result.summary,
       branch: delivery.branch ?? branch,
@@ -901,7 +920,7 @@ export class Router {
     });
     this.dropWorktree(repo.path, task, workdir);
     log.write("done", `files=${delivery.files.length} pushed=${delivery.pushed}`);
-    this.replyToSource(task, result.summary, log);
+    await this.replyToSource(task, result.summary);
 
     const fresh = store.get(task.id);
     const lines = [`✅ ${task.id} 完成`, result.summary.slice(0, 1200)];

@@ -13,6 +13,26 @@ export interface Effect {
   createdAt: number;
 }
 
+/** Outbox 行状态：pending 待执行、running 执行中、done 已成功或已取消 */
+export type EffectState = "pending" | "running" | "done";
+
+/** 一条待执行的外部动作；payload 与 result 是落库的 JSON 值 */
+export interface QueuedEffect {
+  kind: string;
+  key: string;
+  taskId: string | null;
+  payload: unknown;
+  state: EffectState;
+  /** 已失败次数；决定下一次退避时长 */
+  attempts: number;
+  /** 最早可执行时间 */
+  nextAt: number;
+  lastError: string | null;
+  result: unknown;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface IncomingMessage {
   eventId: string;
   channel: string;

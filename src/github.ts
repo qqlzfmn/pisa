@@ -30,6 +30,37 @@ export function prRepoFromUrl(url: string): string | null {
   return m?.[1] ?? null;
 }
 
+/** 远程地址对应的 owner/repo；认 https 与 ssh 两种写法，不是 github.com 返回 null */
+export function repoFromRemote(remote: string): string | null {
+  const m = remote.trim().match(/^(?:https?:\/\/github\.com\/|git@github\.com:)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/);
+  return m?.[1] ?? null;
+}
+
+/**
+ * 按 head 分支查已存在的开放 PR：重试（进程在标记完成前崩溃）时复用它而不是再建一个。
+ * 查询失败返回错误，调用方不能据此当作「没有 PR」。
+ */
+export function findOpenPr(runner: Runner, repo: string, head: string): GhResult<string | null> {
+  const res = runner([
+    "gh",
+    "pr",
+    "list",
+    "--repo",
+    repo,
+    "--head",
+    head,
+    "--state",
+    "open",
+    "--json",
+    "url",
+    "--jq",
+    ".[0].url // empty",
+  ]);
+  if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
+  const url = res.out.trim();
+  return { ok: true, value: url === "" ? null : url };
+}
+
 export interface PrState {
   state: string;
   mergeCommit: string | null;

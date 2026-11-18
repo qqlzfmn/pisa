@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_WEB, type Config } from "../src/config";
 import { Store } from "../src/store";
 import { Router } from "../src/router";
+import { EffectQueue } from "../src/effects";
 import { GitDeliverer } from "../src/deliver";
 import { ReplyBus, createWebApp, type WebDeps } from "../src/web";
 import type { ChannelAdapter, DeliveryReceipt, Task, WorkerResult } from "../src/types";
@@ -102,7 +103,7 @@ describe("web 控制台", () => {
     down = new FakeChannel();
     bus = new ReplyBus("web", down);
     cfg = makeCfg(repo, stateDir);
-    router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel: bus });
+    router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }), channel: bus });
     const deps: WebDeps = { cfg, store, router, bus, token: TOKEN };
     app = createWebApp(deps);
   });

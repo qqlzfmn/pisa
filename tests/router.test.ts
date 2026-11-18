@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store";
 import { Router, formatDuration } from "../src/router";
+import { EffectQueue } from "../src/effects";
 import { GitDeliverer } from "../src/deliver";
 import { parseCommand, taskGuard, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
@@ -144,7 +145,7 @@ describe("Router", () => {
   });
 
   function build(worker: WorkerRunner, now?: () => number) {
-    return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel, now });
+    return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }), channel, now });
   }
 
   /** 直接落一条任务，用于构造续跑/占用场景 */
@@ -554,7 +555,7 @@ describe("Router", () => {
       cfg: cfg2,
       store,
       worker: okWorker,
-      deliverer: new GitDeliverer(cfg2),
+      deliverer: new GitDeliverer(cfg2, { store, effects: new EffectQueue({ store }) }),
       channel,
     });
 
@@ -894,7 +895,7 @@ describe("执行器丢失与合并门禁", () => {
     const cfg = makeCfg(repo, stateDir);
     const store = new Store(":memory:");
     const channel = new FakeChannel();
-    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg, { store, effects: new EffectQueue({ store }) }), channel });
     return { store, channel, router, stateDir };
   }
 

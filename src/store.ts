@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
-import type { Effect, EffectKind, Task, TaskStatus } from "./types";
+import type { Effect, EffectKind, EffectState, QueuedEffect, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
@@ -62,6 +62,22 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS effects (
+  kind       TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  task_id    TEXT,
+  payload    TEXT NOT NULL,
+  state      TEXT NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  next_at    INTEGER NOT NULL,
+  last_error TEXT,
+  result     TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (kind, key)
+);
+CREATE INDEX IF NOT EXISTS idx_effects_due ON effects(state, next_at);
 `;
 
 interface Row {
@@ -113,6 +129,46 @@ function toTask(r: Row): Task {
     startedAt: r.started_at,
     endedAt: r.ended_at,
     cancelRequested: r.cancel_requested === 1,
+  };
+}
+
+interface EffectRow {
+  kind: string;
+  key: string;
+  task_id: string | null;
+  payload: string;
+  state: EffectState;
+  attempts: number;
+  next_at: number;
+  last_error: string | null;
+  result: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/** 落库的 JSON 值；损坏时按 null 处理，不影响队列继续调度 */
+function parseJson(text: string | null): unknown {
+  if (text === null) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function toQueuedEffect(r: EffectRow): QueuedEffect {
+  return {
+    kind: r.kind,
+    key: r.key,
+    taskId: r.task_id,
+    payload: parseJson(r.payload),
+    state: r.state,
+    attempts: r.attempts,
+    nextAt: r.next_at,
+    lastError: r.last_error,
+    result: parseJson(r.result),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
   };
 }
 
@@ -185,6 +241,76 @@ export class Store {
       .query("SELECT task_id, kind, target, detail, created_at FROM task_effects WHERE task_id = ? ORDER BY created_at, kind, target")
       .all(taskId) as Array<{ task_id: string; kind: EffectKind; target: string; detail: string | null; created_at: number }>;
     return rows.map((r) => ({ taskId: r.task_id, kind: r.kind, target: r.target, detail: r.detail, createdAt: r.created_at }));
+  }
+
+  /**
+   * 登记一条待执行的外部动作；同 (kind, key) 已有记录时忽略。
+   * 先落库再执行：崩溃后这一行就是重放依据。
+   */
+  enqueueEffect(kind: string, key: string, payload: unknown, taskId: string | null = null, at = Date.now()): boolean {
+    const res = this.db.run(
+      `INSERT OR IGNORE INTO effects(kind, key, task_id, payload, state, attempts, next_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
+      [kind, key, taskId, JSON.stringify(payload ?? null), at, at, at],
+    );
+    return res.changes > 0;
+  }
+
+  effectRow(kind: string, key: string): QueuedEffect | null {
+    const row = this.db.query("SELECT * FROM effects WHERE kind = ? AND key = ?").get(kind, key) as EffectRow | null;
+    return row ? toQueuedEffect(row) : null;
+  }
+
+  /** 原子占位：pending 且已到期才改成 running；占位失败说明已执行过或还没到时间 */
+  claimEffect(kind: string, key: string, at: number): QueuedEffect | null {
+    const res = this.db.run(
+      "UPDATE effects SET state = 'running', updated_at = ? WHERE kind = ? AND key = ? AND state = 'pending' AND next_at <= ?",
+      [at, kind, key, at],
+    );
+    return res.changes > 0 ? this.effectRow(kind, key) : null;
+  }
+
+  completeEffect(kind: string, key: string, result: unknown, at: number): void {
+    this.db.run(
+      "UPDATE effects SET state = 'done', result = ?, last_error = NULL, updated_at = ? WHERE kind = ? AND key = ?",
+      [JSON.stringify(result ?? null), at, kind, key],
+    );
+  }
+
+  /** 失败退回 pending 并排到 nextAt；attempts 决定下一次退避时长 */
+  failEffect(kind: string, key: string, error: string, nextAt: number, at: number): void {
+    this.db.run(
+      "UPDATE effects SET state = 'pending', attempts = attempts + 1, last_error = ?, next_at = ?, updated_at = ? WHERE kind = ? AND key = ?",
+      [error, nextAt, at, kind, key],
+    );
+  }
+
+  /** 到期待执行的动作，先到期的先排 */
+  dueEffects(at: number, limit = 20): QueuedEffect[] {
+    const rows = this.db
+      .query("SELECT * FROM effects WHERE state = 'pending' AND next_at <= ? ORDER BY next_at, created_at LIMIT ?")
+      .all(at, limit) as EffectRow[];
+    return rows.map(toQueuedEffect);
+  }
+
+  /** 启动恢复：上次进程遗留的 running 退回 pending，立即参与重试 */
+  resetRunningEffects(at = Date.now()): number {
+    const res = this.db.run("UPDATE effects SET state = 'pending', updated_at = ? WHERE state = 'running'", [at]);
+    return res.changes;
+  }
+
+  /** 任务撤销后，它未完成的动作不再执行 */
+  cancelEffects(taskId: string, reason: string, at = Date.now()): number {
+    const res = this.db.run(
+      "UPDATE effects SET state = 'done', last_error = ?, updated_at = ? WHERE task_id = ? AND state IN ('pending','running')",
+      [reason, at, taskId],
+    );
+    return res.changes;
+  }
+
+  /** PR 动作成功后写回任务：动作已完成但还没标记时，重启后也能拿到链接 */
+  setPrUrl(id: string, prUrl: string): void {
+    this.db.run("UPDATE tasks SET pr_url = ? WHERE id = ?", [prUrl, id]);
   }
 
   /** 守护进程心跳：CLI 用它判断任务是否真的会被执行 */
