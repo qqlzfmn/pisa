@@ -56,6 +56,26 @@ function msg(text: string, over: Partial<IncomingMessage> = {}): IncomingMessage
   };
 }
 
+/** 记录 Worker 进入顺序；按次数等待，不使用真实时钟 */
+function spawnCounter() {
+  const ids: string[] = [];
+  const waiters: Array<{ need: number; resolve: () => void }> = [];
+  return {
+    ids,
+    spawn(id: string): void {
+      ids.push(id);
+      for (const w of waiters.splice(0)) {
+        if (ids.length >= w.need) w.resolve();
+        else waiters.push(w);
+      }
+    },
+    async until(need: number): Promise<void> {
+      if (ids.length >= need) return;
+      await new Promise<void>((resolve) => waiters.push({ need, resolve }));
+    },
+  };
+}
+
 const okWorker: WorkerRunner = {
   async run(_task, workdir): Promise<WorkerResult> {
     writeFileSync(join(workdir, "out.txt"), "hi\n");
@@ -482,6 +502,131 @@ describe("Router", () => {
 
     expect(spans.length).toBe(2);
     expect(spans[1]![0]).toBeGreaterThanOrEqual(spans[0]![1] - 5);
+  });
+
+  test("满槽时追问进追问槽，新任务仍排队", async () => {
+    cfg.worker.concurrency = 1;
+    const gate = Promise.withResolvers<void>();
+    const spawns = spawnCounter();
+    const worker: WorkerRunner = {
+      async run(task, workdir): Promise<WorkerResult> {
+        spawns.spawn(task.id);
+        await gate.promise;
+        writeFileSync(join(workdir, "out.txt"), "hi\n");
+        return { ok: true, summary: "ok", exitCode: 0 };
+      },
+    };
+    const router = build(worker);
+    seedTask({ id: "t_parent", status: "succeeded", branch: "pisa/parent" });
+    expect(sh(["git", "-C", repo, "branch", "pisa/parent", "main"]).code).toBe(0);
+
+    await router.handle(msg("/pisa 长任务"));
+    const long = store.recentTasks()[0]!;
+    await router.fill();
+    expect(store.get(long.id)?.status).toBe("running");
+
+    // 新任务不插队：工作槽已占满，追问槽空着也不给新派活
+    await router.handle(msg("/pisa 另一个任务"));
+    const fresh = store.recentTasks()[0]!;
+    await router.fill();
+    expect(store.get(fresh.id)?.status).toBe("queued");
+    expect(store.get(fresh.id)?.priority).toBe("auto");
+
+    // 人的追问进追问槽，与长任务并行
+    await router.handle(msg("/pisa continue t_parent 追问一句"));
+    const follow = store.recentTasks()[0]!;
+    expect(follow.priority).toBe("human");
+    await router.fill();
+    await spawns.until(2);
+    expect(store.get(follow.id)?.status).toBe("running");
+    expect(spawns.ids).toEqual([long.id, follow.id]);
+    expect(store.get(fresh.id)?.status).toBe("queued");
+
+    gate.resolve();
+    await router.stop();
+  });
+
+  test("追问槽也满时，第二条追问仍排队且看板写明原因", async () => {
+    cfg.worker.concurrency = 1;
+    const gate = Promise.withResolvers<void>();
+    const spawns = spawnCounter();
+    const worker: WorkerRunner = {
+      async run(task, workdir): Promise<WorkerResult> {
+        spawns.spawn(task.id);
+        await gate.promise;
+        writeFileSync(join(workdir, "out.txt"), "hi\n");
+        return { ok: true, summary: "ok", exitCode: 0 };
+      },
+    };
+    const router = build(worker);
+    seedTask({ id: "t_parent", status: "succeeded", branch: "pisa/parent" });
+    expect(sh(["git", "-C", repo, "branch", "pisa/parent", "main"]).code).toBe(0);
+
+    await router.handle(msg("/pisa 长任务"));
+    const long = store.recentTasks()[0]!;
+    await router.handle(msg("/pisa continue t_parent 追问一"));
+    const first = store.recentTasks()[0]!;
+    await router.fill();
+    await spawns.until(2);
+    // 工作槽先给先来的长任务，追问拿追问槽
+    expect(spawns.ids).toEqual([long.id, first.id]);
+
+    await router.handle(msg("/pisa continue t_parent 追问二"));
+    const second = store.recentTasks()[0]!;
+    await router.handle(msg("/pisa 又来一个新任务"));
+    const fresh = store.recentTasks()[0]!;
+    await router.fill();
+    expect(spawns.ids).toEqual([long.id, first.id]);
+    expect(store.get(second.id)?.status).toBe("queued");
+    expect(store.get(fresh.id)?.status).toBe("queued");
+
+    await router.handle(msg("/pisa status"));
+    const board = channel.sent.at(-1)!.text;
+    expect(board).toContain("槽位：工作 1/1 · 追问 +1/1");
+    expect(board).toContain("排队（2）");
+    expect(board).toContain("排队原因：追问槽位已满");
+    expect(board).toContain("排队原因：工作槽位已满");
+
+    gate.resolve();
+    await router.stop();
+  });
+
+  test("工作槽满时 resume 进追问槽，两槽都满时拒绝", async () => {
+    cfg.worker.concurrency = 1;
+    const gate = Promise.withResolvers<void>();
+    const spawns = spawnCounter();
+    const worker: WorkerRunner = {
+      async run(task, workdir): Promise<WorkerResult> {
+        spawns.spawn(task.id);
+        await gate.promise;
+        writeFileSync(join(workdir, "out.txt"), "hi\n");
+        return { ok: true, summary: "ok", exitCode: 0 };
+      },
+    };
+    const router = build(worker);
+    seedTask({ id: "t_paused", status: "paused", branch: "pisa/t_paused", sessionId: "sess-1" });
+    expect(createWorktree(repo, join(stateDir, "worktrees", "t_paused"), "pisa/t_paused").code).toBe(0);
+
+    await router.handle(msg("/pisa 长任务"));
+    const long = store.recentTasks()[0]!;
+    await router.fill();
+    await spawns.until(1);
+    expect(spawns.ids).toEqual([long.id]);
+
+    // 工作槽被长任务占着，恢复挤进追问槽
+    await router.handle(msg("/pisa resume t_paused"));
+    await spawns.until(2);
+    expect(store.get("t_paused")?.status).toBe("running");
+    expect(spawns.ids).toEqual([long.id, "t_paused"]);
+
+    seedTask({ id: "t_paused2", status: "paused", branch: "pisa/t_paused2", sessionId: "sess-2" });
+    expect(createWorktree(repo, join(stateDir, "worktrees", "t_paused2"), "pisa/t_paused2").code).toBe(0);
+    await router.handle(msg("/pisa resume t_paused2"));
+    expect(store.get("t_paused2")?.status).toBe("paused");
+    expect(channel.sent.at(-1)!.text).toContain("槽位已满（工作 1/1 · 追问 +1/1）");
+
+    gate.resolve();
+    await router.stop();
   });
 
   test("continue 继承上一个任务的会话", async () => {

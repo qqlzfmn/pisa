@@ -2,6 +2,7 @@ import type { Task, TaskStatus } from "./types";
 import type { Store } from "./store";
 import { STAGE_LABEL, stageText, taskStage, type TaskStage } from "./stage";
 import { windowMetrics, type WindowMetrics } from "./metrics";
+import { queueReason, slotText, slotUsage, type SlotLimits } from "./slots";
 
 /** 毫秒 → 人类可读时长：不足 1 分钟给秒，不足 1 小时给 XmYs，其余 XhYm */
 export function formatDuration(ms: number): string {
@@ -85,11 +86,12 @@ export function statusSnapshot(store: Store): StatusSnapshot {
   };
 }
 
-/** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
-export function formatStatusBoard(store: Store, now = Date.now()): string {
+/** 任务看板：槽位 / 运行中 / 排队 / 最近完成，末尾汇总 */
+export function formatStatusBoard(store: Store, limits: SlotLimits, now = Date.now()): string {
   const { running, queued, finished, counts, total } = statusSnapshot(store);
+  const usage = slotUsage(running.length, limits);
 
-  const lines = ["运行中"];
+  const lines = [`槽位：${slotText(usage)}`, "", "运行中"];
   if (running.length === 0) lines.push("(无)");
   for (const t of running) {
     const elapsed = formatDuration(now - (t.startedAt ?? t.createdAt));
@@ -98,7 +100,12 @@ export function formatStatusBoard(store: Store, now = Date.now()): string {
 
   lines.push("", `排队（${queued.length}）`);
   if (queued.length === 0) lines.push("(无)");
-  for (const t of queued.slice(0, 5)) lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · ${preview(t.prompt, 40)}`);
+  for (const t of queued.slice(0, 5)) {
+    const line = `${t.id} · ${stageText(t)} · ${t.repo} · ${preview(t.prompt, 40)}`;
+    // 阶段只说「等空闲槽位」，具体卡在哪一类槽位由排队原因回答
+    const reason = queueReason(t.priority ?? "auto", usage);
+    lines.push(reason ? `${line} · 排队原因：${reason}` : line);
+  }
 
   lines.push("", "最近完成");
   if (finished.length === 0) lines.push("(无)");

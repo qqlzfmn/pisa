@@ -11,7 +11,7 @@ import {
   splitRepoAlias,
   taskGuard,
 } from "./config";
-import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
+import type { ChannelAdapter, IncomingMessage, Task, TaskPriority, WorkerResult } from "./types";
 import type { EffectRow, Store } from "./store";
 import { workerEnv, type WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
@@ -53,6 +53,7 @@ import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
 import { formatStatusBoard } from "./status";
+import { slotLimits, slotText, slotUsage } from "./slots";
 
 export { formatDuration } from "./status";
 
@@ -70,6 +71,9 @@ export interface RouterDeps {
   now?: () => number;
 }
 
+/** 槽位类别：base 是工作槽，extra 是只对 human 任务开放的追问槽 */
+type SlotLane = "base" | "extra";
+
 /** 单英文词任务的待确认正文，10 分钟过期 */
 const PENDING_TTL_MS = 10 * 60 * 1000;
 
@@ -79,8 +83,17 @@ interface PendingTask {
   at: number;
 }
 
+/** 工作槽有空位时按先来后到：两条排队查询里取创建更早的一条 */
+function earliestQueued(a: Task | null, b: Task | null): Task | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a.createdAt <= b.createdAt ? a : b;
+}
+
 export class Router {
   private active = new Map<string, Promise<void>>();
+  /** 占着追问槽的任务：其余执行中的任务都算在工作槽上 */
+  private extraLane = new Set<string>();
   /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
   private stopping = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -220,24 +233,43 @@ export class Router {
   }
 
   /** 立即执行一个已进入 running 的任务；不等待完成 */
-  private launch(task: Task): void {
+  private launch(task: Task, lane: SlotLane): void {
+    if (lane === "extra") this.extraLane.add(task.id);
     const p = this.runTask(task)
       .catch(() => {})
-      .finally(() => this.active.delete(task.id));
+      .finally(() => {
+        this.active.delete(task.id);
+        this.extraLane.delete(task.id);
+      });
     this.active.set(task.id, p);
   }
 
-  /** 按并发上限补位；不等待任务完成 */
-  private async fill(): Promise<void> {
+  /** 工作槽占用：执行中的任务里除去追问槽上那些 */
+  private baseBusy(): number {
+    return this.active.size - this.extraLane.size;
+  }
+
+  /**
+   * 补位一次；不等待任务完成。调度器每个 tick 调用一次，测试也用它精确驱动，不依赖真实时钟。
+   * 工作槽有空位时按先来后到，谁都不插队；工作槽占满后只有人的追问能进追问槽。
+   */
+  async fill(): Promise<void> {
     if (this.stopping) return;
-    const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
-    while (this.active.size < limit) {
-      const task = this.deps.store.nextQueued();
+    const { store } = this.deps;
+    while (true) {
+      const limits = slotLimits(this.deps.cfg.worker.concurrency);
+      const extraBusy = this.extraLane.size;
+      const baseBusy = this.baseBusy();
+      const task = baseBusy < limits.base ? earliestQueued(store.nextQueued("human"), store.nextQueued("auto")) : store.nextQueued("human");
       if (!task) break;
+      // 追问槽只对 human 开放：新派活在工作槽占满后一律排队
+      const lane: SlotLane | null =
+        baseBusy < limits.base ? "base" : extraBusy < limits.extra && task.priority === "human" ? "extra" : null;
+      if (!lane) break;
       // 评审任务不建分支：branch 保持 null，执行路径也不会碰 git
       const branch = task.branch ?? (task.mode === "review" ? null : `pisa/${task.id}`);
-      if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
-      this.launch({ ...task, branch, status: "running" });
+      if (!store.claimQueued(task.id, this.now(), branch)) break;
+      this.launch({ ...task, branch, status: "running" }, lane);
     }
   }
 
@@ -426,7 +458,10 @@ export class Router {
     }
 
     if (cmd.kind === "status") {
-      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now()));
+      await this.reply(
+        msg.chatId,
+        formatStatusBoard(this.deps.store, slotLimits(cfg.worker.concurrency), this.now()),
+      );
       return;
     }
 
@@ -436,6 +471,8 @@ export class Router {
     /** PR 评论续跑：直接落在父任务的分支与原 PR 上 */
     let branch: string | null = null;
     let prUrl: string | null = null;
+    /** 槽位类别：续跑是人的追问，可以用追问槽；新派活只用工作槽 */
+    let priority: TaskPriority = "auto";
 
     // 续跑：命令式 `/pisa continue <任务号> <新要求>`，或 PR 评论直接指定父任务
     if (cmd.kind === "continue" || msg.continueFrom) {
@@ -470,6 +507,7 @@ export class Router {
         return;
       }
       baseRef = parent.branch;
+      priority = "human";
       // 续跑必须落在父任务所在仓库：分支是仓库本地的
       msg = { ...msg, repo: parent.repo };
       if (msg.replyPr) {
@@ -534,6 +572,7 @@ export class Router {
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
       mode: msg.mode,
+      priority,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -1040,9 +1079,17 @@ export class Router {
       await this.reply(msg.chatId, `任务 ${id} 的工作副本已不存在，无法恢复。`);
       return;
     }
-    const limit = Math.max(1, cfg.worker.concurrency ?? 1);
-    if (this.active.size >= limit) {
-      await this.reply(msg.chatId, `当前并发已满（${limit}），稍后再恢复 ${id}。`);
+    const limits = slotLimits(cfg.worker.concurrency);
+    const extraBusy = this.extraLane.size;
+    const baseBusy = this.baseBusy();
+    // 恢复是人的操作：工作槽空着用工作槽，否则挤追问槽
+    const lane: SlotLane | null =
+      baseBusy < limits.base ? "base" : extraBusy < limits.extra ? "extra" : null;
+    if (!lane) {
+      await this.reply(
+        msg.chatId,
+        `槽位已满（${slotText(slotUsage(this.active.size, limits))}），稍后再恢复 ${id}。`,
+      );
       return;
     }
 
@@ -1052,7 +1099,7 @@ export class Router {
       return;
     }
     await this.reply(msg.chatId, `恢复执行 · ${id}\n分支 ${task.branch ?? `pisa/${id}`}`, id);
-    this.launch({ ...task, status: "running", startedAt });
+    this.launch({ ...task, status: "running", startedAt }, lane);
   }
 
   /** 取一个排队任务执行；返回是否真的执行了 */
