@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+
+      - name: 安装 bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: 安装依赖
+        run: bun install --frozen-lockfile
+
+      - name: 测试
+        run: bun test
+
+      - name: 类型检查
+        run: bunx tsc --noEmit
