@@ -230,7 +230,16 @@ export function validateConfigPatch(input: unknown): Validation {
 /** 把补丁合并进原文件并原子写入；只覆盖 Web 负责的键 */
 export function saveConfigPatch(path: string, patch: ConfigPatch): void {
   const raw = readRawConfig(path);
-  raw.repos = patch.repos;
+  // Web 只编辑 alias/path/remote/baseBranch；capabilities 等文件里的键按 alias 保留
+  const existing = new Map<string, Json>();
+  if (Array.isArray(raw.repos)) {
+    for (const item of raw.repos) {
+      const repo = asObject(item);
+      const alias = asString(repo.alias);
+      if (alias) existing.set(alias, repo);
+    }
+  }
+  raw.repos = patch.repos.map((repo) => ({ ...existing.get(repo.alias), ...repo }));
   raw.worker = {
     ...asObject(raw.worker),
     adapter: patch.worker.adapter,

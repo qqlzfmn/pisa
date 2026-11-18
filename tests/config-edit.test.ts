@@ -194,6 +194,26 @@ describe("配置投影与保存", () => {
     expect(saved.web).toEqual({ enabled: true, port: 8787 });
   });
 
+  test("保存保留 Web 不编辑的 capabilities", () => {
+    const caps = { domains: ["example.com"], gui: true };
+    writeFileSync(
+      file,
+      JSON.stringify({
+        repos: [{ alias: "demo", path: "/srv/demo", capabilities: caps }],
+        worker: { adapter: "omp", command: "omp", capabilities: caps },
+      }),
+    );
+
+    saveConfigPatch(file, { ...valid, repos: [{ alias: "demo", path: "/srv/demo2", baseBranch: "dev" }] });
+
+    const saved = readRaw(file) as {
+      worker?: { capabilities?: unknown };
+      repos?: Array<Record<string, unknown>>;
+    };
+    expect(saved.repos).toEqual([{ alias: "demo", path: "/srv/demo2", baseBranch: "dev", capabilities: caps }]);
+    expect(saved.worker?.capabilities).toEqual(caps);
+  });
+
   test("空白名单保持原样，保存配置不顺手放行仓库", () => {
     writeFileSync(file, JSON.stringify({ whitelist: { users: [], repos: [] } }));
     saveConfigPatch(file, valid);

@@ -1,5 +1,6 @@
 import { join, resolve } from "node:path";
 import { mkdirSync, statSync } from "node:fs";
+import { capabilitiesFor, runtimeManifest } from "./capabilities";
 import { DEFAULT_ENV_ALLOW, type Config } from "./config";
 import type { Task, WorkerResult } from "./types";
 import { redact } from "./log";
@@ -53,12 +54,17 @@ export class Worker implements WorkerRunner {
     const progressDir = resolve(this.stateDir, "progress");
     mkdirSync(progressDir, { recursive: true });
 
+    // 旧任务没有能力快照：按默认全拒（只读写工作目录）执行
+    const capabilities =
+      task.capabilities ?? runtimeManifest(capabilitiesFor(), { workdir, env: this.cfg.envAllow ?? DEFAULT_ENV_ALLOW });
+
     const input = {
       task,
       workdir,
       extensionPath,
       progressFile: join(progressDir, `${task.id}.jsonl`),
       cfg: this.cfg,
+      capabilities,
       resume,
       resumeSessionId: resume ? task.sessionId : null,
     };
@@ -66,9 +72,9 @@ export class Worker implements WorkerRunner {
       cwd: workdir,
       stdout: "pipe",
       stderr: "pipe",
-      // 只继承白名单里的变量；适配器注入的 PISA_* 始终放行
+      // 只继承能力清单里的变量；适配器注入的 PISA_* 始终放行
       env: {
-        ...workerEnv(this.cfg.envAllow ?? DEFAULT_ENV_ALLOW, process.env),
+        ...workerEnv(capabilities.env, process.env),
         ...this.adapter.buildEnv(input),
       },
     });

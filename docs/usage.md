@@ -38,9 +38,9 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 
 ## 能力边界
 
-### 无沙箱
+### 能力声明不是沙箱
 
-Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命令（`git push`、`git reset --hard`、`git clean -f`、`rm -rf /` 除 `/tmp`、`sudo`、改 `/etc` 权限）。其余命令以当前用户权限直接执行，没有容器或虚拟机隔离，也没有网络限制。只在受信仓库和自己有权限的机器上运行。
+Worker 在独立 git worktree 里跑 agent，能碰什么由 `worker.capabilities` 与 `repos[].capabilities` 声明：默认只有工作副本可读写、不联网、不开 GUI，`readDirs`/`writeDirs`/`env`/`domains`/`gui`/`blockedCommands` 显式放行（见 [operations.md 的运行时能力](./operations.md#运行时能力capabilities)）。扩展在 bash 命令文本上拦截越界访问，同时保留 `git push`、`git reset --hard`、`git clean -f`、`rm -rf /`、`sudo`、改 `/etc` 权限这些破坏性命令的拒绝。命令之外的部分不受约束：脚本内部的读写、解释器里发起的网络、`make` 之类间接调用的外部命令都拦不住，也没有容器或虚拟机隔离。只在受信仓库和自己有权限的机器上运行。
 
 ### 回滚不完整
 

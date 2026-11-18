@@ -1,3 +1,5 @@
+import type { RuntimeManifest } from "./capabilities";
+
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
 /** 任务对外产生的副作用种类：rewind 的依据 */
@@ -81,6 +83,8 @@ export interface Task {
   replyRepo: string | null;
   /** 任务类型：review 只读评审，不建分支、不交付；缺省按 work 处理 */
   mode?: TaskMode;
+  /** 建任务时生效的运行时能力清单；缺省（旧库任务）按默认全拒执行 */
+  capabilities?: RuntimeManifest;
   summary: string | null;
   error: string | null;
   createdAt: number;

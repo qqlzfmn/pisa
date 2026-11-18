@@ -8,6 +8,7 @@ import {
   resolveConfigPath,
   type WebConfig,
 } from "./config";
+import { capabilitiesFor, describeCapabilities } from "./capabilities";
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker, workerEnv } from "./worker";
@@ -141,6 +142,9 @@ async function main(): Promise<void> {
   }
   const allowedEnv = Object.keys(workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env));
   console.log(`[pisa] Worker 环境白名单 · ${allowedEnv.join(",") || "(空)"}`);
+  for (const repo of cfg.repos) {
+    console.log(`[pisa] 能力 ${repo.alias} · ${describeCapabilities(capabilitiesFor(cfg.worker.capabilities, repo.capabilities))} · 可写追加工作副本`);
+  }
 
   // 通用触发适配层：GitHub Actions、飞书、企业微信、文件监听，全部归一成同一条消息流
   let triggers: TriggersRuntime | null = null;

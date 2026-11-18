@@ -1,11 +1,12 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store";
 import { Router, formatDuration } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
-import { parseCommand, taskGuard, type Config } from "../src/config";
+import { DEFAULT_ENV_ALLOW, parseCommand, taskGuard, type Config } from "../src/config";
+import { normalizeCapabilities } from "../src/capabilities";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh, changedFiles, createWorktree } from "../src/git";
@@ -359,6 +360,53 @@ describe("Router", () => {
     expect(existsSync(join(stateDir, "worktrees", task.id))).toBe(false);
     // 回执
     expect(channel.sent.some((s) => s.text.includes("完成"))).toBe(true);
+  });
+
+  describe("运行时能力", () => {
+    test("任务记录保存生效的能力清单：部署默认与仓库声明合并，工作副本恒可写", async () => {
+      cfg.worker = { ...cfg.worker, capabilities: normalizeCapabilities({ domains: ["github.com"] }, stateDir) };
+      cfg.repos = [
+        { ...cfg.repos[0]!, capabilities: normalizeCapabilities({ readDirs: ["data"], gui: true }, stateDir) },
+      ];
+      const router = build(okWorker);
+
+      await router.handle(msg("/pisa 做点事"));
+
+      const task = store.recentTasks()[0]!;
+      const workdir = join(stateDir, "worktrees", task.id);
+      expect(task.capabilities).toEqual({
+        workdir,
+        readDirs: [workdir, join(stateDir, "data")],
+        writeDirs: [workdir],
+        env: [...DEFAULT_ENV_ALLOW],
+        domains: ["github.com"],
+        gui: true,
+        blockedCommands: [],
+      });
+    });
+
+    test("越界命令的拦截记录与能力清单都写进任务日志", async () => {
+      mkdirSync(join(stateDir, "progress"), { recursive: true });
+      const guardingWorker: WorkerRunner = {
+        async run(task): Promise<WorkerResult> {
+          const blocked = { ts: 1, type: "blocked", tool: "bash", detail: "cat /etc/passwd", reason: "路径不可读：/etc/passwd" };
+          appendFileSync(join(stateDir, "progress", `${task.id}.jsonl`), JSON.stringify(blocked) + "\n");
+          // 进度监听每 2 秒轮询一次：停在这里等它跑一轮，否则任务结束就停了
+          await Bun.sleep(2200);
+          return { ok: true, summary: "ok", exitCode: 0 };
+        },
+      };
+      const router = build(guardingWorker);
+
+      await router.handle(msg("/pisa 做点事"));
+      await router.drainOnce();
+
+      const task = store.recentTasks()[0]!;
+      const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
+      expect(log).toContain('"stage":"capabilities"');
+      expect(log).toContain('"stage":"guard"');
+      expect(log).toContain("拦下 bash：cat /etc/passwd");
+    });
   });
 
   test("续跑任务失败不删除共享分支", async () => {

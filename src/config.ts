@@ -1,11 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  normalizeCapabilities,
+  type Capabilities,
+  type CapabilityConfig,
+} from "./capabilities";
 
 export interface RepoConfig {
   alias: string;
   path: string;
   remote?: string;
   baseBranch?: string;
+  /** 本仓库允许的额外目录、凭据、域名与 GUI；只能在本仓库叠加，见 capabilities.ts */
+  capabilities?: Capabilities;
 }
 
 /** 一条定时任务：cron 到点后用 prompt 开单 */
@@ -143,6 +150,8 @@ export interface Config {
     idleTimeoutSec?: number;
     /** `/pisa merge` 在验证副本跑测试的超时，默认 600 秒 */
     verifyTimeoutSec?: number;
+    /** 部署级的运行时能力默认值；每个仓库再叠加，缺省见 DEFAULT_CAPABILITIES */
+    capabilities?: Capabilities;
   };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   /** 通知详细程度；progress=false 时只发接单/执行/完成等生命周期消息 */
@@ -246,9 +255,11 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
   if (!isAbsolute(cfg.stateDir)) cfg.stateDir = resolve(baseDir, cfg.stateDir);
   cfg = {
     ...cfg,
+    worker: { ...cfg.worker, capabilities: normalizeCapabilities(cfg.worker.capabilities as CapabilityConfig, baseDir) },
     repos: cfg.repos.map((r) => ({
       ...r,
       path: typeof r.path === "string" && !isAbsolute(r.path) ? resolve(baseDir, r.path) : r.path,
+      capabilities: normalizeCapabilities(r.capabilities as CapabilityConfig, baseDir),
     })),
     triggers: cfg.triggers
       ? {
