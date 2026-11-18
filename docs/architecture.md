@@ -22,7 +22,8 @@
                │ IncomingMessage                   │ channel.send()
 ┌──────────────┴─────────────────────────────────┴────────────┐
 │ core：编排（全部状态与决策）                                    │
-│   router / store / worker / deliver / git / github /          │
+│   router / store / worker / deliver / effects / git /         │
+│   github / github-watcher / proactive / scheduler / rewind /  │
 │   github-watcher / proactive / scheduler / rewind /           │
 │   config / types / log / adapters                             │
 └──────────────▲─────────────────────────────────▼────────────┘
@@ -54,10 +55,11 @@ core 内部模块关系：
 | 模块 | 职责 | 主要对外接口 |
 | --- | --- | --- |
 | `router.ts` | 全局唯一编排者：事件入口、命令、状态跃迁、进度转发、回帖 | `handle()`、`start()/stop()`、`recoverInterrupted()` |
-| `store.ts` | SQLite 持久化：任务、消息映射、事件去重、副作用账本 | `insertTask`、`claimQueued`、`transition`、`taskByPr`、`effectsOf` |
+| `store.ts` | SQLite 持久化：任务、消息映射、事件去重、副作用账本、外部动作队列 | `insertTask`、`claimQueued`、`transition`、`taskByPr`、`effectsOf`、`enqueueEffect`、`dueEffects` |
 | `worker.ts` | 拉起 agent 进程、解析输出、超时与取消 | `class Worker implements WorkerRunner` |
 | `adapters/` | 把 pisa 的任务翻译成某个 agent 的命令行与输出格式 | `getAdapter(name)` |
-| `deliver.ts` | 提交 → 推送 → 开 PR，失败不留半成品状态 | `GitDeliverer.deliver()` |
+| `deliver.ts` | 提交 → 推送 → 开 PR；推送与建 PR 交给 outbox 执行 | `GitDeliverer.deliver()`、`effectHandlers()` |
+| `effects.ts` | 外部动作 outbox：先落库再执行，按 `(kind,key)` 去重，失败指数退避，重启后重放 | `EffectQueue.exec()`、`start()/stop()`、`cancelTask()` |
 | `git.ts` | worktree、分支、提交、推送的封装 | `sh()` 之上的命令封装；`merge`、`rev-parse` 这类一次性命令在 `router.ts` 里直接调 `sh` |
 | `github.ts` | 所有 `gh` 调用与回帖去重标记 | 测试可注入 `Runner` |
 | `github-watcher.ts` | 轮询 GitHub 评论，把命中触发词的评论转成事件 | 构造时注入 `enqueue` |
@@ -107,6 +109,7 @@ cancelled ─┘
 - `queued → running` 只能经 `claimQueued`（在 SQL 里写 `startedAt` 与分支名）；其余跃迁经 `transition`。
 - 终态只有 `rewound` 这一条出边，运行态无法回退；撤销完的任务不能再 resume。
 - 状态写入只有三个来源：事件驱动的 `runTask`、重启时的 `recoverInterrupted`、请求者发起的 `cancel`/`resume`/`rewind`。关停路径刻意不写状态。
+- 对外的写动作（推送、建 PR、回帖）只经 `EffectQueue.exec`：先按 `(kind,key)` 写 `effects` 行再执行，同一个键至多执行一次；失败留行退避重试（2s 起翻倍、60s 封顶、最多 10 次），进程重启后继续。
 
 恢复语义（对应 005）：
 
@@ -119,6 +122,7 @@ cancelled ─┘
 | 重启后遗留 `queued` | — | 由 `fill()` 继续认领，自动执行 | 队列在数据库里，不在内存里 |
 | 重启后 `paused` | — | 保持，等 `resume` 或 `cancel`（`rewind` 要求先取消） | 人工决定，避免自动重跑产生第二个 PR |
 | 停机期间到达的事件 | — | 丢失（内存队列为空，事件不落盘等待） | 只有已 `insertTask` 的任务会恢复 |
+| 重启时 `effects` 里仍有 `pending` 行 | — | 立即重放，之后每 1s 扫一次到期行 | 动作幂等：推送、按 head 认领 PR、回帖标记；`EffectQueue.start()` |
 
 `resume` 的字段语义：`baseRef` 指上一轮分支（worktree 从这里拉出）；`context` 是注入提示词的上一轮摘要；`branch`/`prUrl` 在 PR 评论续跑时指向父任务的同一分支与同一 PR，避免同一需求出现两个 PR。
 
@@ -128,7 +132,7 @@ cancelled ─┘
 触发源 → IncomingMessage → Router.handle → 落库(queued) → 回执
         → fill(800ms) → claimQueued → runTask
         → createWorktree → Worker.run(omp 进程) ⇄ progress jsonl
-        → deliver(commit → push → PR) → 记账 → succeeded
+        → deliver(commit → outbox: push → PR) → 记账 → succeeded
         → dropWorktree → replyToSource → 最终回执
 ```
 
@@ -147,8 +151,8 @@ cancelled ─┘
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
 7. **执行**（`Worker.run`，`src/worker.ts`）。`adapter.buildArgs` 生成命令行（omp：`-e <extension> [-r <sessionId>] --mode=json -p <prompt> --cwd <workdir>`），`Bun.spawn` 的 cwd 就是工作副本，环境变量附带 `PISA_WORKDIR`、`PISA_PROGRESS_FILE`。超时按 `worker.timeoutSec`（默认 3600s）`SIGTERM`，10s 后 `SIGKILL`；取消每 2s 轮询一次，同样先礼后兵。stdout 按行交给 `adapter.parseLine`，最终 `summary` 与 `error` 都过 `redact`。
 8. **进度回传**。skill 把 `session`/`tool`/`blocked`/`done` 追加进 `.pisa/progress/<taskId>.jsonl`；`watchProgress`（`src/router.ts`）每 2s 读增量，节流 6s，转成 `🛠`/`✏️`/`⛔` 消息发到原对话。progress 只是旁路，丢了不影响任务结果。
-9. **交付**（`GitDeliverer.deliver`，`src/deliver.ts`）。`git status --porcelain` 无改动直接返回；有改动则 `commitAll`（`pisa: <首行>`，正文带任务号）→ 若 `delivery.push` 且配置了远程则 `push -u origin <branch>`（失败即抛错，任务落 `failed`）→ 若 `delivery.pr`、远程在 github.com、`gh` 可用则先 `gh pr list --head <branch>` 认领该分支上已有的开放 PR（上次建好却没来得及记账），没查到才 `gh pr create`（PR 正文带 `Closes #<issue>`），否则退回 `compare` 链接。无改动且任务无 `prUrl` 时，若分支已在 origin 上同样先认领一次。成功后记 `push`/`pr` 副作用。
-10. **收尾**。`transition(succeeded)` 写入 `summary/branch/prUrl/endedAt` → 删工作副本（保留分支与副作用账本）→ `replyToSource` 回 PR/Issue（正文带隐藏标记 `<!-- pisa:reply task=… -->`，重启重跑也不会重复回帖）→ 最终回执（摘要、文件清单、分支、链接、会话 id）。
+9. **交付**（`GitDeliverer.deliver`，`src/deliver.ts`）。`git status --porcelain` 无改动直接返回；有改动则 `commitAll`（`pisa: <首行>`，正文带任务号）。推送与建 PR 都经 outbox（`src/effects.ts`）：先按 `(kind,key)` 落 `effects` 行再执行，`push` 失败抛错让任务落 `failed`，`pr` 失败留在队列里退避重试、本轮退回 `compare` 链接。若 `delivery.pr`、远程在 github.com、`gh` 可用，先 `gh pr list --head <branch>` 认领该分支上已有的开放 PR（上次建好却没来得及记账），没查到才 `gh pr create`（PR 正文带 `Closes #<issue>`）；两者都在仓库根目录执行，工作副本删掉后重试仍可用。成功后由 Router 记 `push`/`pr` 副作用并回填 `pr_url`。无改动且任务无 `prUrl` 时，若分支已在 origin 上同样先认领一次。
+10. **收尾**。`transition(succeeded)` 写入 `summary/branch/prUrl/endedAt` → 删工作副本（保留分支与副作用账本）→ `replyToSource` 经 outbox 回 PR/Issue（正文带隐藏标记 `<!-- pisa:reply task=… -->`，线程里已有同标记即视为发过，退避重试也不会重复回帖）→ 最终回执（摘要、文件清单、分支、链接、会话 id）。任务失败或取消时清掉该任务未完成的 effect 行。
 
 一次成功任务落盘的东西：
 
@@ -158,6 +162,7 @@ cancelled ─┘
 | `pisa.db` `task_messages` | 信道消息 → 任务 | 永不 |
 | `pisa.db` `events` | 事件去重键 | 永不 |
 | `pisa.db` `task_effects` | 仍在生效的分支/推送/PR/回帖/合并 | 撤销或清理时逐条删 |
+| `pisa.db` `effects` | 外部动作队列：推送、建 PR、回帖的待执行/已完成/已终止行 | 不自动清理；任务失败或取消时删该任务的未完成行 |
 | `.pisa/logs/<taskId>.log` | 阶段日志（脱敏） | 不自动清理 |
 | `.pisa/progress/<taskId>.jsonl` | 工具级进度 | 不自动清理 |
 | `.pisa/worktrees/<taskId>` | 工作副本 | 成功、失败、运行中取消后删除；`paused`、重启时按取消请求置 `cancelled` 的任务及其后续取消保留 |
@@ -243,9 +248,9 @@ interface ChannelAdapter {
 | 卡死（长时间无输出/无进度） | 每 30s 看进度文件与 stdout，超过 `worker.idleTimeoutSec`（默认 900s） | `failed`（`卡死：…`） | 同上 | 重投；调大 `idleTimeoutSec` 或拆小任务 |
 | 执行器丢失（进程被 kill，但服务没重启） | `reconcileOrphans` 每 5s 对账 `running` 行与进程内 active 表 | 有 session+worktree → `paused`；否则 `failed` | worktree 保留（paused） | `resume` 或重投 |
 | 请求者取消 | 每 2s 轮询 `cancelRequested`；`queued`/`paused` 直接改状态；`running` 但没有执行器时立即结束 | `cancelled` | `running`：删 worktree 与 `pisa/<id>` 分支；`queued`/`paused`：worktree（若有）保留 | — |
-| 推送失败 | `pushBranch` 抛错 | `failed` | worktree 删除后本地提交一并消失，远程无残留 | 修远程/凭据后重投 |
-| PR 创建失败 | `gh pr create` 无输出 | 任务仍 `succeeded` | 分支已推 | 手动开 PR，或按回执里的 compare 链接 |
-| 回帖失败 | 抓异常写日志 | 不影响状态 | 无 | 手动补，标记保证不重复 |
+| 推送失败 | `pushBranch` 抛错 | `failed` | effect 行随任务失败丢弃；worktree 删除后本地提交一并消失，远程无残留 | 修远程/凭据后重投 |
+| PR 创建失败 | `gh pr create` 无输出 | 任务仍 `succeeded` | 分支已推，`effect` 行留库退避重试 | 重试成功自动回填 `pr_url` 与账本；期间回执给 compare 链接 |
+| 回帖失败 | `gh` 退出码非 0 | 不影响状态 | `effect` 行留库退避重试 | 重试到发出去；隐藏标记保证重复执行也只发一条 |
 | 进程被杀 | `recoverInterrupted` | `cancelled`（已请求取消）/ `paused` / `failed` | worktree 一律保留 | 已取消不可 `resume`；`paused` 可 `resume` 或 `rewind` |
 | 重复投递 | `claimEvent` 主键冲突 | 只有一条任务 | — | 自动 |
 | 交付过程抛任意异常 | `runTask` catch | `failed` | 删 worktree 与分支 | 重新投递 |

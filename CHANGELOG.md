@@ -10,11 +10,13 @@
 
 ### 变更
 
+- 推送、建 PR、回帖改为经 outbox 执行：失败不再只记日志，退避到期后自动补发；建 PR 失败仍退回 `compare` 链接，任务终态不变
 - README 从配置说明改为产品首页：一句话定位、三类读者路径、30 秒上手、架构图与分层表、三个带预期输出的场景、与 CNB NPC / Copilot cloud agent 的边界对比、FAQ、已知限制、演示 GIF（`docs/assets/demo.gif`）
 - 配置与运维细节（全部配置项、IM/CLI 命令、webhook、多仓库、GitHub 评论、定时、保留、launchd）迁到 [docs/operations.md](./docs/operations.md)，README 只保留入口
 
 ### 新增
 
+- Outbox（`src/effects.ts` + `effects` 表）：外部动作先落库再执行，同一 `(kind,key)` 只执行一次，失败按 2s→60s 指数退避（最多 10 次），进程重启后继续重放；推送与建 PR 在仓库根目录执行，工作副本删掉后重试仍可用
 - `LICENSE`（MIT），徽章与 GitHub 仓库许可字段据此生效
 - `tests/docs-links.test.ts`：所有 Markdown 的相对链接必须有落点，README 的页内锚点必须落在真实标题上
 

@@ -17,7 +17,8 @@ import { GithubWatcher } from "../src/github-watcher";
 import { Store } from "../src/store";
 import { Router } from "../src/router";
 import { GitDeliverer, prBody } from "../src/deliver";
-import { commitAll, createWorktree, sh, type ExecResult } from "../src/git";
+import { EffectQueue } from "../src/effects";
+import { commitAll, compareUrl, createWorktree, sh, type ExecResult } from "../src/git";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
@@ -645,7 +646,7 @@ describe("GitHub 评论 → 任务", () => {
     ]);
   });
 
-  test("Issue 回帖失败只记日志，任务仍成功", async () => {
+  test("Issue 回帖失败入队重试，任务仍成功", async () => {
     const router = new Router({
       cfg,
       store,
@@ -667,6 +668,9 @@ describe("GitHub 评论 → 任务", () => {
 
     const task = store.recentTasks()[0]!;
     expect(task.status).toBe("succeeded");
+    // 回帖留在队列里等退避重试
+    const row = store.effectRow("comment", `issue:${task.replyRepo ?? "o/r"}#20:${task.id}`)!;
+    expect(row.status).toBe("pending");
     const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
     expect(log).toContain("Issue #20 回帖失败");
     expect(log).toContain("no token");
@@ -677,7 +681,7 @@ describe("GitHub 评论 → 任务", () => {
     expect(store.get("t_issue")!.replyIssue).toBe(20);
   });
 
-  test("回帖失败只记日志，任务仍成功", async () => {
+  test("回帖失败入队重试，任务仍成功", async () => {
     const router = new Router({
       cfg,
       store,
@@ -699,9 +703,56 @@ describe("GitHub 评论 → 任务", () => {
 
     const task = store.recentTasks()[0]!;
     expect(task.status).toBe("succeeded");
+    expect(store.effectRow("comment", `pr:${task.replyRepo ?? "o/r"}#12:${task.id}`)!.status).toBe("pending");
     const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
     expect(log).toContain("回帖失败");
     expect(log).toContain("no token");
+  });
+
+  test("回帖失败留在 outbox，退避到期后补发并记账", async () => {
+    let clock = 1_700_000_000_000;
+    const calls: string[][] = [];
+    let postFails = true;
+    const ghRunner: Runner = (args) => {
+      calls.push(args);
+      if (args[1] === "pr") return postFails ? reply(1, "", "no token") : reply(0);
+      return reply(0);
+    };
+    const effects = new EffectQueue(store, { now: () => clock });
+    const router = new Router({
+      cfg,
+      store,
+      worker: okWorker,
+      deliverer: new GitDeliverer(cfg),
+      channel,
+      ghRunner,
+      effects,
+      now: () => clock,
+    });
+    await router.handle({
+      eventId: "github:comment:14",
+      channel: "github",
+      chatId: "c1",
+      userId: "u1",
+      text: "/pisa 修一下登录",
+      replyPr: 12,
+    });
+    await router.drainOnce();
+
+    const task = store.recentTasks()[0]!;
+    expect(task.status).toBe("succeeded");
+    const key = `pr:${task.replyRepo ?? "o/r"}#12:${task.id}`;
+    const pending = store.effectRow("comment", key)!;
+    expect(pending.status).toBe("pending");
+    expect(pending.nextAt).toBe(clock + 2000);
+    expect(calls.filter((c) => c[1] === "pr").length).toBe(1);
+
+    postFails = false;
+    clock += 2000;
+    expect(await effects.flush()).toEqual({ done: 1, failed: 0 });
+    expect(store.effectRow("comment", key)!.status).toBe("done");
+    expect(calls.filter((c) => c[1] === "pr").length).toBe(2);
+    expect(store.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
   });
 
   test("未启用 github 时不回帖", async () => {
@@ -975,6 +1026,12 @@ describe("GitDeliverer 更新既有 PR", () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
+  /** 交付测试需要 outbox：动作经队列，但当场执行 */
+  function outbox(deliverer: GitDeliverer): EffectQueue {
+    const handlers = deliverer.effectHandlers();
+    return new EffectQueue(new Store(":memory:")).register("push", handlers.push).register("pr", handlers.pr);
+  }
+
   /** 父任务分支 + 已挂载的工作副本，带一处改动 */
   function setup(): string {
     expect(sh(["git", "-C", repo, "branch", "pisa/parent", "main"]).code).toBe(0);
@@ -999,6 +1056,7 @@ describe("GitDeliverer 更新既有 PR", () => {
       { ...baseTask, id: "t_child", branch: "pisa/parent", prUrl: "https://github.com/o/r/pull/12" },
       workdir,
       cfg.repos[0]!,
+      outbox(deliverer),
     );
 
     expect(calls).toEqual([]);
@@ -1019,7 +1077,7 @@ describe("GitDeliverer 更新既有 PR", () => {
       },
     });
 
-    const res = await deliverer.deliver({ ...baseTask, id: "t_new", branch: "pisa/parent" }, workdir, cfg.repos[0]!);
+    const res = await deliverer.deliver({ ...baseTask, id: "t_new", branch: "pisa/parent" }, workdir, cfg.repos[0]!, outbox(deliverer));
 
     expect(calls).toEqual(["pisa/parent"]);
     expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
@@ -1040,6 +1098,7 @@ describe("GitDeliverer 更新既有 PR", () => {
       { ...baseTask, id: "t_issue", prompt: "", branch: "pisa/parent", replyIssue: 20 },
       workdir,
       cfg.repos[0]!,
+      outbox(deliverer),
     );
 
     expect(bodies).toEqual(["任务号：t_issue\n\n---\n\n由 pisa 自动创建。\n\nCloses #20"]);
@@ -1062,9 +1121,10 @@ describe("GitDeliverer 更新既有 PR", () => {
       },
     });
 
-    const res = await deliverer.deliver({ ...baseTask, id: "t_retry", branch: "pisa/parent" }, workdir, cfg.repos[0]!);
+    const res = await deliverer.deliver({ ...baseTask, id: "t_retry", branch: "pisa/parent" }, workdir, cfg.repos[0]!, outbox(deliverer));
 
-    expect(queried).toEqual([[workdir, "pisa/parent"]]);
+    // 查询在仓库根目录执行：任务成功后工作副本会被删，重试要能用
+    expect(queried).toEqual([[repo, "pisa/parent"]]);
     expect(created).toEqual([]);
     expect(res.prUrl).toBe("https://github.com/o/r/pull/9");
     expect(res.pushed).toBe(true);
@@ -1082,7 +1142,7 @@ describe("GitDeliverer 更新既有 PR", () => {
       },
     });
 
-    const res = await deliverer.deliver({ ...baseTask, id: "t_fresh", branch: "pisa/parent" }, workdir, cfg.repos[0]!);
+    const res = await deliverer.deliver({ ...baseTask, id: "t_fresh", branch: "pisa/parent" }, workdir, cfg.repos[0]!, outbox(deliverer));
 
     expect(created).toEqual(["pisa/parent"]);
     expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
@@ -1100,7 +1160,7 @@ describe("GitDeliverer 更新既有 PR", () => {
       },
     });
 
-    const res = await deliverer.deliver({ ...baseTask, id: "t_ghfail", branch: "pisa/parent" }, workdir, cfg.repos[0]!);
+    const res = await deliverer.deliver({ ...baseTask, id: "t_ghfail", branch: "pisa/parent" }, workdir, cfg.repos[0]!, outbox(deliverer));
 
     expect(created).toBe(1);
     expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
@@ -1143,6 +1203,61 @@ describe("GitDeliverer 更新既有 PR", () => {
       expect(created).toBe(0);
       expect(store.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["pr", "9"]);
       // PR 评论按 taskByPr 能接上这次交付
+      expect(store.taskByPr(9)?.id).toBe(task.id);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("建 PR 失败时退回 compare 链接，重试成功后回填 pr_url", async () => {
+    const workdir = setup();
+    let clock = 1_000_000;
+    let createFails = true;
+    let created = 0;
+    const deliverer = new GitDeliverer(cfg, {
+      hasGh: () => true,
+      findPr: () => reply(0, ""),
+      createPr: () => {
+        created += 1;
+        return createFails ? reply(1, "", "gh: rate limited") : reply(0, "https://github.com/o/r/pull/9");
+      },
+    });
+    const editingWorker: WorkerRunner = {
+      async run(_task, wt): Promise<WorkerResult> {
+        writeFileSync(join(wt, "out.txt"), "hi\n");
+        return { ok: true, summary: "改好了", exitCode: 0 };
+      },
+    };
+    const store = new Store(":memory:");
+    const effects = new EffectQueue(store, { now: () => clock });
+    const router = new Router({
+      cfg,
+      store,
+      worker: editingWorker,
+      deliverer,
+      channel: new FakeChannel(),
+      effects,
+      now: () => clock,
+    });
+
+    try {
+      await router.handle({ eventId: "e2", channel: "fake", chatId: "c1", userId: "u1", text: "/pisa 建 PR" });
+      await router.drainOnce();
+
+      const task = store.recentTasks()[0]!;
+      expect(task.status).toBe("succeeded");
+      // 建 PR 失败不毁任务：先退回 compare 链接
+      expect(task.prUrl).toBe(compareUrl("https://github.com/o/r.git", "main", `pisa/${task.id}`));
+      expect(created).toBe(1);
+      expect(store.effectRow("pr", `${task.id}:pisa/${task.id}`)!.status).toBe("pending");
+
+      // 工作副本已被删掉，重试仍拿得到 PR
+      createFails = false;
+      clock += 2000;
+      expect(await effects.flush()).toEqual({ done: 1, failed: 0 });
+      expect(store.get(task.id)!.prUrl).toBe("https://github.com/o/r/pull/9");
+      expect(created).toBe(2);
+      expect(store.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["pr", "9"]);
       expect(store.taskByPr(9)?.id).toBe(task.id);
     } finally {
       store.close();
