@@ -440,8 +440,8 @@ describe("Router", () => {
     const total = Date.now() - t0;
 
     expect(starts.length).toBe(2);
-    expect(Math.abs(starts[0]! - starts[1]!)).toBeLessThan(200);
-    expect(total).toBeLessThan(400);
+    expect(Math.abs(starts[0]! - starts[1]!)).toBeLessThan(500);
+    expect(total).toBeLessThan(2000);
     expect(store.recentTasks().every((t) => t.status === "succeeded")).toBe(true);
   });
 

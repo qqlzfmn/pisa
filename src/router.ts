@@ -518,7 +518,18 @@ export class Router {
 
     try {
       // 主干在任务执行期间可能已前进；先 rebase 到最新主干，否则 --ff-only 必然失败
-      const rebase = sh(["git", "-C", verifyDir, "rebase", base]);
+      // CI 上没有全局 git 身份，rebase 必须显式带上提交者
+      const rebase = sh([
+        "git",
+        "-C",
+        verifyDir,
+        "-c",
+        `user.name=${this.deps.cfg.delivery.commitName}`,
+        "-c",
+        `user.email=${this.deps.cfg.delivery.commitEmail}`,
+        "rebase",
+        base,
+      ]);
       if (rebase.code !== 0) {
         sh(["git", "-C", verifyDir, "rebase", "--abort"]);
         await this.reply(
