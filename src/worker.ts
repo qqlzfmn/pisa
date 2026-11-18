@@ -1,9 +1,25 @@
 import { join, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
-import type { Config } from "./config";
+import { DEFAULT_ENV_ALLOW, type Config } from "./config";
 import type { Task, WorkerResult } from "./types";
 import { redact } from "./log";
 import { getAdapter, type WorkerAdapter } from "./adapters";
+
+/**
+ * 按白名单从源环境里挑变量：只复制允许且实际存在的键，缺省键不生成空值。
+ * 纯函数，Worker.run 与启动日志共用同一判断。
+ */
+export function workerEnv(
+  allow: readonly string[],
+  src: Record<string, string | undefined>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of allow) {
+    const value = src[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
 
 export interface WorkerRunner {
   run(
@@ -50,7 +66,11 @@ export class Worker implements WorkerRunner {
       cwd: workdir,
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, ...this.adapter.buildEnv(input) },
+      // 只继承白名单里的变量；适配器注入的 PISA_* 始终放行
+      env: {
+        ...workerEnv(this.cfg.envAllow ?? DEFAULT_ENV_ALLOW, process.env),
+        ...this.adapter.buildEnv(input),
+      },
     });
 
     let timedOut = false;

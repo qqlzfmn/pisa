@@ -46,7 +46,15 @@ export interface Config {
   dmWithoutTrigger: boolean;
   whitelist: { users: string[]; repos: string[] };
   repos: RepoConfig[];
-  worker: { adapter: string; command: string; timeoutSec: number; extraArgs: string[]; concurrency: number };
+  worker: {
+    adapter: string;
+    command: string;
+    timeoutSec: number;
+    extraArgs: string[];
+    concurrency: number;
+    /** Worker 子进程从 process.env 继承的变量白名单；缺省见 DEFAULT_ENV_ALLOW */
+    envAllow?: string[];
+  };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string; proxy?: string } };
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
@@ -73,12 +81,34 @@ export interface Config {
   stateDir: string;
 }
 
+/**
+ * Worker 子进程默认继承的环境变量：只够进程本身跑起来。
+ * 凭据（PISA_TELEGRAM_TOKEN、GH_TOKEN、厂商 key）不在白名单内，需要时显式加进 worker.envAllow。
+ */
+export const DEFAULT_ENV_ALLOW: readonly string[] = [
+  "PATH",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "TERM",
+  "TMPDIR",
+  "SHELL",
+  "USER",
+];
+
 export const DEFAULT_CONFIG: Config = {
   trigger: "/pisa",
   dmWithoutTrigger: true,
   whitelist: { users: [], repos: [] },
   repos: [],
-  worker: { adapter: "omp", command: "omp", timeoutSec: 3600, extraArgs: [], concurrency: 2 },
+  worker: {
+    adapter: "omp",
+    command: "omp",
+    timeoutSec: 3600,
+    extraArgs: [],
+    concurrency: 2,
+    envAllow: [...DEFAULT_ENV_ALLOW],
+  },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
   retentionDays: DEFAULT_RETENTION_DAYS,
