@@ -17,6 +17,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 - [GitHub 评论（PR / Issue）](#github-评论pr--issue)
 - [自举](#自举)
 - [常驻（launchd）](#常驻launchd)
+- [健康与巡检](#健康与巡检)
 - [完整配置项](#完整配置项)
 
 ## 安装与配置
@@ -131,6 +132,7 @@ pisa continue <任务号> "按 PR 评论再改"
 - `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省从当前目录向上找 `pisa.config.json`
 - 相对 `stateDir` 与仓库路径以配置文件目录为基准，从子目录调用也指向同一份状态
 - 退出码：`0` 成功、`1` 任务失败、`2` 用法/配置、`3` 找不到、`4` 不可运行、`5` 等待超时
+- `status` 与 `patrol` 例外，退出码是健康码：`0` 正常、`1` 需重启、`2` 部件错误、`3` 待配置，见 [健康与巡检](#健康与巡检)
 - 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
 
 给 agent 的可复用说明在 [`skills/pisa/`](../skills/pisa/)：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
@@ -295,7 +297,7 @@ pisa 可以改自己：
 
 ## 常驻（launchd）
 
-`scripts/supervise.sh` 交给 launchd 托管：开机自启，进程退出后自动拉起。
+`scripts/supervise.sh` 交给 launchd 托管：开机自启，进程退出后自动拉起。同一脚本顺带安装每小时巡检（见 [健康与巡检](#健康与巡检)）。
 
 安装（重复执行等于重装）：
 
@@ -303,26 +305,75 @@ pisa 可以改自己：
 ./scripts/install-launchd.sh
 ```
 
-脚本生成 `~/Library/LaunchAgents/ai.pisa.supervisor.plist` 并加载，工作目录是仓库根目录，日志写在 `~/Library/Logs/pisa.launchd.log`（外部卷上的路径 launchd 无权限写入）。多份 worktree 同时安装会互相覆盖，只保留一份。
+脚本生成 `~/Library/LaunchAgents/ai.pisa.supervisor.plist` 与 `~/Library/LaunchAgents/ai.pisa.patrol.plist` 并加载。工作目录都是仓库根目录；守护进程日志写在 `~/Library/Logs/pisa.launchd.log`，巡检日志写在 `~/Library/Logs/pisa.patrol.log`（外部卷上的路径 launchd 无权限写入）。多份 worktree 同时安装会互相覆盖，只保留一份。
 
 看日志：
 
 ```bash
 tail -f ~/Library/Logs/pisa.launchd.log
+tail -f ~/Library/Logs/pisa.patrol.log
 launchctl print gui/$(id -u)/ai.pisa.supervisor    # 状态
+launchctl print gui/$(id -u)/ai.pisa.patrol        # 状态
 ```
 
 卸载：
 
 ```bash
-launchctl bootout gui/$(id -u)/ai.pisa.supervisor
-rm ~/Library/LaunchAgents/ai.pisa.supervisor.plist
+for label in ai.pisa.supervisor ai.pisa.patrol; do
+  launchctl bootout gui/$(id -u)/$label
+  rm ~/Library/LaunchAgents/$label.plist
+done
 ```
 
-token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.pisa/telegram_token` 与 `~/.pisa/webhook_token`。
+token 不进 plist：`supervise.sh` 与 `patrol.sh` 启动时都 source `scripts/tokens.sh`，先取环境变量，缺省读 `~/.pisa/telegram_token`、`~/.pisa/webhook_token`、`~/.pisa/web_token`。
+
+## 健康与巡检
+
+看板只描述任务，不判断系统是否健康。健康结论由退出码给出，`status` 与 `patrol` 共用一套判断：
+
+| 退出码 | 含义 | 什么时候出现 |
+| --- | --- | --- |
+| `0` | 正常 | 配置完整、仓库路径有效、守护进程心跳在 10 秒内、没有放弃重试的外部动作 |
+| `1` | 需重启 | 守护进程从未上报心跳，或最后心跳超过 10 秒 |
+| `2` | 部件错误 | 有 push / PR / 评论动作重试耗尽（`effects.status = 'failed'`），不会自行恢复 |
+| `3` | 待配置 | 仓库为空、仓库路径不是 git 仓库、没有入口、启用的 telegram / webhook 取不到 token、GitHub 条目不完整、定时任务缺 `scheduler.chatId` / `userId`、有远程入口却白名单为空 |
+
+多类问题同时存在时退出码取最严重的一类：`3` > `2` > `1` > `0`。人类输出版本会逐条列出问题；`--json` 版本在 `health` 字段给出 `exit`、`label` 与 `issues[]`，每项有稳定的 `key`。
+
+```bash
+pisa status --json | jq -r .health.exit
+pisa status >/dev/null; case $? in
+  0) echo 正常 ;;
+  1) tail -n 50 ~/Library/Logs/pisa.launchd.log ;;
+  2) pisa status --json | jq -r '.health.issues[] | select(.code==2) | .message' ;;
+  3) pisa status --json | jq -r '.health.issues[] | select(.code==3) | .message' ;;
+esac
+```
+
+token 检查与 `scripts/tokens.sh` 同一约定：先看环境变量，再看 `~/.pisa/telegram_token`、`~/.pisa/webhook_token`、`~/.pisa/web_token`。自定义 `tokenEnv` 只按环境变量判断。手动执行 `pisa status` 与 launchd 里的结论一致，不会因为 shell 没导出 token 误报待配置。
+
+### 每小时巡检
+
+`pisa patrol` 跑一次与 `status` 相同的检查，但只在需要人时说话：
+
+- 正常：零输出、零消息，退出码 `0`
+- 发现问题：打印问题清单；telegram 启用且有可用会话时发一条消息，退出码同健康码
+- 同一组问题仍在：静默。去重签名存在 `pisa.db` 的 `meta` 表（键 `patrol:signature`），按问题 `key` 排序拼接
+- 问题消失：签名被删除，下次异常重新提醒
+- 问题集合变化：签名变化，重新提醒一次完整清单
+
+提醒发往 `patrol.chatId`，缺省依次沿用 `webhook.chatId` → `github.chatId` → `scheduler.chatId`；都没有时只写进程输出。发送失败只写 stderr，不阻塞退出。
+
+手动跑一次：
+
+```bash
+./scripts/patrol.sh; echo $?
+```
+
+`scripts/install-launchd.sh` 会安装 `ai.pisa.patrol`（`StartInterval` 3600，`RunAtLoad`），日志与卸载命令见 [常驻（launchd）](#常驻launchd)。
 
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`patrol`、`proactive` 与 `retentionDays`。
 
 解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。

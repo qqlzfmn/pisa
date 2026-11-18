@@ -17,7 +17,8 @@
 
 | 命令 | 作用 | 关键选项 |
 | --- | --- | --- |
-| `pisa status` | 看板 + 守护进程心跳 | `--json` |
+| `pisa status` | 看板 + 守护进程心跳 + 健康检查；退出码是健康码 | `--json` |
+| `pisa patrol` | 跑一次健康检查，异常才输出/发消息；去重签存在 `meta` 表 | 无 |
 | `pisa list` | 任务列表 | `--repo`、`--status`、`--limit`（默认 20）、`--pr <编号>`、`--github-repo <owner/repo>`、`--json` |
 | `pisa show <任务号>` | 单个任务详情 | `--json` |
 | `pisa logs <任务号>` | 任务日志尾部 | `--tail <行数>`（默认 80） |
@@ -55,6 +56,7 @@
 ```json
 {
   "daemon": { "alive": true, "ageMs": 412, "lastBeat": 1763424000000 },
+  "health": { "exit": 0, "label": "正常", "issues": [] },
   "counts": { "queued": 1, "running": 1, "paused": 0, "succeeded": 3, "failed": 0, "cancelled": 0, "rewound": 0 },
   "total": 5,
   "running": [Task],
@@ -76,6 +78,8 @@
 | 4 | 任务不可运行（paused / cancelled / rewound） |
 | 5 | `wait` 超时 |
 
+`status`、`patrol` 例外：退出码是健康码 `0` 正常 / `1` 需重启 / `2` 部件错误 / `3` 待配置，多类问题取最严重者（3 > 2 > 1）。
+
 ## 配置要点
 
 - `repos[].alias` 是 `--repo` 的取值；不传时用第一个仓库。
@@ -83,3 +87,4 @@
 - 相对 `stateDir` 与 `repos[].path` 以配置文件目录为基准。
 - CLI 与守护进程共用 `<stateDir>/pisa.db`；不要在 CLI 运行时手动改库。
 - 日志在 `<stateDir>/logs/<任务号>.log`。
+- `patrol.chatId` 指定巡检提醒的会话，缺省沿用 `webhook.chatId` → `github.chatId` → `scheduler.chatId`。

@@ -12,6 +12,10 @@ import { continuationContext } from "./task-context";
 import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
 import { stageText } from "./stage";
+import { HEALTH_LABEL, healthReport } from "./health";
+import { patrol } from "./patrol";
+import { resolveToken } from "./token";
+import { TelegramChannel } from "./channels/telegram";
 
 /** 退出码：脚本据此分支，不要在版本间随意改语义 */
 const EXIT = {
@@ -181,6 +185,17 @@ function enqueue(io: Io, store: Store, args: ParsedArgs, task: Task): number {
   return EXIT.ok;
 }
 
+/** 巡检提醒：telegram 开启且有会话语义时发出去；否则只留在进程输出 */
+async function sendPatrolAlert(cfg: Config, text: string): Promise<void> {
+  const telegram = cfg.channels.telegram;
+  if (!telegram?.enabled) return;
+  const chatId = cfg.patrol?.chatId ?? cfg.webhook?.chatId ?? cfg.github?.chatId ?? cfg.scheduler?.chatId;
+  if (!chatId) return;
+  const token = resolveToken(telegram.tokenEnv);
+  if (!token) return;
+  await new TelegramChannel(token, telegram.proxy).send(chatId, text);
+}
+
 function emitTask(io: Io, args: ParsedArgs, task: Task, message: string): void {
   if (args.flags.get("json")) {
     json(io, { ...taskJson(task), message });
@@ -250,6 +265,7 @@ export function helpText(): string {
   pisa continue <任务号> <新要求> [--wait] [--json]
   pisa wait <任务号> [--timeout 秒] [--json]
   pisa status [--json]
+  pisa patrol
   pisa list [--repo 别名] [--status 状态] [--limit N] [--pr 编号] [--json]
   pisa show <任务号> [--json]
   pisa logs <任务号> [--tail N]
@@ -262,6 +278,7 @@ export function helpText(): string {
 退出码：
   0 成功    1 任务失败或命令被拒    2 用法/配置错误
   3 找不到任务    4 任务不可运行（暂停/取消/撤销）    5 等待超时
+  status 与 patrol 例外：0 正常  1 需重启  2 部件错误  3 待配置
 `;
 }
 
@@ -325,22 +342,41 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
 
       case "status": {
         const daemon = daemonState(store);
+        const health = healthReport(cfg, store);
         if (args.flags.get("json")) {
           const snapshot = statusSnapshot(store);
           json(io, {
             daemon,
+            health: { exit: health.exit, label: HEALTH_LABEL[health.exit], issues: health.issues },
             counts: snapshot.counts,
             total: snapshot.total,
             running: snapshot.running.map(taskJson),
             queued: snapshot.queued.map(taskJson),
             finished: snapshot.finished.map(taskJson),
           });
-          return EXIT.ok;
+          return health.exit;
         }
         io.out(formatStatusBoard(store));
         const beat = daemon.ageMs === null ? "无心跳记录" : `最后心跳 ${formatDuration(daemon.ageMs)} 前`;
         io.out(`守护进程：${daemon.alive ? "运行中" : "未运行"}（${beat}）`);
-        return EXIT.ok;
+        if (health.issues.length > 0) {
+          io.out(`健康：${HEALTH_LABEL[health.exit]}`);
+          for (const issue of health.issues) io.out(`- ${issue.message}`);
+        }
+        return health.exit;
+      }
+
+      case "patrol": {
+        const health = healthReport(cfg, store);
+        await patrol(store, health, async (text) => {
+          io.out(text);
+          try {
+            await sendPatrolAlert(cfg, text);
+          } catch (err) {
+            io.err(`巡检提醒发送失败：${err instanceof Error ? err.message : String(err)}`);
+          }
+        });
+        return health.exit;
       }
 
       case "list": {

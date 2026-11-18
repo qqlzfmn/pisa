@@ -405,6 +405,16 @@ export class Store {
     return row?.value ?? null;
   }
 
+  deleteMeta(key: string): void {
+    this.db.run("DELETE FROM meta WHERE key = ?", [key]);
+  }
+
+  /** 重试耗尽的 outbox 行数：需要人工介入的部件故障 */
+  failedEffectCount(): number {
+    const row = this.db.query("SELECT COUNT(*) AS n FROM effects WHERE status = 'failed'").get() as { n: number };
+    return row.n;
+  }
+
   /** 守护进程心跳：CLI 用它判断任务是否真的会被执行 */
   beat(at = Date.now()): void {
     this.setMeta("heartbeat", String(at));

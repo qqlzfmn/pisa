@@ -79,6 +79,9 @@
       }
     ]
   },
+  "patrol": {
+    "chatId": "<telegram chat id>"
+  },
   "scheduler": {
     "chatId": "<telegram chat id>",
     "userId": "<telegram user id>"

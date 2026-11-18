@@ -262,15 +262,20 @@ describe("查询与操作", () => {
   test("status 输出看板与守护进程状态", async () => {
     seed({ prompt: "排队中" });
     const text = await cli(...base("status"));
-    expect(text.code).toBe(0);
+    // 配置完整但守护进程没有心跳：健康码 1（需重启）
+    expect(text.code).toBe(1);
     expect(text.out).toContain("排队（1）");
     expect(text.out).toContain("working/queued（等空闲槽位）");
     expect(text.out).toContain("守护进程：未运行");
+    expect(text.out).toContain("健康：需重启");
 
     const store = new Store(join(stateDir, "pisa.db"));
     store.beat();
     store.close();
-    const body = parse<{ daemon: { alive: boolean }; total: number; queued: TaskJson[] }>(await cli(...base("status", "--json")));
+    const healthy = await cli(...base("status", "--json"));
+    expect(healthy.code).toBe(0);
+    const body = parse<{ daemon: { alive: boolean }; health: { exit: number }; total: number; queued: TaskJson[] }>(healthy);
+    expect(body.health.exit).toBe(0);
     expect(body.daemon.alive).toBe(true);
     expect(body.total).toBe(1);
     expect(body.queued[0]!.prompt).toBe("排队中");

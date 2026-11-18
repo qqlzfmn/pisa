@@ -77,6 +77,8 @@ export interface Config {
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
   /** 评论 → 任务 → 回帖；repo 形如 owner/repo */
   github?: GithubConfig;
+  /** 巡检提醒发往的会话；缺省沿用 webhook → github → scheduler 的 chatId */
+  patrol?: { chatId?: string };
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
   scheduler?: { chatId: string; userId: string };
   schedules?: ScheduleJob[];

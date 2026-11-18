@@ -40,6 +40,8 @@ pisa status --json                             # 守护进程是否在跑
 
 `status --json` 里 `daemon.alive` 为 `false` 时，`pisa task` 仍会入队，但 stderr 会警告，任务不会自己开始。此时先让人类启动守护进程（`bun run src/index.ts` 或 launchd），否则不要进入轮询。
 
+`status` 的退出码不是任务退出码，而是健康码（`0` 正常 / `1` 需重启 / `2` 部件错误 / `3` 待配置）；细节看 JSON 里的 `health`。不要因为 `pisa status` 返回 `1` 就判定任务失败。
+
 ## 标准流程
 
 1. **选仓库**：`pisa repos --json`，用返回的 `alias`。不要猜仓库路径。
@@ -79,6 +81,8 @@ pisa wait <id> --timeout 900 --json      # 阻塞到终态，退出码 0/1/4/5
 | 3 | 找不到任务 | 检查任务号；不要假设任务存在 |
 | 4 | 任务不可运行 | paused / cancelled / rewound，交给人处理 |
 | 5 | 等待超时 | 任务可能仍在跑；用 `pisa status` 继续观察，不要重复提交 |
+
+`status` 与 `patrol` 是例外：退出码为健康码 `0` 正常 / `1` 需重启 / `2` 部件错误 / `3` 待配置，与任务结果无关。
 
 ## 常用命令速查
 
