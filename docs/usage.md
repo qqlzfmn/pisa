@@ -1,6 +1,6 @@
 # 使用场景与能力边界
 
-安装与命令见 [README](../README.md)，可直接粘贴的触发语句见 `/pisa examples`。
+安装见 [README](../README.md)，命令与配置见 [operations.md](./operations.md)，可直接粘贴的触发语句见 `/pisa examples`。
 
 ## 定位
 
