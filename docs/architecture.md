@@ -4,6 +4,8 @@
 
 代码是唯一事实源；本文给位置和约束，不复述实现。规格细节见 `docs/specs/`（尤其 001 状态机、003 事件入口、005 恢复语义、013 撤销）。
 
+配套文档：[domain.md](./domain.md) 解释术语，[deployment.md](./deployment.md) 讲安装与排障，[extending.md](./extending.md) 给扩展步骤与测试，[operations.md](./operations.md) 是配置手册。
+
 ## 1. 分层与职责
 
 五层，依赖只能向下：
@@ -178,6 +180,8 @@ cancelled ─┘
 
 ## 4. 扩展点
 
+每个扩展点的完整步骤、骨架代码、测试与文档同步清单见 [extending.md](./extending.md)。
+
 ### 4.1 WorkerAdapter：换 agent
 
 接口在 `src/adapters/types.ts`：
@@ -202,6 +206,8 @@ interface WorkerAdapter {
 5. 退出码约定：0 成功，非 0 失败且最后若干行 stdout/stderr 会进 `error`。
 
 策略拦截没有做成适配器的一部分：它依赖 agent 的事件钩子（omp 的 pi 扩展）。换成不提供钩子的 agent 时，拦截会一起消失，`delivery` 与 `git.ts` 里的命令仍然是最后一道限制。
+
+落地步骤、骨架与测试见 [extending.md](./extending.md#加一个-worker-适配器)。
 
 ### 4.2 Trigger：加事件源
 
@@ -243,7 +249,7 @@ id = hex(sha256(source, threadKey, messageKey, version, payloadHash))[:32]
 
 触发记录不随保留策略清理：它是「这件事已经做过」的唯一凭据，删掉会让重放复活成新任务。
 
-新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。
+新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。逐步清单、骨架与测试见 [extending.md](./extending.md#加一个事件来源)。
 
 新协议走适配器，不直接写 `router.handle`。`TriggerAdapter`（`src/triggers/types.ts`）把入口逻辑拆成三段，各自只有一个落点：
 

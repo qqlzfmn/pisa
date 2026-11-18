@@ -252,6 +252,9 @@ Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、
 | [docs/operations.md](./docs/operations.md) | 全部配置项、IM/CLI 命令、事件入口、撤销、数据保留、常驻 |
 | [docs/usage.md](./docs/usage.md) | 使用场景、最佳实践、能力边界、卡住排查 |
 | [docs/architecture.md](./docs/architecture.md) | 分层、状态机、数据流、扩展点、失败模式与设计取舍 |
+| [docs/domain.md](./docs/domain.md) | 领域术语表：任务、触发器、线程、阶段、账本、运维名词 |
+| [docs/deployment.md](./docs/deployment.md) | 安装、升级与回滚、退出码、排障表、数据与备份 |
+| [docs/extending.md](./docs/extending.md) | 加事件来源、加 Worker 适配器的步骤、骨架、测试与文档同步清单 |
 | [docs/specs/](./docs/specs/) | 每个 feature 的 spec / plan / tasks |
 | [skills/pisa/](./skills/pisa/) | 给 agent 用的 skill：命令表、brief 模板、失败模式、可复制场景 |
 | [SDD.md](./SDD.md) · [AGENTS.md](./AGENTS.md) | 规格驱动开发流程与工程规范 |

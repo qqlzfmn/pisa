@@ -22,7 +22,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 
 ## 安装与配置
 
-安装命令在 [README 的 30 秒上手](../README.md#30-秒上手)。这里只说配置怎么定位、怎么生效。
+安装命令在 [README 的 30 秒上手](../README.md#30-秒上手)。这里只说配置怎么定位、怎么生效。完整安装、升级、退出码与排障表见 [deployment.md](./deployment.md)。
 
 配置文件按以下顺序定位：`--config <路径>` → 环境变量 `PISA_CONFIG` → 从当前目录向上找 `pisa.config.json`。相对 `stateDir` 与仓库路径以配置文件所在目录为基准，从子目录调用也指向同一份状态。
 
@@ -118,7 +118,7 @@ curl -X POST http://127.0.0.1:8799/event \
 
 ## 通用触发适配层
 
-`triggers` 把外部事件直接接进同一套任务流：GitHub Actions、飞书、企业微信走 HTTP，文件监听走 `fs.watch`。适配器只做「验签 → 归一化 → 去重键」，任务仍由 Router 建，回执投到 `triggers.chatId`。
+`triggers` 把外部事件直接接进同一套任务流：GitHub Actions、飞书、企业微信走 HTTP，文件监听走 `fs.watch`。适配器只做「验签 → 归一化 → 去重键」，任务仍由 Router 建，回执投到 `triggers.chatId`。新增一种来源的步骤与测试见 [extending.md](./extending.md#加一个事件来源)。
 
 ```jsonc
 "triggers": {
@@ -152,7 +152,7 @@ curl -X POST http://127.0.0.1:8799/event \
 
 ## Agent CLI 与 skill
 
-不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 只读写 `pisa.config.json` 与同一个 `pisa.db`，执行仍由守护进程负责。
+不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 只读写 `pisa.config.json` 与同一个 `pisa.db`，执行仍由守护进程负责。换执行器的步骤见 [extending.md](./extending.md#加一个-worker-适配器)。
 
 ```bash
 bun link                 # 把 pisa 命令链到 PATH；也可直接用 bun run src/cli.ts
@@ -357,7 +357,7 @@ pisa 可以改自己：
 
 ## 常驻（launchd）
 
-`scripts/supervise.sh` 交给 launchd 托管：开机自启，进程退出后自动拉起。
+`scripts/supervise.sh` 交给 launchd 托管：开机自启，进程退出后自动拉起。与升级、回滚、退出码相关的完整流程见 [deployment.md](./deployment.md#常驻-launchd)。
 
 安装（重复执行等于重装）：
 
