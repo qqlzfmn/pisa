@@ -20,7 +20,8 @@
 ### 2.2 主动发现
 
 - **关键词**：群聊消息命中配置词、且没有触发词时开单；同一群按 `cooldownSec` 限流
-- **探针**：定时执行 `bash -lc <command>`，退出码非 0 就开单；同一输出只在冷却后重复提醒
+- **探针**：定时执行 `bash -lc <command>`，退出码非 0 就开单；`{signature, firedAt}` 落在 `meta` 的 `probe:<jobId>`（`jobId` 取命令哈希前 12 位），同一签名在 `cooldownSec` 内不再开单，进程重启后依然生效
+- **探针幂等**：eventId 为 `proactive:probe:<jobId>:<sha1(signature)>:<floor(now/cooldownMs)>`，同一冷却窗口内重复运行由 `claimEvent` 吞掉，越过窗口才允许再开单
 
 探针是通用的：CI 用 `gh run list`，服务探活用 `curl -f`，磁盘用 `df`。
 

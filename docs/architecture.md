@@ -62,7 +62,7 @@ core 内部模块关系：
 | `github.ts` | 所有 `gh` 调用与回帖去重标记 | 测试可注入 `Runner` |
 | `github-watcher.ts` | 轮询 GitHub 评论，把命中触发词的评论转成事件 | 构造时注入 `enqueue` |
 | `scheduler.ts` | cron 到点开单 | 构造时注入 `enqueue` |
-| `proactive.ts` | 群聊关键词与定时探针 | 构造时注入 `enqueue` |
+| `proactive.ts` | 群聊关键词与定时探针 | 构造时注入 `enqueue`；探针状态经 `meta` 落库（`probe:<jobId>`） |
 | `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
 | `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机 | `createWebApp()`、`startWebServer()`、`ReplyBus` |
 | `log.ts` / `config.ts` / `types.ts` | 日志脱敏、配置加载与默认值、共享类型与状态机表 | — |

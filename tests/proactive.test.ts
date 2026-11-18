@@ -46,6 +46,80 @@ describe("主动发现", () => {
     expect(got.length).toBe(0);
   });
 
+  test("探针签名与冷却落 meta：重启不重复开单，换签名或过冷却才再开", async () => {
+    const got: IncomingMessage[] = [];
+    const meta = new Map<string, string>();
+    const store = {
+      getMeta: (k: string) => meta.get(k) ?? null,
+      setMeta: (k: string, v: string) => void meta.set(k, v),
+    };
+    let out = "ci failed";
+    let now = 1_000_000;
+    const probeCfg = cfg({
+      proactive: {
+        probe: { enabled: true, command: "gh run list", intervalSec: 3600, cooldownSec: 1800, chatId: "c1", userId: "u1" },
+      },
+    });
+    // 每次 start() 视为一次进程重启：新实例共享同一份 meta
+    const boot = () => {
+      const p = new Proactive(probeCfg, (m) => void got.push(m), { meta: store, now: () => now, runProbe: () => ({ code: 1, out }) });
+      p.start();
+      p.stop();
+    };
+
+    boot();
+    boot();
+    expect(got.length).toBe(1);
+    const key = [...meta.keys()].find((k) => k.startsWith("probe:"));
+    expect(key).toBeDefined();
+    expect(JSON.parse(meta.get(key!)!)).toEqual({ signature: "1:ci failed", firedAt: 1_000_000 });
+
+    out = "ci failed: timeout";
+    boot();
+    expect(got.length).toBe(2);
+
+    boot();
+    expect(got.length).toBe(2);
+    now += 1800 * 1000;
+    boot();
+    expect(got.length).toBe(3);
+  });
+
+  test("eventId 由签名与冷却窗口推导：窗口内重复被跳过，跨窗口换新 id", () => {
+    const meta = new Map<string, string>();
+    const store = {
+      getMeta: (k: string) => meta.get(k) ?? null,
+      setMeta: (k: string, v: string) => void meta.set(k, v),
+    };
+    const got: IncomingMessage[] = [];
+    let now = 0;
+    const p = () =>
+      new Proactive(
+        cfg({
+          proactive: { probe: { enabled: true, command: "curl -f localhost:1", intervalSec: 3600, cooldownSec: 60, chatId: "c1", userId: "u1" } },
+        }),
+        (m) => void got.push(m),
+        { meta: store, now: () => now, runProbe: () => ({ code: 7, out: "refused" }) },
+      );
+    const first = p();
+    first.start();
+    first.stop();
+    const early = got[0]!.eventId;
+    expect(early).toMatch(/^proactive:probe:[0-9a-f]{12}:[0-9a-f]{40}:0$/);
+    now = 30_000;
+    const again = p();
+    again.start();
+    again.stop();
+    expect(got.length).toBe(1);
+    now = 60_000;
+    const restart = p();
+    restart.start();
+    restart.stop();
+    expect(got.length).toBe(2);
+    expect(got[1]!.eventId).not.toBe(early);
+    expect(got[1]!.eventId.endsWith(":1")).toBe(true);
+  });
+
   test("探针失败开单，成功不开单", async () => {
     const got: IncomingMessage[] = [];
     const bad = new Proactive(

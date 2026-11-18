@@ -6,6 +6,7 @@
 
 ### 修复
 
+- 探针失败单跨重启幂等：`{signature, firedAt}` 写进 `meta` 的 `probe:<jobId>`，同一签名在 `cooldownSec` 内跳过；eventId 改为 `proactive:probe:<jobId>:<sha1(signature)>:<窗口序号>`，崩溃重启循环不再为同一故障重复开单
 - 重启恢复尊重 `cancel_requested`：执行中说 `cancel` 的任务遇进程重启直接落 `cancelled`，不会再变成 `paused` 被后续 `resume` 复活；启动日志与恢复表同步三类计数
 
 ### 变更
