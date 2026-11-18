@@ -44,6 +44,7 @@ import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
 import { formatStatusBoard } from "./status";
+import { slotLimits, Slots } from "./slots";
 
 export { formatDuration } from "./status";
 
@@ -72,6 +73,8 @@ interface PendingTask {
 
 export class Router {
   private active = new Map<string, Promise<void>>();
+  /** 槽位占用：base 槽位给所有任务，备用槽位只给人在等的追问 */
+  private readonly slots: Slots;
   /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
   private stopping = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -89,6 +92,7 @@ export class Router {
 
   constructor(private deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
+    this.slots = new Slots(slotLimits(deps.cfg));
     this.progressOn = deps.cfg.notifications?.progress ?? false;
     this.effects = deps.effects ?? new EffectQueue(deps.store, { now: this.now });
     this.registerEffects(deps.deliverer);
@@ -140,7 +144,7 @@ export class Router {
         this.lastReconcile = this.now();
         this.reconcileOrphans();
       }
-      void this.fill();
+      void this.schedule();
     }, intervalMs);
   }
 
@@ -210,24 +214,28 @@ export class Router {
     return n;
   }
 
-  /** 立即执行一个已进入 running 的任务；不等待完成 */
+  /** 立即执行一个已进入 running 的任务；不等待完成。调用方必须先确认槽位可 Claim */
   private launch(task: Task): void {
+    this.slots.claim(task.id, task.lane);
     const p = this.runTask(task)
       .catch(() => {})
-      .finally(() => this.active.delete(task.id));
+      .finally(() => {
+        this.slots.release(task.id);
+        this.active.delete(task.id);
+      });
     this.active.set(task.id, p);
   }
 
-  /** 按并发上限补位；不等待任务完成 */
-  private async fill(): Promise<void> {
+  /** 按车道补位：基础槽位满时新任务继续排队，人的追问可占备用槽位 */
+  async schedule(): Promise<void> {
     if (this.stopping) return;
-    const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
-    while (this.active.size < limit) {
-      const task = this.deps.store.nextQueued();
+    const { store } = this.deps;
+    for (;;) {
+      const task = store.queuedTasks().find((t) => this.slots.canClaim(t.lane));
       if (!task) break;
       // 评审任务不建分支：branch 保持 null，执行路径也不会碰 git
       const branch = task.branch ?? (task.mode === "review" ? null : `pisa/${task.id}`);
-      if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
+      if (!store.claimQueued(task.id, this.now(), branch)) break;
       this.launch({ ...task, branch, status: "running" });
     }
   }
@@ -417,7 +425,7 @@ export class Router {
     }
 
     if (cmd.kind === "status") {
-      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now()));
+      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, { limits: slotLimits(this.deps.cfg), now: this.now() }));
       return;
     }
 
@@ -464,7 +472,7 @@ export class Router {
       // 续跑必须落在父任务所在仓库：分支是仓库本地的
       msg = { ...msg, repo: parent.repo };
       if (msg.replyPr) {
-        // 评论续跑必须更新原 PR：复用父任务分支，不留空让 fill() 新开 pisa/<新任务号>
+        // 评论续跑必须更新原 PR：复用父任务分支，不留空让 schedule() 新开 pisa/<新任务号>
         branch = parent.branch;
         prUrl = parent.prUrl;
       }
@@ -525,6 +533,8 @@ export class Router {
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
       mode: msg.mode,
+      // 人的追问走 human 车道：基础槽位满时可占备用槽位，普通新任务不插队
+      lane: cmd.kind === "continue" || msg.continueFrom ? "human" : "base",
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -1012,9 +1022,12 @@ export class Router {
       await this.reply(msg.chatId, `任务 ${id} 的工作副本已不存在，无法恢复。`);
       return;
     }
-    const limit = Math.max(1, cfg.worker.concurrency ?? 1);
-    if (this.active.size >= limit) {
-      await this.reply(msg.chatId, `当前并发已满（${limit}），稍后再恢复 ${id}。`);
+    if (!this.slots.canClaim(task.lane)) {
+      const usage = this.slots.usage();
+      const spare = task.lane === "human";
+      const used = spare ? usage.used : usage.base.used;
+      const capacity = spare ? usage.capacity : usage.base.limit;
+      await this.reply(msg.chatId, `当前槽位已满（${used}/${capacity}），稍后再恢复 ${id}。`);
       return;
     }
 
@@ -1032,7 +1045,7 @@ export class Router {
     if (this.stopping) return false;
     let started = false;
     while (true) {
-      await this.fill();
+      await this.schedule();
       if (this.active.size === 0) break;
       started = true;
       await Promise.all([...this.active.values()]);
@@ -1221,7 +1234,7 @@ export class Router {
       return;
     }
 
-    // 占位已在 fill() 完成；这里只做执行
+    // 占位已在 schedule() 完成；这里只做执行
     // 必须是绝对路径：omp 的 --cwd 按相对路径解析会二次拼接
     const workdir = resolve(cfg.stateDir, "worktrees", task.id);
     const log = new TaskLogger(cfg.stateDir, task.id);

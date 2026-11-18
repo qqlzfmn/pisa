@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_issue      INTEGER,
   reply_repo       TEXT,
   mode             TEXT NOT NULL DEFAULT 'work',
+  lane             TEXT NOT NULL DEFAULT 'base',
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -163,6 +164,7 @@ interface Row {
   reply_issue: number | null;
   reply_repo: string | null;
   mode: string | null;
+  lane: string;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -228,6 +230,7 @@ function toTask(r: Row): Task {
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
     mode: r.mode === "review" ? "review" : "work",
+    lane: r.lane === "human" ? "human" : "base",
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -272,6 +275,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "mode")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'work'");
+    }
+    if (!cols.some((c) => c.name === "lane")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN lane TEXT NOT NULL DEFAULT 'base'");
     }
     this.backfillTriggers();
   }
@@ -560,8 +566,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mode)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mode, lane)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -580,6 +586,7 @@ export class Store {
         t.replyIssue,
         t.replyRepo,
         t.mode ?? "work",
+        t.lane,
       ],
     );
   }

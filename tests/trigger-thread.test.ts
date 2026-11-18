@@ -128,6 +128,7 @@ describe("Trigger 身份与线程归属", () => {
       createdAt: 0,
       startedAt: null,
       endedAt: null,
+      lane: "base",
       cancelRequested: false,
       ...rest,
     };
@@ -319,6 +320,7 @@ function seedTaskFixture(): Task {
     createdAt: 0,
     startedAt: null,
     endedAt: null,
+    lane: "base",
     cancelRequested: false,
   };
 }

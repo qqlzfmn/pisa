@@ -125,6 +125,9 @@ export const DEFAULT_RETENTION_DAYS = 30;
 /** `/pisa merge` 验证副本跑测试的默认超时 */
 export const DEFAULT_VERIFY_TIMEOUT_SEC = 600;
 
+/** `worker.humanSlots` 的默认值：留一个备用槽位给人 */
+export const DEFAULT_HUMAN_SLOTS = 1;
+
 export interface Config {
   trigger: string;
   /** 私聊里不带触发词也当成任务 */
@@ -137,6 +140,8 @@ export interface Config {
     timeoutSec: number;
     extraArgs: string[];
     concurrency: number;
+    /** 人的追问（续跑）可用的额外槽位；0 关闭，默认 1 */
+    humanSlots?: number;
     /** Worker 子进程从 process.env 继承的变量白名单；缺省见 DEFAULT_ENV_ALLOW */
     envAllow?: string[];
     /** 多久没有任何输出/进度就算卡死并杀掉，默认 900 秒 */
@@ -211,6 +216,7 @@ export const DEFAULT_CONFIG: Config = {
     timeoutSec: 3600,
     extraArgs: [],
     concurrency: 2,
+    humanSlots: DEFAULT_HUMAN_SLOTS,
     envAllow: [...DEFAULT_ENV_ALLOW],
     idleTimeoutSec: 900,
     verifyTimeoutSec: DEFAULT_VERIFY_TIMEOUT_SEC,

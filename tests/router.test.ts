@@ -23,6 +23,15 @@ class FakeChannel implements ChannelAdapter {
   async stop(): Promise<void> {}
 }
 
+/** 让出事件循环直到条件成立；不阻塞墙钟，条件不成立就继续下一轮 */
+async function until(cond: () => boolean, turns = 500_000): Promise<void> {
+  for (let i = 0; i < turns; i++) {
+    if (cond()) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("等待状态超时");
+}
+
 function makeRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "pisa-repo-"));
   sh(["git", "init", "-q", "-b", "main"], dir);
@@ -172,6 +181,7 @@ describe("Router", () => {
       createdAt: 0,
       startedAt: null,
       endedAt: null,
+      lane: "base",
       cancelRequested: false,
       ...rest,
     };
@@ -673,14 +683,117 @@ describe("Router", () => {
     await router.handle(msg("/pisa status"));
 
     const text = channel.sent.at(-1)!.text;
+    expect(text).toContain("槽位：1/1 占用 · 备用 0/1");
     expect(text).toContain("t_running · working（执行中） · demo · 已运行 3m12s");
     expect(text).toContain(longPrompt.slice(0, 40));
     expect(text).not.toContain(longPrompt);
     expect(text).toContain("排队（1）");
-    expect(text).toContain("t_queued · working/queued（等空闲槽位） · demo · 排队中的事");
+    expect(text).toContain("t_queued · working/queued（等空闲槽位） · demo · 等槽位（基础 1/1 已满） · 排队中的事");
     expect(text).toContain("成功 · person/review（等你评审） · 4m0s · demo · 加一条校验 · https://github.com/o/r/pull/12");
     expect(text).toContain("汇总：3 个任务 · 成功 1 · 失败 0 · 暂停 0");
     expect(text).toContain("最近 24h：完成 1 · 成功 1 · 失败 0 · 成功率 100% · P50 4m0s · P95 4m0s");
+  });
+
+  describe("槽位与人的优先通道", () => {
+    /** 门控 Worker：每次执行挂起，直到测试显式放行；放行开关打开后新任务直接完成 */
+    function gatedWorker() {
+      const gates: Array<() => void> = [];
+      let open = false;
+      const worker: WorkerRunner = {
+        run(_task, workdir): Promise<WorkerResult> {
+          return new Promise((resolve) => {
+            let done = false;
+            const finish = () => {
+              if (done) return;
+              done = true;
+              writeFileSync(join(workdir, "out.txt"), "hi\n");
+              resolve({ ok: true, summary: "改了 out.txt", exitCode: 0 });
+            };
+            gates.push(finish);
+            if (open) finish();
+          });
+        },
+      };
+      return {
+        worker,
+        gates,
+        /** 放行所有已挂起与之后启动的任务 */
+        openAll: () => {
+          open = true;
+          for (const finish of gates) finish();
+        },
+      };
+    }
+
+    /** 先跑完一个普通任务，拿到可续跑的父任务 */
+    async function seedParent(): Promise<string> {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 先起一个分支"));
+      await router.drainOnce();
+      return store.recentTasks()[0]!.id;
+    }
+
+    test("满载时人的续跑进入，新任务继续排队", async () => {
+      const parentId = await seedParent();
+
+      const gated = gatedWorker();
+      const router = build(gated.worker);
+      await router.handle(msg("/pisa 长任务"));
+      await router.schedule();
+      const longTask = store.recentTasks().find((t) => t.prompt === "长任务")!;
+      expect(longTask.status).toBe("running");
+
+      await router.handle(msg(`/pisa continue ${parentId} 再改一处`));
+      await router.schedule();
+      const followup = store.recentTasks().find((t) => t.prompt === "再改一处")!;
+      expect(followup.lane).toBe("human");
+      expect(followup.status).toBe("running");
+
+      await router.handle(msg("/pisa 新的任务"));
+      await router.schedule();
+      const fresh = store.recentTasks().find((t) => t.prompt === "新的任务")!;
+      expect(fresh.lane).toBe("base");
+      expect(fresh.status).toBe("queued");
+
+      await router.handle(msg("/pisa status"));
+      const board = channel.sent.at(-1)!.text;
+      expect(board).toContain("槽位：1/1 占用 · 备用 1/1");
+      expect(board).toContain(`${fresh.id} · working/queued（等空闲槽位） · demo · 等槽位（基础 1/1 已满）`);
+
+      // 长任务结束后基础槽位空出，新任务补位，人的续跑继续占备用槽位
+      gated.gates[0]!();
+      await until(() => store.get(longTask.id)!.status === "succeeded");
+      await router.schedule();
+      expect(store.get(fresh.id)!.status).toBe("running");
+      expect(store.get(followup.id)!.status).toBe("running");
+
+      gated.openAll();
+      await until(() => store.runningTasks().length === 0);
+    });
+
+    test("humanSlots=0 时人的续跑也只走基础槽位", async () => {
+      cfg.worker = { ...cfg.worker, humanSlots: 0 };
+      const parentId = await seedParent();
+
+      const gated = gatedWorker();
+      const router = build(gated.worker);
+      await router.handle(msg("/pisa 长任务"));
+      await router.schedule();
+      const longTask = store.recentTasks().find((t) => t.prompt === "长任务")!;
+
+      await router.handle(msg(`/pisa continue ${parentId} 再改一处`));
+      await router.schedule();
+      const followup = store.recentTasks().find((t) => t.prompt === "再改一处")!;
+      expect(followup.status).toBe("queued");
+
+      gated.gates[0]!();
+      await until(() => store.get(longTask.id)!.status === "succeeded");
+      await router.schedule();
+      expect(store.get(followup.id)!.status).toBe("running");
+
+      gated.openAll();
+      await until(() => store.runningTasks().length === 0);
+    });
   });
 
   test("recentTasks 限制数量并按创建时间倒序", () => {
@@ -997,6 +1110,7 @@ describe("状态机", () => {
     createdAt: 0,
     startedAt: null,
     endedAt: null,
+    lane: "base",
     cancelRequested: false,
   };
   const task = (over: Partial<Task> & { id: string }): Task => ({ ...baseTask, ...over });
@@ -1055,6 +1169,7 @@ describe("执行器丢失与合并门禁", () => {
     createdAt: 0,
     startedAt: null,
     endedAt: null,
+    lane: "base",
     cancelRequested: false,
   });
 

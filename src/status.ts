@@ -1,6 +1,7 @@
 import type { Task, TaskStatus } from "./types";
 import type { Store } from "./store";
 import { STAGE_LABEL, stageText, taskStage, type TaskStage } from "./stage";
+import { canLaneClaim, queueReason, usageFromTasks, type SlotLimits, type SlotUsage } from "./slots";
 import { windowMetrics, type WindowMetrics } from "./metrics";
 
 /** 毫秒 → 人类可读时长：不足 1 分钟给秒，不足 1 小时给 XmYs，其余 XhYm */
@@ -71,25 +72,40 @@ export interface StatusSnapshot {
   finished: Task[];
   counts: Record<TaskStatus, number>;
   total: number;
+  /** 槽位占用；调用方没给上限时为 null（只读场景可省略） */
+  slots: SlotUsage | null;
 }
 
 /** 看板数据：Router 与 CLI 共用，唯一事实源 */
-export function statusSnapshot(store: Store): StatusSnapshot {
+export function statusSnapshot(store: Store, limits?: SlotLimits): StatusSnapshot {
   const counts = store.countByStatus();
+  const running = store.runningTasks();
   return {
-    running: store.runningTasks(),
+    running,
     queued: store.queuedTasks(),
     finished: store.recentFinished(5),
     counts,
     total: Object.values(counts).reduce((sum, n) => sum + n, 0),
+    slots: limits ? usageFromTasks(running, limits) : null,
   };
 }
 
-/** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
-export function formatStatusBoard(store: Store, now = Date.now()): string {
-  const { running, queued, finished, counts, total } = statusSnapshot(store);
+export interface StatusBoardOptions {
+  /** 槽位上限；给了才输出槽位行与排队原因 */
+  limits?: SlotLimits;
+  now?: number;
+}
 
-  const lines = ["运行中"];
+/** 任务看板：槽位 / 运行中 / 排队 / 最近完成，末尾汇总 */
+export function formatStatusBoard(store: Store, opts: StatusBoardOptions = {}): string {
+  const now = opts.now ?? Date.now();
+  const { running, queued, finished, counts, total, slots } = statusSnapshot(store, opts.limits);
+
+  const lines: string[] = [];
+  if (slots) {
+    lines.push(`槽位：${slots.base.used}/${slots.base.limit} 占用 · 备用 ${slots.human.used}/${slots.human.limit}`, "");
+  }
+  lines.push("运行中");
   if (running.length === 0) lines.push("(无)");
   for (const t of running) {
     const elapsed = formatDuration(now - (t.startedAt ?? t.createdAt));
@@ -98,7 +114,10 @@ export function formatStatusBoard(store: Store, now = Date.now()): string {
 
   lines.push("", `排队（${queued.length}）`);
   if (queued.length === 0) lines.push("(无)");
-  for (const t of queued.slice(0, 5)) lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · ${preview(t.prompt, 40)}`);
+  for (const t of queued.slice(0, 5)) {
+    const reason = slots && !canLaneClaim(t.lane, slots) ? ` · ${queueReason(t.lane, slots)}` : "";
+    lines.push(`${t.id} · ${stageText(t)} · ${t.repo}${reason} · ${preview(t.prompt, 40)}`);
+  }
 
   lines.push("", "最近完成");
   if (finished.length === 0) lines.push("(无)");

@@ -57,6 +57,12 @@ export interface IncomingMessage {
 /** work：改代码并交付；review：只读评审，不建分支、不交付 */
 export type TaskMode = "work" | "review";
 
+/**
+ * 调度车道：base = 所有任务共用的基础槽位；
+ * human = 人在等的追问（续跑），基础槽位满时可占用备用槽位。
+ */
+export type Lane = "base" | "human";
+
 export interface Task {
   id: string;
   source: string;
@@ -81,6 +87,8 @@ export interface Task {
   replyRepo: string | null;
   /** 任务类型：review 只读评审，不建分支、不交付；缺省按 work 处理 */
   mode?: TaskMode;
+  /** 调度车道：人在等的续跑走 human，其余走 base */
+  lane: Lane;
   summary: string | null;
   error: string | null;
   createdAt: number;

@@ -28,6 +28,7 @@ const task: Task = {
   createdAt: 0,
   startedAt: null,
   endedAt: null,
+  lane: "base",
   cancelRequested: false,
 };
 

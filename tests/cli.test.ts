@@ -100,6 +100,7 @@ function seed(over: Partial<Task> = {}): Task {
     createdAt: Date.now(),
     startedAt: null,
     endedAt: null,
+    lane: "base",
     cancelRequested: false,
     ...over,
   };

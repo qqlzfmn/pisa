@@ -79,6 +79,7 @@ function emptyTask(msg: IncomingMessage): Task {
     createdAt: at,
     startedAt: null,
     endedAt: null,
+    lane: "base",
     cancelRequested: false,
   };
 }

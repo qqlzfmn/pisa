@@ -28,7 +28,7 @@
 
 - 每个新任务使用独立工作副本 `<stateDir>/worktrees/<任务号>`，分支 `pisa/<任务号>`，从仓库当前 HEAD 或配置的 base 创建。
 - `continue` 的新任务复用父任务分支（`baseRef=父 branch`），并复用父任务 `prUrl`。
-- 新任务之间不共享工作副本；同一仓库可并行，但受 `worker.concurrency` 限制。
+- 新任务之间不共享工作副本；同一仓库可并行，但受 `worker.concurrency` 限制。对运行中任务的追问走 `worker.humanSlots` 备用槽位，基础槽位满载时也能立刻开始；`pisa status` 首行显示槽位占用与排队原因。
 - 任务失败或取消时，pisa 删除本任务的工作副本；只有 `pisa/<任务号>` 这种自建分支会被删，续跑共享的父任务分支保留。
 - 交付阶段根据 `delivery.push` / `delivery.pr` 决定是否推送、开 PR。未配置时只在本地提交。
 

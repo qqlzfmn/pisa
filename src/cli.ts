@@ -11,6 +11,7 @@ import { makeTrigger } from "./trigger";
 import { continuationContext } from "./task-context";
 import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
+import { slotLimits } from "./slots";
 import { windowMetrics } from "./metrics";
 import { stageText } from "./stage";
 
@@ -127,7 +128,9 @@ function cliRequester(args: ParsedArgs): string {
   return flagString(args, "requester") ?? process.env.PISA_CLI_USER ?? process.env.USER ?? "local";
 }
 
-function newCliTask(init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "baseRef" | "context" | "prUrl">): Task {
+function newCliTask(
+  init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "baseRef" | "context" | "prUrl" | "lane">,
+): Task {
   return {
     ...init,
     source: "cli",
@@ -293,6 +296,7 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
           baseRef: null,
           context: null,
           prUrl: null,
+          lane: "base",
         });
         const code = enqueue(io, store, args, task);
         return code === EXIT.ok && args.flags.get("wait") ? await waitTask(io, store, args, task.id) : code;
@@ -313,6 +317,7 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
           baseRef: parent.branch,
           context: continuationContext(parent),
           prUrl: parent.prUrl,
+          lane: "human",
         });
         const code = enqueue(io, store, args, task);
         return code === EXIT.ok && args.flags.get("wait") ? await waitTask(io, store, args, task.id) : code;
@@ -326,12 +331,14 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
 
       case "status": {
         const daemon = daemonState(store);
+        const limits = slotLimits(cfg);
         if (args.flags.get("json")) {
-          const snapshot = statusSnapshot(store);
+          const snapshot = statusSnapshot(store, limits);
           json(io, {
             daemon,
             counts: snapshot.counts,
             total: snapshot.total,
+            slots: snapshot.slots,
             running: snapshot.running.map(taskJson),
             queued: snapshot.queued.map(taskJson),
             finished: snapshot.finished.map(taskJson),
@@ -339,7 +346,7 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
           });
           return EXIT.ok;
         }
-        io.out(formatStatusBoard(store));
+        io.out(formatStatusBoard(store, { limits }));
         const beat = daemon.ageMs === null ? "无心跳记录" : `最后心跳 ${formatDuration(daemon.ageMs)} 前`;
         io.out(`守护进程：${daemon.alive ? "运行中" : "未运行"}（${beat}）`);
         return EXIT.ok;
