@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "pisa": "./src/cli.ts"
+  },
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun run src/index.ts --channel cli",

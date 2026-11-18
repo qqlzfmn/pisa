@@ -20,6 +20,7 @@
 - [架构](#架构)
 - [与 pi 的关系](#与-pi-的关系)
 - [目录结构](#目录结构)
+- [Agent CLI 与 skill](#agent-cli-与-skill)
 - [常驻（launchd）](#常驻launchd)
 - [开发方式](#开发方式)
 - [路线图](#路线图)
@@ -101,8 +102,9 @@ pisa/
 │   ├── constitution.md    # 项目宪法：不可协商的架构与质量约束
 │   ├── architecture.md    # 分层、状态机、数据流、扩展点、失败模式
 │   └── specs/             # 每个 feature 一个目录：spec / plan / tasks
-├── src/                   # Router、任务调度、事件总线
+├── src/                   # Router、任务调度、事件总线、CLI
 ├── extensions/            # pi 扩展：进度上报 + 策略拦截
+├── skills/pisa/           # agent skill：命令、brief 模板、失败模式、能力边界
 ├── scripts/supervise.sh   # 崩溃自动重启
 └── tests/
 ```
@@ -181,6 +183,28 @@ curl -X POST http://127.0.0.1:8799/event \
 ```
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
+
+## Agent CLI 与 skill
+
+不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 只读写 `pisa.config.json` 与同一个 `pisa.db`，执行仍由守护进程负责。
+
+```bash
+bun link                 # 把 pisa 命令链到 PATH；也可直接用 bun run src/cli.ts
+pisa task "修 CI：test 失败日志见 ci.log" --repo demo --json
+pisa wait <任务号> --timeout 900 --json
+pisa status --json
+pisa show <任务号>
+pisa logs <任务号> --tail 100
+pisa cancel <任务号>
+pisa continue <任务号> "按 PR 评论再改"
+```
+
+- `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省从当前目录向上找 `pisa.config.json`
+- 相对 `stateDir` 与仓库路径以配置文件目录为基准，从子目录调用也指向同一份状态
+- 退出码：`0` 成功、`1` 任务失败、`2` 用法/配置、`3` 找不到、`4` 不可运行、`5` 等待超时
+- 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
+
+给 agent 的可复用说明在 `skills/pisa/`：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
 
 ## 多仓库
 
