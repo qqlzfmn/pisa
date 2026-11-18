@@ -15,7 +15,15 @@ export const WEB_COOKIE = "pisa_web";
 const LOG_TAIL_LINES = 200;
 /** 请求体上限：派活正文与确认标志都很小 */
 const MAX_BODY_BYTES = 64 * 1024;
-const TASK_ROUTE = /^\/api\/tasks\/([\w-]+)(?:\/(cancel|merge))?$/;
+const TASK_ROUTE = /^\/api\/tasks\/([\w-]+)(?:\/(cancel|merge|retry|stop|rewind))?$/;
+
+/** 外部脚本用的别名统一改写到 /api，处理逻辑只保留一份 */
+function aliasPath(pathname: string): string {
+  if (pathname === "/state") return "/api/state";
+  if (pathname === "/executor/pause" || pathname === "/executor/resume") return `/api${pathname}`;
+  if (pathname.startsWith("/tickets/")) return `/api/tasks/${pathname.slice("/tickets/".length)}`;
+  return pathname;
+}
 
 /**
  * Router 的回执总线：本机 Web 的 chatId 由它收集，其它 chatId 原样转发给真实通道。
@@ -61,9 +69,13 @@ export interface WebDeps {
   now?: () => number;
 }
 
-/** Web 只依赖 Router 的一个能力；Router 结构化满足它 */
+/** Web 只依赖 Router 的少量能力；Router 结构化满足它 */
 export interface WebRouter {
   handle(msg: IncomingMessage): Promise<void>;
+  retry(id: string): { ok: boolean; taskId: string | null; message: string };
+  pauseExecutor(): void;
+  resumeExecutor(): void;
+  executorPaused(): boolean;
 }
 
 class HttpError extends Error {
@@ -142,7 +154,7 @@ async function readJson(req: Request): Promise<Record<string, unknown>> {
 function webMessage(
   cfg: Config,
   web: WebConfig,
-  kind: "task" | "cancel" | "merge",
+  kind: "task" | "cancel" | "merge" | "rewind",
   body: string,
   repo?: string,
 ): IncomingMessage & { threadKey: string } {
@@ -218,8 +230,25 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
     return { taskId: task?.id ?? "", ...result, ok: result.ok && Boolean(task) };
   }
 
+  /** 看板 payload：/api/tasks 与 /api/state 返回同一份，避免两处字段漂移 */
+  function statePayload(repo: string | undefined): Record<string, unknown> {
+    const at = now();
+    return {
+      ok: true,
+      daemon: daemonState(store, at),
+      executor: { paused: router.executorPaused() },
+      counts: store.countByStatus(),
+      repos: cfg.repos.map((r) => r.alias),
+      repo: repo ?? null,
+      running: store.listTasks({ repo, status: "running", limit: 50 }).map((t) => boardTask(t, at)),
+      queued: store.listTasks({ repo, status: "queued", limit: 50 }).map((t) => boardTask(t, at)),
+      finished: store.recentFinished(20, repo).map((t) => boardTask(t, at)),
+    };
+  }
+
   async function route(req: Request): Promise<Response> {
     const url = new URL(req.url);
+    const path = aliasPath(url.pathname);
     const credential = requestToken(req, url);
     if (!credential || !safeEqual(credential.token, token)) {
       return json({ ok: false, error: "未授权" }, 401, { "www-authenticate": "Bearer" });
@@ -237,26 +266,23 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
       return new Response(null, { status: 302, headers: { location: `/ui${credential.fromQuery ? `?token=${encodeURIComponent(credential.token)}` : ""}` } });
     }
 
-    if (url.pathname === "/api/tasks") {
+    if (path === "/api/executor/pause" || path === "/api/executor/resume") {
+      if (req.method !== "POST") return json({ ok: false, error: "方法不支持" }, 405, { allow: "POST" });
+      if (path.endsWith("/pause")) router.pauseExecutor();
+      else router.resumeExecutor();
+      const paused = router.executorPaused();
+      return json(
+        { ok: true, executor: { paused }, message: paused ? "执行器已暂停" : "执行器已恢复" },
+        200,
+        setCookie,
+      );
+    }
+
+    if (path === "/api/state" || path === "/api/tasks") {
       if (req.method === "GET") {
-        const repo = url.searchParams.get("repo") || undefined;
-        const at = now();
-        const daemon = daemonState(store, at);
-        return json(
-          {
-            ok: true,
-            daemon,
-            counts: store.countByStatus(),
-            repos: cfg.repos.map((r) => r.alias),
-            repo: repo ?? null,
-            running: store.listTasks({ repo, status: "running", limit: 50 }).map((t) => boardTask(t, at)),
-            queued: store.listTasks({ repo, status: "queued", limit: 50 }).map((t) => boardTask(t, at)),
-            finished: store.recentFinished(20, repo).map((t) => boardTask(t, at)),
-          },
-          200,
-          setCookie,
-        );
+        return json(statePayload(url.searchParams.get("repo") || undefined), 200, setCookie);
       }
+      if (path === "/api/state") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
       if (req.method === "POST") {
         const body = await readJson(req);
         const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
@@ -268,7 +294,7 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
       return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET, POST" });
     }
 
-    const match = TASK_ROUTE.exec(url.pathname);
+    const match = TASK_ROUTE.exec(path);
     if (match) {
       const [, id, action] = match;
       if (action && req.method !== "POST") return json({ ok: false, error: "方法不支持" }, 405, { allow: "POST" });
@@ -290,14 +316,31 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
         );
       }
 
+      if (action === "retry") {
+        const result = router.retry(id as string);
+        const task = result.taskId ? store.get(result.taskId) : null;
+        return json({ ...result, status: task?.status ?? null }, result.ok ? 200 : 409, setCookie);
+      }
+
       if (action === "merge") {
         const body = await readJson(req);
         if (body.confirm !== true) throw new HttpError(400, "合并需要二次确认（confirm: true）");
       }
-      const result = await run(webMessage(cfg, web, action as "cancel" | "merge", id as string));
+      if (action === "rewind") {
+        const task = store.get(id as string);
+        if (!task) return json({ ok: false, error: "找不到任务" }, 404, setCookie);
+        const body = await readJson(req);
+        const target = body.confirm === true ? `${id} --yes` : (id as string);
+        const result = await run(webMessage(cfg, web, "rewind", target));
+        return json({ ok: result.ok, status: task.status, message: result.message }, result.ok ? 200 : 409, setCookie);
+      }
+
+      // stop 是 cancel 的别名：同一个处理，回执与幂等判定也一致
+      const kind = action === "stop" ? "cancel" : (action as "cancel" | "merge");
+      const result = await run(webMessage(cfg, web, kind, id as string));
       const task = store.get(id as string);
       const done =
-        action === "cancel"
+        kind === "cancel"
           ? Boolean(task && (task.status === "cancelled" || store.isCancelRequested(task.id)))
           : store.effectsOf(id as string).some((e) => e.kind === "merge");
       return json({ ok: result.ok && done, status: task?.status ?? null, message: result.message }, result.ok && done ? 200 : 409, setCookie);

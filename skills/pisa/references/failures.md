@@ -2,6 +2,8 @@
 
 先看退出码，再看任务状态与 `error`，最后看日志。不要在所有失败上重试同一个命令。
 
+`merge` / `rewind` 使用另一套退出码（0/1/2/3），见 [commands.md](commands.md#退出码)。
+
 ## 1. 提交时 stderr 出现"没有检测到运行中的 pisa 守护进程"
 
 - 含义：10 秒内没有心跳，任务已入队但不会被执行。
@@ -19,6 +21,7 @@ pisa repos --json                  # 仓库是否 allowed
 ```
 
 - 守护进程在跑但 `running` 已满：排队是正常的，等。
+- `status --json` 的 `executor.paused` 为 `true`：执行器被人为暂停，不会领新任务；让人类 `curl -X POST -H "x-pisa-token: $PISA_WEB_TOKEN" http://127.0.0.1:8787/api/executor/resume`。
 - `allowed=false`：`whitelist.repos` 没包含该别名，改配置后重新提交。
 - 仓库路径不是 git 仓库：`pisa task` 会直接以 2 退出，不会入队。
 

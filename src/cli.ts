@@ -12,6 +12,7 @@ import { continuationContext } from "./task-context";
 import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
 import { stageText } from "./stage";
+import { mgmtRequest, mgmtTarget, type MgmtResponse } from "./mgmt";
 
 /** 退出码：脚本据此分支，不要在版本间随意改语义 */
 const EXIT = {
@@ -21,6 +22,14 @@ const EXIT = {
   notFound: 3,
   notRunnable: 4,
   timeout: 5,
+} as const;
+
+/** 管理命令（merge/rewind）的退出码：与既有任务命令分开，见 018 规格 */
+const MGMT_EXIT = {
+  ok: 0,
+  restart: 1,
+  component: 2,
+  notConfigured: 3,
 } as const;
 
 const STATUSES: readonly TaskStatus[] = ["queued", "running", "paused", "succeeded", "failed", "cancelled", "rewound"];
@@ -43,7 +52,7 @@ interface ParsedArgs {
   flags: Map<string, string | true>;
 }
 
-const BOOL_FLAGS = new Set(["json", "wait", "help"]);
+const BOOL_FLAGS = new Set(["json", "wait", "help", "yes"]);
 const VALUE_FLAGS = new Set([
   "config",
   "repo",
@@ -224,6 +233,42 @@ async function waitTask(io: Io, store: Store, args: ParsedArgs, id: string): Pro
   }
 }
 
+/**
+ * 管理命令统一出口：凭证只走请求头；未配置、不可达、401 都是「待配置」，
+ * 接口明确拒绝是「部件错误」，成功按调用方给的码返回。
+ */
+async function mgmtCall(
+  io: Io,
+  args: ParsedArgs,
+  cfg: Config,
+  path: string,
+  payload: Record<string, unknown>,
+  okCode: number,
+): Promise<number> {
+  const env = cfg.web?.tokenEnv ?? "PISA_WEB_TOKEN";
+  const target = mgmtTarget(cfg);
+  if (!target) throw new MgmtConfigError(`待配置：管理接口未配置：打开 web.enabled，并用环境变量 ${env} 设置 token`);
+  let res: MgmtResponse;
+  try {
+    res = await mgmtRequest(target, "POST", path, payload);
+  } catch (err) {
+    throw new MgmtConfigError(`待配置：管理接口不可达（127.0.0.1:${cfg.web?.port}）：${(err as Error).message}`);
+  }
+  if (res.status === 401 || res.status === 403) {
+    throw new MgmtConfigError(`待配置：管理接口拒绝凭证：检查 ${env} 与配置里的 web.port`);
+  }
+  const message =
+    typeof res.body.message === "string" ? res.body.message : typeof res.body.error === "string" ? res.body.error : "";
+  if (res.status < 200 || res.status >= 300 || res.body.ok === false) {
+    if (args.flags.get("json")) json(io, res.body);
+    else io.err(message || `管理接口返回 ${res.status}`);
+    return MGMT_EXIT.component;
+  }
+  if (args.flags.get("json")) json(io, res.body);
+  else io.out(message || "完成");
+  return okCode;
+}
+
 function taskHuman(io: Io, task: Task, logPath: string): void {
   const rows: Array<[string, string]> = [
     ["任务", task.id],
@@ -247,21 +292,30 @@ export function helpText(): string {
 
 用法：
   pisa task <需求> [--repo 别名] [--wait] [--json]
+  pisa run <需求> [--repo 别名] [--wait] [--json]   （run 与 task 同义）
   pisa continue <任务号> <新要求> [--wait] [--json]
   pisa wait <任务号> [--timeout 秒] [--json]
   pisa status [--json]
   pisa list [--repo 别名] [--status 状态] [--limit N] [--pr 编号] [--json]
   pisa show <任务号> [--json]
-  pisa logs <任务号> [--tail N]
+  pisa logs <任务号> [--tail N] [--json]
   pisa cancel <任务号>
+  pisa merge <任务号> [--json]
+  pisa rewind <任务号> [--yes] [--json]
   pisa repos [--json]
 
 全局选项：
   --config <path>   配置文件；默认 PISA_CONFIG，否则从当前目录向上找 pisa.config.json
 
-退出码：
+任务命令退出码：
   0 成功    1 任务失败或命令被拒    2 用法/配置错误
   3 找不到任务    4 任务不可运行（暂停/取消/撤销）    5 等待超时
+
+管理命令（merge/rewind，经本机管理接口）退出码：
+  0 完成    1 完成但需重启守护进程    2 部件错误（接口拒绝/校验失败）
+  3 待配置（web.enabled 关闭、缺少 token 或接口不可达）
+
+管理接口只监听 127.0.0.1，凭证放在 x-pisa-token 请求头。
 `;
 }
 
@@ -280,9 +334,10 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
   const { cfg, store } = openState(configPath);
   try {
     switch (command) {
-      case "task": {
+      case "task":
+      case "run": {
         const brief = args.positional.slice(1).join(" ").trim();
-        if (!brief) throw new UsageError("task 需要需求正文");
+        if (!brief) throw new UsageError(`${command} 需要需求正文`);
         const repo = repoForTask(cfg, flagString(args, "repo") ?? process.env.PISA_REPO);
         const task = newCliTask({
           id: newTaskId(),
@@ -325,10 +380,12 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
 
       case "status": {
         const daemon = daemonState(store);
+        const paused = store.executorPaused();
         if (args.flags.get("json")) {
           const snapshot = statusSnapshot(store);
           json(io, {
             daemon,
+            executor: { paused },
             counts: snapshot.counts,
             total: snapshot.total,
             running: snapshot.running.map(taskJson),
@@ -340,6 +397,7 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
         io.out(formatStatusBoard(store));
         const beat = daemon.ageMs === null ? "无心跳记录" : `最后心跳 ${formatDuration(daemon.ageMs)} 前`;
         io.out(`守护进程：${daemon.alive ? "运行中" : "未运行"}（${beat}）`);
+        if (paused) io.out("执行器：已暂停（不领取新任务）");
         return EXIT.ok;
       }
 
@@ -382,8 +440,23 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
         if (!existsSync(path)) throw new NotFoundError(`任务 ${id} 还没有日志：${path}`);
         const count = Math.max(1, Math.floor(flagNumber(args, "tail") ?? 80));
         const lines = tailLines(readTail(path), Math.max(1, count));
-        io.out(lines.length > 0 ? lines.join("\n") : "(日志为空)");
+        if (args.flags.get("json")) json(io, { id, lines });
+        else io.out(lines.length > 0 ? lines.join("\n") : "(日志为空)");
         return EXIT.ok;
+      }
+
+      case "merge": {
+        const id = args.positional[1];
+        if (!id) throw new UsageError("用法：pisa merge <任务号>");
+        const code = await mgmtCall(io, args, cfg, `/api/tasks/${id}/merge`, { confirm: true }, MGMT_EXIT.restart);
+        if (code === MGMT_EXIT.restart && !args.flags.get("json")) io.out("需重启守护进程后生效。");
+        return code;
+      }
+
+      case "rewind": {
+        const id = args.positional[1];
+        if (!id) throw new UsageError("用法：pisa rewind <任务号> [--yes]");
+        return await mgmtCall(io, args, cfg, `/api/tasks/${id}/rewind`, { confirm: args.flags.get("yes") === true }, MGMT_EXIT.ok);
       }
 
       case "cancel": {
@@ -430,12 +503,17 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
 
 class NotFoundError extends Error {}
 class NotRunnableError extends Error {}
+class MgmtConfigError extends Error {}
 
 export async function runCli(argv: string[], io: Partial<Io> = {}): Promise<number> {
   const merged: Io = { ...defaultIo, ...io };
   try {
     return await dispatch(merged, argv);
   } catch (err) {
+    if (err instanceof MgmtConfigError) {
+      merged.err(err.message);
+      return MGMT_EXIT.notConfigured;
+    }
     if (err instanceof NotFoundError) {
       merged.err(err.message);
       return EXIT.notFound;

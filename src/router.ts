@@ -200,9 +200,51 @@ export class Router {
     this.active.set(task.id, p);
   }
 
+  /**
+   * 重新排队：只接受已结束且未成功的任务，新建一条同需求的任务；
+   * 原任务保留失败证据，新任务走正常 fill()，不绕过并发槽位。
+   */
+  retry(id: string): { ok: boolean; taskId: string | null; message: string } {
+    const task = this.deps.store.get(id);
+    if (!task) return { ok: false, taskId: null, message: `找不到任务 ${id}` };
+    if (!["failed", "cancelled", "rewound"].includes(task.status)) {
+      return { ok: false, taskId: null, message: `任务 ${id} 处于 ${task.status}，只有失败、取消或撤销的任务可以重试` };
+    }
+    const fresh: Task = {
+      ...task,
+      id: newTaskId(),
+      source: `retry:${task.id}`,
+      status: "queued",
+      branch: null,
+      prUrl: null,
+      sessionId: null,
+      summary: null,
+      error: null,
+      createdAt: this.now(),
+      startedAt: null,
+      endedAt: null,
+      cancelRequested: false,
+    };
+    this.deps.store.insertTask(fresh);
+    return { ok: true, taskId: fresh.id, message: `已重新排队 · ${fresh.id}（原任务 ${task.id}）` };
+  }
+
+  /** 执行器暂停：只停派新任务，不打断执行中的任务 */
+  pauseExecutor(): void {
+    this.deps.store.setExecutorPaused(true);
+  }
+
+  resumeExecutor(): void {
+    this.deps.store.setExecutorPaused(false);
+  }
+
+  executorPaused(): boolean {
+    return this.deps.store.executorPaused();
+  }
+
   /** 按并发上限补位；不等待任务完成 */
   private async fill(): Promise<void> {
-    if (this.stopping) return;
+    if (this.stopping || this.deps.store.executorPaused()) return;
     const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
     while (this.active.size < limit) {
       const task = this.deps.store.nextQueued();
