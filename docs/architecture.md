@@ -23,7 +23,7 @@
 ┌──────────────┴─────────────────────────────────┴────────────┐
 │ core：编排（全部状态与决策）                                    │
 │   router / store / worker / deliver / git / github /          │
-│   github-watcher / proactive / scheduler / rewind /           │
+│   github-watcher / triggers / proactive / scheduler / rewind / │
 │   config / types / log / adapters                             │
 └──────────────▲─────────────────────────────────▼────────────┘
                │ WorkerResult                      │ 提示词 + 进程参数
@@ -61,6 +61,7 @@ core 内部模块关系：
 | `git.ts` | worktree、分支、提交、推送的封装 | `sh()` 之上的命令封装；`merge`、`rev-parse` 这类一次性命令在 `router.ts` 里直接调 `sh` |
 | `github.ts` | 所有 `gh` 调用与回帖去重标记 | 测试可注入 `Runner` |
 | `github-watcher.ts` | 轮询 GitHub 评论，把命中触发词的评论转成事件 | 构造时注入 `enqueue` |
+| `triggers/` | 外部事件入口：`/triggers/<name>` 验签、归一化、去重键；事件仍交 `router.handle` | `TriggerAdapter`、`createTriggerHandler()`、`startTriggerServer()` |
 | `scheduler.ts` | cron 到点开单 | 构造时注入 `enqueue` |
 | `proactive.ts` | 群聊关键词与定时探针 | 构造时注入 `enqueue` |
 | `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
@@ -134,12 +135,13 @@ cancelled ─┘
 
 逐步（括号内是代码位置）：
 
-1. **事件进入**。六类触发源都产生 `IncomingMessage`，`eventId` 是唯一键：
+1. **事件进入**。七类触发源都产生 `IncomingMessage`，`eventId` 是唯一键：
    - IM：`channel.start(onMessage)` 回调里先喂 `Proactive.observe`，再 `router.handle`（`src/index.ts`）。
    - webhook：`Bun.serve` 只接 127.0.0.1 的 `POST /event`，校验 `x-pisa-token`，body `{prompt, repo?, eventId?}`，缺省 `eventId` 为 `webhook:<ts>:<rand>`（`src/index.ts`）。
    - Web 控制台：`Bun.serve` 只接 127.0.0.1 的 `/ui` 与 `/api/*`，token 鉴权通过后把派活/取消/合并拼成 `IncomingMessage`（`admin: true`）交给 `router.handle`，回执经 `ReplyBus` 收集后回给页面（`src/web.ts`）。`admin` 让 Router 跳过单英文词误触防护与原请求者校验——浏览器里的操作由 token 直接认证，没有可回 `confirm` 的聊天。
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由 `eventId` 去重）。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
+   - 外部触发器：`triggers/` 只接 127.0.0.1 的 `/triggers/<name>`。适配器先 `verify`（HMAC / token / SHA1 + AES），再 `normalize` 成 `TriggerPayload`，`dedupeKey` 拼出事件键后由 `createTriggerHandler` 交给 `router.handle`；未知路径 404，验签失败 4xx，未订阅事件 200 + ignored（`src/triggers/server.ts`）。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
 3. **去重与鉴权**（`claimEvent` 与 `checkAccess`，`src/router.ts`）。`newId()` 先出任务号，`store.claimEvent(eventId, taskId)` 用主键抢占事件，抢不到直接丢弃；随后 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库。被拒事件同样占用 `eventId`。
 4. **落库与回执**（`Router.handle`，`src/router.ts`）。`insertTask`（`status=queued`）后立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
@@ -194,7 +196,7 @@ interface WorkerAdapter {
 
 ### 4.2 Trigger：加事件源
 
-契约只有一条：产出 `IncomingMessage` 并调用 `router.handle`，`eventId` 必须稳定（同一物理事件重复投递得到同一个字符串）。内置六种触发源都按这个模式接：
+契约只有一条：产出 `IncomingMessage` 并调用 `router.handle`，`eventId` 必须稳定（同一物理事件重复投递得到同一个字符串）。内置触发源都按这个模式接：
 
 | 触发源 | 代码 | eventId 形态 | 稳定性来源 |
 | --- | --- | --- | --- |
@@ -204,8 +206,13 @@ interface WorkerAdapter {
 | GitHub 评论 | `github-watcher.ts` | `github:comment:<repo>:<commentId>` | 评论 id，天然幂等 |
 | cron | `scheduler.ts` | `cron:<jobId>:<minuteKey>`，先 `cron-claim:<jobId>:<minuteKey>` 抢占 | 分钟键，同一分钟只投一次 |
 | 主动发现 | `proactive.ts` | `proactive:kw:<ts>` / `proactive:probe:<ts>` | 一次机会一次事件 |
+| GitHub Actions | `triggers/github.ts` | `github-actions:<repo>:<run_id>:<run_attempt>`；非 `workflow_run` 用 `X-GitHub-Delivery` | 运行 id + attempt，重投不变 |
+| 飞书 | `triggers/feishu.ts` | `feishu:<event_id>`（缺省 `message_id`） | 事件 id，重投不变 |
+| 企业微信 | `triggers/wecom.ts` | `wecom:<MsgId>` | 消息 id，重投不变 |
 
 新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。冷却与去重这类「触发源自己的节流」放在触发源内部（例如 `Proactive` 的 cooldown、`GithubWatcher` 的 `since` 下界，跨越重启的进度写进 `store` 的 `meta`），core 只负责事件级去重。
+
+HTTP 回调不自己 `Bun.serve`：实现 `TriggerAdapter`（`src/triggers/types.ts`）的 `verify` / `normalize` / `dedupeKey`，在 `src/triggers/index.ts` 的 `createTriggerAdapters` 里按配置装配，`startTriggerServer` 统一挂到 `/triggers/<name>`。适配器无状态，去重仍由 `store.claimEvent` 完成。
 
 ### 4.3 入口客户端：加通道
 

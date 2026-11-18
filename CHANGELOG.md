@@ -15,6 +15,7 @@
 
 ### 新增
 
+- 通用 Trigger 适配层：`/triggers/<name>` 统一分发，GitHub Actions（HMAC-SHA256）、飞书（Verification Token + AES）、企业微信（SHA1 签名 + AES）各自验签、归一化并生成稳定去重键；仓库/会话/用户白名单，凭据只读环境变量，重复投递不重复开单
 - `LICENSE`（MIT），徽章与 GitHub 仓库许可字段据此生效
 - `tests/docs-links.test.ts`：所有 Markdown 的相对链接必须有落点，README 的页内锚点必须落在真实标题上
 

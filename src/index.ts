@@ -11,6 +11,7 @@ import { Retention } from "./retention";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import { ReplyBus, startWebServer, type WebServer } from "./web";
+import { createTriggerAdapters, startTriggerServer, type TriggerServer } from "./triggers";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
@@ -56,6 +57,7 @@ async function main(): Promise<void> {
   }
   let router: Router;
   let webServer: WebServer | null = null;
+  let triggerServer: TriggerServer | null = null;
   if (web.enabled) {
     // 控制台的写操作共用 Router，回执由总线收集；其它 chatId 的回执转发给真实通道
     const bus = new ReplyBus(web.chatId, channel);
@@ -136,6 +138,21 @@ async function main(): Promise<void> {
       console.log(`[pisa] webhook listening on 127.0.0.1:${cfg.webhook.port}`);
     }
   }
+  if (cfg.triggers?.enabled) {
+    const { adapters, warnings } = createTriggerAdapters(cfg);
+    for (const warning of warnings) console.warn(`[pisa] ${warning}`);
+    if (adapters.length === 0) {
+      console.error("[pisa] triggers 已启用但没有可用适配器");
+    } else {
+      triggerServer = startTriggerServer(
+        { adapters, trigger: cfg.trigger, handle: (m) => router.handle(m) },
+        cfg.triggers.port,
+      );
+      console.log(
+        `[pisa] triggers listening on ${triggerServer.url} · ${adapters.map((a) => a.name).join(", ")}`,
+      );
+    }
+  }
   const allowedEnv = Object.keys(workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env));
   console.log(`[pisa] Worker 环境白名单 · ${allowedEnv.join(",") || "(空)"}`);
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
@@ -153,6 +170,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     if (webServer) await webServer.stop();
+    if (triggerServer) await triggerServer.stop();
     await router.stop(3000);
     proactive.stop();
     githubWatcher.stop();

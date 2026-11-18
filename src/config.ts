@@ -48,6 +48,48 @@ export interface WebConfig {
   chatId: string;
 }
 
+/** 外部事件入口；只监听 127.0.0.1，凭据全部来自环境变量 */
+export interface TriggersConfig {
+  enabled: boolean;
+  port: number;
+  githubActions?: {
+    enabled: boolean;
+    /** webhook secret 所在的环境变量名 */
+    secretEnv: string;
+    chatId: string;
+    userId: string;
+    repo?: string;
+    /** owner/name 白名单；空表示不限制 */
+    repos?: string[];
+    /** 订阅的 X-GitHub-Event，默认 ["workflow_run"] */
+    events?: string[];
+    /** 默认 true：只把失败的运行变成任务 */
+    failedOnly?: boolean;
+    /** 覆盖默认正文模板 */
+    prompt?: string;
+  };
+  feishu?: {
+    enabled: boolean;
+    verificationTokenEnv?: string;
+    encryptKeyEnv?: string;
+    chats?: string[];
+    users?: string[];
+    chatId: string;
+    userId: string;
+    repo?: string;
+  };
+  wecom?: {
+    enabled: boolean;
+    tokenEnv: string;
+    aesKeyEnv: string;
+    corpId: string;
+    users?: string[];
+    chatId: string;
+    userId: string;
+    repo?: string;
+  };
+}
+
 /** events 与 progress 的默认保留天数 */
 export const DEFAULT_RETENTION_DAYS = 30;
 
@@ -75,6 +117,8 @@ export interface Config {
   /** 本机 Web 控制台；缺省值见 DEFAULT_WEB */
   web?: WebConfig;
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
+  /** GitHub Actions、飞书、企业微信的事件入口；缺省关闭 */
+  triggers?: TriggersConfig;
   /** 评论 → 任务 → 回帖；repo 形如 owner/repo */
   github?: GithubConfig;
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */

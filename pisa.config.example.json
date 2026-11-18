@@ -116,6 +116,45 @@
       "prompt": "自动探针失败，定位原因并修复。"
     }
   },
+  "triggers": {
+    "enabled": false,
+    "port": 8798,
+    "githubActions": {
+      "enabled": false,
+      "secretEnv": "PISA_GH_WEBHOOK_SECRET",
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "repos": [
+        "owner/pisa"
+      ],
+      "events": [
+        "workflow_run"
+      ],
+      "failedOnly": true,
+      "repo": "pisa",
+      "prompt": "CI 失败，定位原因并修复。"
+    },
+    "feishu": {
+      "enabled": false,
+      "verificationTokenEnv": "PISA_FEISHU_VERIFICATION_TOKEN",
+      "encryptKeyEnv": "PISA_FEISHU_ENCRYPT_KEY",
+      "chats": [],
+      "users": [],
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "repo": "pisa"
+    },
+    "wecom": {
+      "enabled": false,
+      "tokenEnv": "PISA_WECOM_TOKEN",
+      "aesKeyEnv": "PISA_WECOM_AES_KEY",
+      "corpId": "ww...",
+      "users": [],
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "repo": "pisa"
+    }
+  },
   "stateDir": ".pisa",
   "retentionDays": 30,
   "notifications": {

@@ -76,7 +76,7 @@ bun run src/index.ts --channel cli
 
 任务执行期间在 `.pisa/worktrees/<任务号>` 里跑（结束后清理），改完提交到 `pisa/<任务号>` 分支，主分支不动。`/status` 看板，`/pisa examples` 看可直接照抄的场景。
 
-其余通道（Telegram、webhook、GitHub 评论、定时任务、Web 控制台）与全部配置项见 [配置与运维](./docs/operations.md)。
+其余通道（Telegram、webhook、外部触发器、GitHub 评论、定时任务、Web 控制台）与全部配置项见 [配置与运维](./docs/operations.md)。
 
 ## 架构
 
@@ -87,6 +87,7 @@ flowchart TB
         tg["Telegram 通道<br/>src/channels/telegram.ts"]
         hook["Webhook<br/>POST /event"]
         gh["GitHub 评论轮询<br/>src/github-watcher.ts"]
+        trg["外部触发器<br/>/triggers/*<br/>src/triggers/"]
         web["Web 控制台<br/>src/web.ts"]
     end
 
@@ -107,6 +108,7 @@ flowchart TB
     tg --> router
     hook --> router
     gh --> router
+    trg --> router
     web --> router
     router --> store
     router -->|"run(task, workdir)"| runner

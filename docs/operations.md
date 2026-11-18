@@ -8,6 +8,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 - [命令](#命令)
 - [撤销与账本](#撤销与账本)
 - [Webhook 事件入口](#webhook-事件入口)
+- [外部事件触发器](#外部事件触发器)
 - [Agent CLI 与 skill](#agent-cli-与-skill)
 - [Web 控制台](#web-控制台)
 - [多仓库](#多仓库)
@@ -104,6 +105,63 @@ curl -X POST http://127.0.0.1:8799/event \
 ```
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。`eventId` 相同的事件只建一个任务。
+
+## 外部事件触发器
+
+`webhook` 需要调用方拼好 prompt；GitHub Actions、飞书、企业微信的回调格式固定，走 `triggers` 适配层：每个来源一个路径，适配器自己验签、归一化并生成稳定的去重键。服务只绑 `127.0.0.1`，对外暴露交给反向代理。
+
+| 来源 | 路径 | 校验 | 启用条件 |
+| --- | --- | --- | --- |
+| GitHub Actions | `POST /triggers/github-actions` | `X-Hub-Signature-256`（HMAC-SHA256，原始请求体） | `githubActions.enabled` + `secretEnv` |
+| 飞书 | `POST /triggers/feishu` | `Verification Token`；配置 Encrypt Key 时强制 AES 解密 | `feishu.enabled` + token 或 key |
+| 企业微信 | `GET/POST /triggers/wecom` | `msg_signature`（SHA1）+ AES-256-CBC | `wecom.enabled` + token、aesKey、corpId |
+
+最小配置：
+
+```json
+{
+  "triggers": {
+    "enabled": true,
+    "port": 8798,
+    "githubActions": {
+      "enabled": true,
+      "secretEnv": "PISA_GH_WEBHOOK_SECRET",
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "repos": ["owner/pisa"],
+      "repo": "pisa"
+    },
+    "feishu": {
+      "enabled": true,
+      "verificationTokenEnv": "PISA_FEISHU_VERIFICATION_TOKEN",
+      "encryptKeyEnv": "PISA_FEISHU_ENCRYPT_KEY",
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "repo": "pisa",
+      "users": ["ou_xxx"]
+    },
+    "wecom": {
+      "enabled": true,
+      "tokenEnv": "PISA_WECOM_TOKEN",
+      "aesKeyEnv": "PISA_WECOM_AES_KEY",
+      "corpId": "ww...",
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>",
+      "repo": "pisa"
+    }
+  }
+}
+```
+
+- 凭据只从环境变量读取；某个来源的变量缺失时启动日志告警并跳过该来源，不影响其它入口。
+- `chatId` 与 `userId` 决定任务归属和回执目标；`userId` 必须在 `whitelist.users` 里，否则 Router 会按既有规则拒绝。
+- `repo` 是本地仓库别名，缺省用 `repos[0]`；GitHub Actions 的 `repos` 是外部 `owner/name` 白名单，飞书的 `chats`/`users`、企业微信的 `users` 同理。
+- GitHub Actions 默认只收 `workflow_run.completed` 且结论为失败的事件；`events` 可改为其它事件（如 `push`），`failedOnly: false` 让成功运行也建任务。
+- 飞书群聊只处理 `im.message.receive_v1` 的文本消息：`mentions` 非空或以触发词开头才算指派；私聊不限。
+- 企业微信只处理文本消息；首次配置时平台会发 `GET` 校验，`echostr` 解密后原样返回。
+- 去重键：GitHub `github-actions:<repo>:<run_id>:<run_attempt>`（非 `workflow_run` 用 `X-GitHub-Delivery`）、飞书 `feishu:<event_id>`、企业微信 `wecom:<MsgId>`。重复投递由 `store.claimEvent` 丢弃，不会建第二个任务。
+
+GitHub 仓库的 webhook 需要指向公网可达的地址，事件选 `Workflow runs`，Secret 与 `secretEnv` 指向的变量一致。飞书在开放平台「事件订阅」里填回调地址与 Encrypt Key，订阅「接收消息」。企业微信在应用的「接收消息」里填 URL、Token、EncodingAESKey。
 
 ## Agent CLI 与 skill
 
@@ -315,6 +373,6 @@ token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.
 
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
 
-解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。
+解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`triggers`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。
