@@ -154,7 +154,7 @@ cancelled ─┘
 7. **执行**（`Worker.run`，`src/worker.ts`）。`adapter.buildArgs` 生成命令行（omp：`-e <extension> [-r <sessionId>] --mode=json -p <prompt> --cwd <workdir>`），`Bun.spawn` 的 cwd 就是工作副本，环境变量附带 `PISA_WORKDIR`、`PISA_PROGRESS_FILE`。超时按 `worker.timeoutSec`（默认 3600s）`SIGTERM`，10s 后 `SIGKILL`；取消每 2s 轮询一次，同样先礼后兵。stdout 按行交给 `adapter.parseLine`，最终 `summary` 与 `error` 都过 `redact`。
 8. **进度回传**。skill 把 `session`/`tool`/`blocked`/`done` 追加进 `.pisa/progress/<taskId>.jsonl`；`watchProgress`（`src/router.ts`）每 2s 读增量，节流 6s，转成 `🛠`/`✏️`/`⛔` 消息发到原对话。progress 只是旁路，丢了不影响任务结果。
 9. **交付**（`GitDeliverer.deliver`，`src/deliver.ts`）。`git status --porcelain` 无改动直接返回；有改动则 `commitAll`（`pisa: <首行>`，正文带任务号）。推送与建 PR 都经 outbox（`src/effects.ts`）：先按 `(kind,key)` 落 `effects` 行再执行，`push` 失败抛错让任务落 `failed`，`pr` 失败留在队列里退避重试、本轮退回 `compare` 链接。若 `delivery.pr`、远程在 github.com、`gh` 可用，先 `gh pr list --head <branch>` 认领该分支上已有的开放 PR（上次建好却没来得及记账），没查到才 `gh pr create`（PR 正文带 `Closes #<issue>`）；两者都在仓库根目录执行，工作副本删掉后重试仍可用。成功后由 Router 记 `push`/`pr` 副作用并回填 `pr_url`。无改动且任务无 `prUrl` 时，若分支已在 origin 上同样先认领一次。
-10. **收尾**。`transition(succeeded)` 写入 `summary/branch/prUrl/endedAt` → 删工作副本（保留分支与副作用账本）→ `replyToSource` 经 outbox 回 PR/Issue（正文带隐藏标记 `<!-- pisa:reply task=… -->`，线程里已有同标记即视为发过，退避重试也不会重复回帖）→ 最终回执（摘要、文件清单、分支、链接、会话 id）。任务失败或取消时清掉该任务未完成的 effect 行。
+10. **收尾**。`transition(succeeded)` 写入 `summary/branch/prUrl/endedAt` → 删工作副本（保留分支与副作用账本）→ `replyToSource` 经 outbox 回 PR/Issue（正文带隐藏标记 `<!-- pisa:reply task=… -->`，线程里已有同标记即视为发过，退避重试也不会重复回帖）→ 最终回执（摘要、文件清单、分支、链接、会话 id）。任务失败、取消或撤销时清掉该任务未完成的 effect 行。
 
 一次成功任务落盘的东西：
 
@@ -165,7 +165,7 @@ cancelled ─┘
 | `pisa.db` `triggers` | 触发身份（线程 / 消息 / 版本 / 载荷）与归属任务 | 永不 |
 | `pisa.db` `events` | 定时与保留任务的占位键 | 超出保留期的终态任务对应行 |
 | `pisa.db` `task_effects` | 仍在生效的分支/推送/PR/回帖/合并 | 撤销或清理时逐条删 |
-| `pisa.db` `effects` | 外部动作队列：推送、建 PR、回帖的待执行/已完成/已终止行 | 不自动清理；任务失败或取消时删该任务的未完成行 |
+| `pisa.db` `effects` | 外部动作队列：推送、建 PR、回帖的待执行/已完成/已终止行 | 不自动清理；任务失败、取消或撤销时删该任务的未完成行 |
 | `.pisa/logs/<taskId>.log` | 阶段日志（脱敏） | 不自动清理 |
 | `.pisa/progress/<taskId>.jsonl` | 工具级进度 | 不自动清理 |
 | `.pisa/worktrees/<taskId>` | 工作副本 | 成功、失败、运行中取消后删除；`paused`、重启时按取消请求置 `cancelled` 的任务及其后续取消保留 |

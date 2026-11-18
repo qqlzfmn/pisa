@@ -58,13 +58,16 @@ CREATE INDEX IF NOT EXISTS idx_effects_due ON effects(status, next_at);
 
 因此 outbox 是 at-least-once + 幂等动作，不是事务性 exactly-once。
 
-## D5 失败/取消时丢弃未完成 effect
+## D5 失败/取消/撤销时丢弃未完成 effect
 
 失败路径会删工作副本和分支，继续重试只会对不存在的路径报错。`runTask` 的两条终止分支（worker 失败、交付抛错、取消）以及 `handleCancel` 都调 `effects.cancelTask(taskId)`，删 `status='pending'` 行；`done` 行保留作记录。
+
+撤销同理：`handleRewind` 在任何一条落 `rewound` 的分支（无动作可撤、全部动作成功）里调 `effects.cancelTask(taskId)`。否则「建 PR 失败、任务成功」的 pending 行会在用户撤销后继续重放，对着已删分支再建 PR。
 
 ## D6 测试
 
 - `tests/effects.test.ts`：键去重、退避序列、终止阈值、重启重放、`cancelTask`、`start/stop`
 - `tests/github-comments.test.ts`：既有回帖测试改用队列后仍只发一次；新增 gh 失败 → 任务 succeeded + 队列 pending → 恢复后 flush 补发并写账本
+- `tests/router.test.ts`：撤销落 `rewound` 后删掉该任务的 pending 行，`flush` 不再执行它
 - 6 处直接调 `deliverer.deliver` 的测试补一个队列参数（`new EffectQueue(new Store(":memory:"))` + 注册 handler）
 - `docs/architecture.md` 更新模块表、交付/收尾步骤、落盘表

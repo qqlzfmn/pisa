@@ -52,6 +52,7 @@
 | FR-010 | 任务失败或取消时丢弃它未完成的 effect，避免对已删除工作副本重试 |
 | FR-011 | 回帖失败不改变任务终态：任务按现状成功，effect 留在队列，日志注明入队重试 |
 | FR-012 | 建 PR 失败回退 `compare` 链接的既有行为不变：任务成功，effect 继续重试；成功后回填 `pr_url` |
+| FR-013 | 任务撤销（`rewind`）完成后同样丢弃它未完成的 effect：撤销已否决后续外部动作，重放不得再建 PR 或补发回帖 |
 
 ## 5. 非目标
 
@@ -66,4 +67,5 @@
 3. 新建 `EffectQueue`（模拟重启）、同一数据库，`flush` 能继续执行 pending 行
 4. gh 故障时任务仍然 `succeeded`，effect 留在队列；恢复后 `flush` 补发回帖并写账本
 5. 任务失败或取消后，它的未完成 effect 不再被执行
-6. `bun test` 与 `bunx tsc --noEmit` 通过
+6. 任务撤销后，它的未完成 effect 不再被执行
+7. `bun test` 与 `bunx tsc --noEmit` 通过
