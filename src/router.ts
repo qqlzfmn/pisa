@@ -25,6 +25,7 @@ import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
 import { formatStatusBoard } from "./status";
+import { BUILTIN_PROMPTS, formatPrompts, type PromptBook } from "./prompts";
 
 export { formatDuration } from "./status";
 
@@ -38,6 +39,8 @@ export interface RouterDeps {
   ghRunner?: Runner;
   /** 外部动作的 outbox；默认由 Router 按 store 创建，测试可注入以观察队列 */
   effects?: EffectQueue;
+  /** 分层后的提示词；缺省全部用内置 */
+  prompts?: PromptBook;
   /** 注入以便测试 */
   now?: () => number;
 }
@@ -67,11 +70,13 @@ export class Router {
   private pending = new Map<string, PendingTask>();
   /** 外部动作的 outbox：推送、建 PR、回帖都先落库再执行 */
   private readonly effects: EffectQueue;
+  private readonly prompts: PromptBook;
 
   constructor(private deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
     this.progressOn = deps.cfg.notifications?.progress ?? false;
     this.effects = deps.effects ?? new EffectQueue(deps.store, { now: this.now });
+    this.prompts = deps.prompts ?? BUILTIN_PROMPTS;
     this.registerEffects(deps.deliverer);
   }
 
@@ -331,6 +336,11 @@ export class Router {
 
     if (cmd.kind === "examples") {
       await this.reply(msg.chatId, formatExamples(cfg.trigger));
+      return;
+    }
+
+    if (cmd.kind === "prompts") {
+      await this.reply(msg.chatId, this.promptsText(cmd.body));
       return;
     }
 
@@ -610,6 +620,23 @@ export class Router {
     }
     if (!dry && cfg.repos[0]) sh(["git", "-C", cfg.repos[0].path, "worktree", "prune"]);
     return out;
+  }
+
+  /** `/pisa prompts [diff] [@仓库]`：查看版本、生效来源与覆盖差异 */
+  private promptsText(body: string): string {
+    const { cfg } = this.deps;
+    let diff = false;
+    let repo: string | undefined;
+    for (const arg of body.trim().split(/\s+/).filter(Boolean)) {
+      if (arg === "diff" || arg === "--diff") diff = true;
+      else if (arg.startsWith("@") && arg.length > 1) repo = arg.slice(1);
+      else return `用法：${cfg.trigger} prompts [diff] [@仓库]`;
+    }
+    if (repo && !repoByAlias(cfg, repo)) {
+      const aliases = cfg.repos.map((r) => r.alias);
+      return `仓库未配置：${repo}${aliases.length ? `（可用：${aliases.join("、")}）` : ""}`;
+    }
+    return formatPrompts(this.prompts, { repo, diff });
   }
 
   private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {

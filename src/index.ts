@@ -12,6 +12,7 @@ import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import { ReplyBus, startWebServer, type WebServer } from "./web";
 import { webhookHandler } from "./webhook";
+import { loadPrompts, type PromptBook } from "./prompts";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
@@ -19,6 +20,15 @@ async function main(): Promise<void> {
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
   // `--web` 强制开启控制台；没有可用通道时回落到 CLI 通道，只当服务宿主
   const web: WebConfig = { ...(cfg.web ?? DEFAULT_WEB), enabled: cfg.web?.enabled === true || process.argv.includes("--web") };
+
+  // 提示词覆盖在启动时一次加载：未知键、非法版本号直接拒绝启动
+  let prompts: PromptBook;
+  try {
+    prompts = loadPrompts(cfg.promptsDir, cfg.repos.map((r) => r.alias));
+  } catch (err) {
+    console.error(`[pisa] 提示词配置错误：${(err as Error).message}`);
+    process.exit(1);
+  }
 
   const store = new Store(join(cfg.stateDir, "pisa.db"));
 
@@ -63,9 +73,10 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, prompts),
       deliverer: new GitDeliverer(cfg),
       channel: bus,
+      prompts,
     });
     if (!cfg.whitelist.users.includes(web.userId)) {
       console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
@@ -75,9 +86,10 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, prompts),
       deliverer: new GitDeliverer(cfg),
       channel,
+      prompts,
     });
   }
 

@@ -58,6 +58,7 @@ core 内部模块关系：
 | `store.ts` | SQLite 持久化：任务、消息映射、事件去重、副作用账本、外部动作队列 | `insertTask`、`claimQueued`、`transition`、`taskByPr`、`effectsOf`、`enqueueEffect`、`dueEffects` |
 | `worker.ts` | 拉起 agent 进程、解析输出、超时与取消 | `class Worker implements WorkerRunner` |
 | `adapters/` | 把 pisa 的任务翻译成某个 agent 的命令行与输出格式 | `getAdapter(name)` |
+| `prompts.ts` | 提示词分层：内置段落、团队/仓库覆盖、版本与 diff | `loadPrompts()`、`buildWorkerPrompt()`、`formatPrompts()` |
 | `deliver.ts` | 提交 → 推送 → 开 PR；推送与建 PR 交给 outbox 执行 | `GitDeliverer.deliver()`、`effectHandlers()` |
 | `effects.ts` | 外部动作 outbox：先落库再执行，按 `(kind,key)` 去重，失败指数退避，重启后重放 | `EffectQueue.exec()`、`start()/stop()`、`cancelTask()` |
 | `git.ts` | worktree、分支、提交、推送的封装 | `sh()` 之上的命令封装；`merge`、`rev-parse` 这类一次性命令在 `router.ts` 里直接调 `sh` |
@@ -189,7 +190,7 @@ interface WorkerAdapter {
 }
 ```
 
-`AdapterInput` 给 `task`、`workdir`、`extensionPath`、`progressFile`、`cfg`（`worker.*`）、`resumeSessionId`。registry 在 `src/adapters/index.ts`，目前只有 `omp`。
+`AdapterInput` 给 `task`、`workdir`、`extensionPath`、`progressFile`、`cfg`（`worker.*`）、`prompts`（分层后的提示词）、`resumeSessionId`。registry 在 `src/adapters/index.ts`，目前只有 `omp`。
 
 接入一个新 agent 需要满足的契约：
 
@@ -262,6 +263,10 @@ interface ChannelAdapter {
 - `RewindProbes`（`src/rewind.ts`）：撤销计划只依赖探测接口，测试用假探测验证分支/PR 各状态组合。
 - `now()`：时间注入，测试里控制冷却与超时。
 
+### 4.5 提示词：改段落与评审标准
+
+默认提示词在 `src/prompts.ts` 的 `PROMPT_SECTIONS`。`prompts/` 目录按段落覆盖：`prompts/<键>.md` 是团队层，`prompts/repos/<别名>/<键>.md` 是仓库层，优先级仓库 > 团队 > 内置；`prompts/VERSION` 记录覆盖版本。`/pisa prompts` 看每段来源，`/pisa prompts diff [@仓库]` 看与内置的差异。加载发生在启动时，未知键、未知仓库别名、空文件和未知模板变量都会拒绝启动，不会静默回退。目录结构与验收见 [`docs/specs/019-prompt-layers/spec.md`](./specs/019-prompt-layers/spec.md)。
+
 ## 5. 失败模式与已知限制
 
 ### 5.1 失败模式
@@ -333,3 +338,4 @@ interface ChannelAdapter {
 | 交付与 PR | `src/deliver.ts`、`src/git.ts`、`src/github.ts` |
 | 撤销 | `src/rewind.ts`、`docs/specs/013-rewind/` |
 | 配置项 | `src/config.ts`、`pisa.config.example.json` |
+| 提示词与评审标准 | `src/prompts.ts`、`prompts/VERSION`、`docs/specs/019-prompt-layers/` |

@@ -96,6 +96,8 @@ export interface Config {
     };
   };
   stateDir: string;
+  /** 提示词覆盖目录；缺省为配置目录下的 prompts/，目录不存在时全部用内置 */
+  promptsDir?: string;
 }
 
 /**
@@ -165,6 +167,7 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
   }
   // 相对路径以配置文件所在目录为基准：守护进程与 CLI 从不同工作目录启动时指向同一份状态
   if (!isAbsolute(cfg.stateDir)) cfg.stateDir = resolve(baseDir, cfg.stateDir);
+  cfg.promptsDir = cfg.promptsDir ? resolve(baseDir, cfg.promptsDir) : resolve(baseDir, "prompts");
   cfg = {
     ...cfg,
     repos: cfg.repos.map((r) => ({
@@ -229,6 +232,7 @@ export type CommandKind =
   | "status"
   | "schedules"
   | "examples"
+  | "prompts"
   | "continue"
   | "merge"
   | "resume"
@@ -261,6 +265,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "status", alias: "状态", description: "查看任务看板", group: "查询", menu: true },
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
+  { command: "prompts", alias: "提示词", description: "查看提示词分层与覆盖差异", args: "[diff] [@仓库]", group: "查询", menu: true },
   { command: "verbose", alias: "进度", description: "过程消息开关（on/off）", args: "[on|off]", group: "查询", menu: true },
   { command: "gc", alias: "清理", description: "清理已结束任务的分支/工作副本/PR", args: "[天数] [--dry]", group: "维护", menu: true },
   { command: "help", alias: "帮助", description: "查看命令帮助", group: "查询", menu: true },

@@ -6,6 +6,7 @@
 
 ### 新增
 
+- 提示词分层与版本：Worker 提示词拆成五个段落（任务号、恢复执行、上一轮上下文、任务正文、约束），`prompts/` 目录可按段落覆盖——团队层 `prompts/<键>.md`，仓库层 `prompts/repos/<别名>/<键>.md`，优先级仓库 > 团队 > 内置；`prompts/VERSION` 记录覆盖版本。启动时加载，未知段落键、未知仓库别名、空文件、非法版本号、未知模板变量都拒绝启动。`/pisa prompts` 查看版本与每段来源，`/pisa prompts diff [@仓库]` 查看与内置的差异；`worker.constraints` 支持按仓库定制评审标准（`src/prompts.ts`，配置项 `promptsDir`）
 - 健康与任务指标：`GET /health` 返回 `ok`、`uptimeSec`、队列深度、running 数与最近 24h 成功率/耗时分位/每仓库任务数；`ok` 取守护进程心跳，心跳停止时返回 503。看板与 `pisa status --json` 附带同一口径的 24h 汇总（`src/metrics.ts`）
 - `triggers` 表：任务创建改为按触发身份（`source` + 线程 + 消息 + 版本 + 载荷指纹）落库，触发器与任务同一事务；旧库在 `Store` 构造时按任务自身信息补齐，重放旧事件不会重复建单
 - 编辑与线程归属：同一消息的新版本按 `version` 留痕，任务仍在排队就更新需求正文；同线程不带命令的后续消息并进未结束任务的上下文

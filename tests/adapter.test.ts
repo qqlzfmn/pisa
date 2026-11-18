@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { getAdapter } from "../src/adapters";
+import { BUILTIN_PROMPTS, type PromptBook, type PromptSectionKey } from "../src/prompts";
 import type { Task } from "../src/types";
 
 const task: Task = {
@@ -33,6 +34,7 @@ const input = {
   extensionPath: "/tmp/ext.ts",
   progressFile: "/tmp/p.jsonl",
   cfg: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1 },
+  prompts: BUILTIN_PROMPTS,
 };
 
 describe("WorkerAdapter", () => {
@@ -74,6 +76,19 @@ describe("WorkerAdapter", () => {
     const args = getAdapter("omp").buildArgs(input);
     expect(args).not.toContain("-r");
     expect(args[args.indexOf("-p") + 1]).not.toContain("上一次执行被中断");
+  });
+
+  test("仓库覆盖优先于团队覆盖进入提示词", () => {
+    const prompts: PromptBook = {
+      version: 2,
+      dir: "/tmp/prompts",
+      team: new Map<PromptSectionKey, string>([["worker.task", "## 任务\n团队版 {{prompt}}"]]),
+      repos: new Map([["demo", new Map<PromptSectionKey, string>([["worker.task", "## 任务\n仓库版 {{prompt}}"]])]]),
+    };
+    const args = getAdapter("omp").buildArgs({ ...input, prompts });
+    const prompt = args[args.indexOf("-p") + 1]!;
+    expect(prompt).toContain("仓库版 修一下登录");
+    expect(prompt).not.toContain("团队版");
   });
 
   test("只取 assistant 的 message_end", () => {

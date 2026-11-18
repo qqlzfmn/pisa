@@ -9,6 +9,7 @@ import { parseCommand, taskGuard, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh, changedFiles, createWorktree } from "../src/git";
+import type { PromptBook, PromptSectionKey } from "../src/prompts";
 
 class FakeChannel implements ChannelAdapter {
   name = "fake";
@@ -143,8 +144,8 @@ describe("Router", () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  function build(worker: WorkerRunner, now?: () => number) {
-    return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel, now });
+  function build(worker: WorkerRunner, now?: () => number, prompts?: PromptBook) {
+    return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel, now, prompts });
   }
 
   /** 直接落一条任务，用于构造续跑/占用场景 */
@@ -198,6 +199,48 @@ describe("Router", () => {
 
       expect(store.recentTasks()).toHaveLength(0);
       expect(channel.sent.at(-1)?.text).toContain("触发：");
+    });
+
+    test("/pisa prompts 显示版本、来源与覆盖目录", async () => {
+      const prompts: PromptBook = {
+        version: 2,
+        dir: "/tmp/prompts",
+        team: new Map<PromptSectionKey, string>([["worker.constraints", "团队标准"]]),
+        repos: new Map(),
+      };
+      const router = build(okWorker, undefined, prompts);
+      await router.handle(msg("/pisa prompts"));
+
+      expect(store.recentTasks()).toHaveLength(0);
+      const text = channel.sent.at(-1)!.text;
+      expect(text).toContain("提示词 v2");
+      expect(text).toContain("团队覆盖 1 段");
+      expect(text).toMatch(/worker\.constraints · 团队/);
+      expect(text).toContain("覆盖目录：/tmp/prompts");
+    });
+
+    test("/pisa prompts diff 只显示被覆盖段落的差异", async () => {
+      const prompts: PromptBook = {
+        version: 2,
+        dir: "/tmp/prompts",
+        team: new Map<PromptSectionKey, string>([["worker.constraints", "团队标准"]]),
+        repos: new Map(),
+      };
+      const router = build(okWorker, undefined, prompts);
+      await router.handle(msg("/pisa prompts diff"));
+
+      const text = channel.sent.at(-1)!.text;
+      expect(text).toContain("+++ 团队");
+      expect(text).toContain("-## 约束（以下由 pisa guard 强制，越界调用会被拒绝）");
+      expect(text).toContain("+团队标准");
+      expect(text).not.toContain("## worker.intro");
+    });
+
+    test("/pisa prompts 拒绝未配置的仓库别名", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa prompts @nope"));
+
+      expect(channel.sent.at(-1)!.text).toContain("仓库未配置：nope");
     });
 
     test("/pisa help 按派活/查询/维护/集成分组", async () => {

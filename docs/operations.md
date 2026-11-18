@@ -13,6 +13,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 - [多仓库](#多仓库)
 - [主动发现](#主动发现)
 - [定时任务](#定时任务)
+- [提示词覆盖](#提示词覆盖)
 - [数据保留](#数据保留)
 - [GitHub 评论（PR / Issue）](#github-评论pr--issue)
 - [自举](#自举)
@@ -51,6 +52,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
 /pisa status                     任务看板（私聊可用 /status）
+/pisa prompts [diff] [@仓库]     查看提示词版本、来源与覆盖差异
 ```
 
 场景说明、最佳实践与能力边界（无沙箱、回滚范围、单机、并发、鉴权面）见 [usage.md](./usage.md)。
@@ -348,8 +350,39 @@ rm ~/Library/LaunchAgents/ai.pisa.supervisor.plist
 
 token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.pisa/telegram_token` 与 `~/.pisa/webhook_token`。
 
+## 提示词覆盖
+
+Worker 的提示词按段落分层，内置文本在 `src/prompts.ts`。默认读取配置文件同目录下的 `prompts/`（可用 `promptsDir` 改到别处），改文件即可覆盖，不用改代码：
+
+```
+prompts/
+  VERSION                        必填，正整数；改任何段落后递增
+  worker.constraints.md          团队层覆盖
+  repos/
+    demo/                        仓库别名，必须在 repos 配置里
+      worker.task.md             仓库层覆盖，优先于团队
+```
+
+| 段落键 | 模板变量 | 内容 |
+| --- | --- | --- |
+| `worker.intro` | `{{taskId}}` | 任务号与角色 |
+| `worker.resume` | — | 恢复任务前的核对步骤 |
+| `worker.context` | `{{context}}` | 上一轮上下文的标题与正文 |
+| `worker.task` | `{{prompt}}` | 任务正文 |
+| `worker.constraints` | — | guard 边界、评审与交付要求 |
+
+优先级固定：仓库 > 团队 > 内置；未覆盖的段落逐层回退。覆盖是整段替换，不做同键拼贴。改完重启生效；未知段落键、未知仓库别名、空文件、非法版本号、未知模板变量都会拒绝启动并在日志里点名文件。
+
+```
+/pisa prompts             每段来源、版本与覆盖目录
+/pisa prompts diff        只显示被覆盖段落与内置的 unified diff
+/pisa prompts diff @demo  按仓库 demo 解析覆盖
+```
+
+`worker.constraints` 就是按仓库定制评审标准的入口：给某个仓库放一份 `repos/<别名>/worker.constraints.md`，该仓库的任务就会用这份约束，其它仓库不受影响。
+
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive`、`promptsDir` 与 `retentionDays`。
 
 解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。
