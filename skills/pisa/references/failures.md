@@ -20,19 +20,25 @@ pisa repos --json                  # 仓库是否 allowed
 
 - 守护进程在跑但 `running` 已满：排队是正常的，等。
 - `allowed=false`：`whitelist.repos` 没包含该别名，改配置后重新提交。
-- 仓库路径不是 git 仓库：`pisa task` 会直接以 2 退出，不会入队。
+- 仓库路径不是 git 仓库：`pisa run` 会以 3 退出，不会入队。
 
-## 3. 退出码 2
+## 3. 退出码 3：待配置
 
-用法或配置错误，原样重试不会成功：
+原样重试不会成功，先修配置：
 
 - `未知仓库别名`：用 `pisa repos --json` 里的 alias。
 - `不在 whitelist.repos`：让人类加白名单。
 - `仓库路径不是 git 仓库`：检查 `repos[].path`。
 - `找不到配置文件`：用 `--config` 指定，或从包含配置的目录调用。
-- `未知选项` / 缺少正文：修命令。
+- `管理接口未启用`：配置里 `api.enabled=true` 后重启守护进程。
 
-## 4. 退出码 1：任务 failed
+## 3.1 退出码 1：需要重启或重连
+
+- `找不到 <stateDir>/api.json`：守护进程没在跑，或版本过旧；让人类启动 pisa。
+- `unauthorized`：守护进程重启换了令牌，重新运行命令即可（CLI 每次读 `api.json`）。
+- `pisa status` 返回 1：心跳超过 10 秒没更新，守护进程已停或卡死。
+
+## 4. 退出码 2：任务 failed
 
 读 `pisa show <id> --json` 的 `error` 与 `pisa logs <id> --tail 200`。常见分类：
 
@@ -46,7 +52,7 @@ pisa repos --json                  # 仓库是否 allowed
 
 失败任务的分支与工作副本：失败时会删除工作副本；只有自建的 `pisa/<任务号>` 分支会被删，续跑共享的父分支保留。不要依赖失败任务的分支继续改。要续跑，先确认父任务 `branch` 非空。
 
-## 5. 退出码 5：wait 超时
+## 5. 退出码 2：wait 超时
 
 任务可能仍在 running。处理顺序：
 
@@ -57,10 +63,12 @@ pisa repos --json                  # 仓库是否 allowed
 
 不要因为超时就重复提交同一需求。
 
-## 6. 退出码 4：任务不可运行
+## 6. 任务不可运行
+
+`pisa wait` 遇到这些状态以 2 退出：
 
 - `paused`：进程重启且工作副本与会话都在时进入。当前只能由人类在 pisa 会话里执行 `resume <任务号>`；CLI 不能恢复。
-- `cancelled`：已取消，需要就新建任务。
+- `cancelled`：已取消，需要就新建任务（或 `pisa retry`）。
 - `rewound`：副作用已被撤销，不能继续。
 
 ## 7. `continue` 报"没有可续跑的分支"
@@ -82,9 +90,9 @@ pisa repos --json                  # 仓库是否 allowed
 
 ## 10. 数据库锁 / 读不到任务
 
-CLI 与守护进程共用 SQLite（WAL）。正常并发不会锁死。若出现 `database is locked`：
+只有守护进程打开 SQLite（WAL），CLI 走管理接口。若守护进程日志出现 `database is locked`：
 
-- 确认没有脚本长时间持有事务
+- 确认没有其它进程（旧版 CLI、手工脚本）长期持有事务
 - 不要删除 `pisa.db`；先让人类停守护进程再排查
 - 不要手工改库
 

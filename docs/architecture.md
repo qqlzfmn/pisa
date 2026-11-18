@@ -39,7 +39,7 @@
 | 层 | 代码 | 职责 | 明确不做 |
 | --- | --- | --- | --- |
 | web | 外部系统 | 提供事件；承接回执 | 不做判定，不碰数据库 |
-| cli | `src/index.ts`、`src/channels/`、`scripts/supervise.sh` | 读配置、装配依赖、启动/停止、信号与退出码 | 不含任务语义，不写业务状态 |
+| cli | `src/index.ts`、`src/channels/`、`src/cli.ts`、`src/api.ts`、`src/api-client.ts`、`scripts/supervise.sh` | 读配置、装配依赖、启动/停止、信号与退出码；管理接口与 `pisa` 命令 | 不含任务语义，不写业务状态 |
 | core | `src/` 其余文件 | 唯一的状态机与调度中心：去重、鉴权、排队、编排、交付、记账、恢复 | 不直接执行任务动作：不调模型、不改业务文件 |
 | runtime | worktree + agent 进程 | 真正改代码、跑测试、产出提交 | 不直接对用户说话，不改任务状态 |
 | skill | `extensions/pisa-worker.ts` | 在 agent 进程内采集进度、拦截危险命令 | 只写 progress jsonl，不反向调用 core |
@@ -47,13 +47,16 @@
 两条硬边界：
 
 - **core 不认识具体通道，也不认识具体 agent**。通道走 `ChannelAdapter` 接口（`src/types.ts`），agent 走 `WorkerAdapter` 接口（`src/adapters/types.ts`），装配只发生在 `src/index.ts`。
+- **CLI 不读数据库**：`pisa` 只读 `pisa.config.json` 与 `<stateDir>/api.json`，全部读写走 `127.0.0.1` 的管理接口；接口鉴权只看 `api.json` 里的随机令牌。
 - **core 与 runtime 之间只有两个接口**：`WorkerRunner.run()` 进（`src/worker.ts`），文件与 git 出（`src/git.ts`、`src/deliver.ts`）。skill 通过 progress jsonl 单向上报，core 轮询读取，没有回调。
 
 core 内部模块关系：
 
 | 模块 | 职责 | 主要对外接口 |
 | --- | --- | --- |
-| `router.ts` | 全局唯一编排者：事件入口、命令、状态跃迁、进度转发、回帖 | `handle()`、`start()/stop()`、`recoverInterrupted()` |
+| `router.ts` | 全局唯一编排者：事件入口、命令、状态跃迁、进度转发、回帖；管理动作（建单/重试/停止/合并/撤销）也在这里，IM 与 HTTP 共用 | `handle()`、`start()/stop()`、`recoverInterrupted()`、`createTicket`、`stopTicket`、`mergeTicket`、`rewindTicket` |
+| `management.ts` | 管理接口的领域类型与视图：`TaskView`、`StateView`、`api.json` 读写、`ManagementError` | `stateView()`、`taskView()`、`writeApiInfo()` |
+| `api.ts` / `api-client.ts` | HTTP 壳与 CLI 客户端：只做鉴权、路由、JSON 编解码与退出码映射 | `startApi()`、`ApiClient` |
 | `store.ts` | SQLite 持久化：任务、消息映射、事件去重、副作用账本 | `insertTask`、`claimQueued`、`transition`、`taskByPr`、`effectsOf` |
 | `worker.ts` | 拉起 agent 进程、解析输出、超时与取消 | `class Worker implements WorkerRunner` |
 | `adapters/` | 把 pisa 的任务翻译成某个 agent 的命令行与输出格式 | `getAdapter(name)` |
@@ -135,11 +138,12 @@ cancelled ─┘
    - IM：`channel.start(onMessage)` 回调里先喂 `Proactive.observe`，再 `router.handle`（`src/index.ts`）。
    - webhook：`Bun.serve` 只接 127.0.0.1 的 `POST /event`，校验 `x-pisa-token`，body `{prompt, repo?, eventId?}`，缺省 `eventId` 为 `webhook:<ts>:<rand>`（`src/index.ts`）。
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。
+   - 管理接口：`POST /tickets`（`src/api.ts`）解析后直接调 `Router.createTicket`，与 IM 建单共用校验、事件去重与 `insertTask`，任务 `channel="api"`，回执发往配置里的 IM 会话。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
 3. **去重与鉴权**（`claimEvent` 与 `checkAccess`，`src/router.ts`）。`newId()` 先出任务号，`store.claimEvent(eventId, taskId)` 用主键抢占事件，抢不到直接丢弃；随后 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库。被拒事件同样占用 `eventId`。
 4. **落库与回执**（`Router.handle`，`src/router.ts`）。`insertTask`（`status=queued`）后立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
-5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
+5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：执行器暂停（`POST /executor/pause`，持久化在 `meta`）时不领取新任务；活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
 7. **执行**（`Worker.run`，`src/worker.ts`）。`adapter.buildArgs` 生成命令行（omp：`-e <extension> [-r <sessionId>] --mode=json -p <prompt> --cwd <workdir>`），`Bun.spawn` 的 cwd 就是工作副本，环境变量附带 `PISA_WORKDIR`、`PISA_PROGRESS_FILE`。超时按 `worker.timeoutSec`（默认 3600s）`SIGTERM`，10s 后 `SIGKILL`；取消每 2s 轮询一次，同样先礼后兵。stdout 按行交给 `adapter.parseLine`，最终 `summary` 与 `error` 都过 `redact`。
 8. **进度回传**。skill 把 `session`/`tool`/`blocked`/`done` 追加进 `.pisa/progress/<taskId>.jsonl`；`watchProgress`（`src/router.ts`）每 2s 读增量，节流 6s，转成 `🛠`/`✏️`/`⛔` 消息发到原对话。progress 只是旁路，丢了不影响任务结果。
@@ -154,6 +158,7 @@ cancelled ─┘
 | `pisa.db` `task_messages` | 信道消息 → 任务 | 永不 |
 | `pisa.db` `events` | 事件去重键 | 永不 |
 | `pisa.db` `task_effects` | 仍在生效的分支/推送/PR/回帖/合并 | 撤销或清理时逐条删 |
+| `.pisa/api.json` | 管理接口端口与令牌（0600） | 守护进程退出时删除 |
 | `.pisa/logs/<taskId>.log` | 阶段日志（脱敏） | 不自动清理 |
 | `.pisa/progress/<taskId>.jsonl` | 工具级进度 | 不自动清理 |
 | `.pisa/worktrees/<taskId>` | 工作副本 | 成功、失败、运行中取消后删除；`paused` 及其后续取消保留 |

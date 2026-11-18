@@ -201,6 +201,18 @@ export class Store {
     return Number.isSafeInteger(n) ? n : null;
   }
 
+  /** 执行器暂停：只停止领取排队任务，不打断运行中任务 */
+  setExecutorPaused(paused: boolean): void {
+    this.db.run("INSERT INTO meta(key, value) VALUES ('executor_paused', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [
+      paused ? "1" : "0",
+    ]);
+  }
+
+  executorPaused(): boolean {
+    const row = this.db.query("SELECT value FROM meta WHERE key = 'executor_paused'").get() as { value: string } | null;
+    return row?.value === "1";
+  }
+
   /** 事件 id 反查任务：CLI 重试时返回已有任务而不是再建一个 */
   taskByEvent(eventId: string): Task | null {
     const row = this.db

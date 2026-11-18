@@ -1,6 +1,10 @@
 {
   "trigger": "/pisa",
   "dmWithoutTrigger": true,
+  "api": {
+    "enabled": true,
+    "port": 7801
+  },
   "whitelist": {
     "users": ["<telegram user id>"],
     "repos": ["pisa"]

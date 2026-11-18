@@ -17,6 +17,12 @@ export function preview(text: string, max: number): string {
 
 const FINISHED_LABEL: Record<string, string> = { succeeded: "成功", failed: "失败", cancelled: "取消", rewound: "已撤销" };
 
+/** 看板只读取这些字段：守护进程用 Task，CLI 用 API 返回的 TaskView */
+export type TaskRow = Pick<
+  Task,
+  "id" | "repo" | "prompt" | "status" | "prUrl" | "createdAt" | "startedAt" | "endedAt"
+>;
+
 export interface StatusSnapshot {
   running: Task[];
   queued: Task[];
@@ -24,6 +30,11 @@ export interface StatusSnapshot {
   counts: Record<TaskStatus, number>;
   total: number;
 }
+
+/** 看板可渲染的数据：守护进程传 Task，CLI 传 API 的 TaskView */
+export type BoardData = {
+  [K in keyof StatusSnapshot]: K extends "running" | "queued" | "finished" ? TaskRow[] : StatusSnapshot[K];
+};
 
 /** 看板数据：Router 与 CLI 共用，唯一事实源 */
 export function statusSnapshot(store: Store): StatusSnapshot {
@@ -38,8 +49,8 @@ export function statusSnapshot(store: Store): StatusSnapshot {
 }
 
 /** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
-export function formatStatusBoard(store: Store, now = Date.now()): string {
-  const { running, queued, finished, counts, total } = statusSnapshot(store);
+export function formatStatusBoard(snapshot: BoardData, now = Date.now()): string {
+  const { running, queued, finished, counts, total } = snapshot;
 
   const lines = ["运行中"];
   if (running.length === 0) lines.push("(无)");

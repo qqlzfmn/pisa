@@ -7,6 +7,7 @@ function cfg(over: Partial<Config> = {}): Config {
   return {
     trigger: "/pisa",
     dmWithoutTrigger: true,
+    api: { enabled: false, port: 0 },
     whitelist: { users: ["u1"], repos: ["demo"] },
     repos: [],
     worker: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1 },

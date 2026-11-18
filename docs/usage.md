@@ -21,6 +21,7 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 | 撤销副作用 | `/pisa rewind t_xxx` → 加 `--yes` | 关 PR、删分支；已合并用 revert |
 | 合入主干 | `/pisa merge t_xxx` | 临时副本跑测试，通过后 `--ff-only` 合并 |
 | CI 失败 | `POST /event` 带 `x-pisa-token` | 与 IM 相同的执行链路 |
+| 脚本或 agent 派活 | `pisa run "..." --json` 或 `POST /tickets` | 与 IM 同一条状态机，回执走配置的 IM |
 | PR 内派活 | PR 评论 `/pisa 把错误处理补上` | 接续原分支并更新原 PR |
 | 到点自动开单 | `schedules` 里的 cron | 队列与执行链路同 IM |
 
@@ -57,6 +58,7 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 
 - **IM**：`whitelist.users` 与 `whitelist.repos` 双重白名单，未授权用户不建任务（24 小时内只提示一次）。群里仍需要触发词；私聊可直接说需求。
 - **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，所以它也必须进白名单。要从外网调用，自己加反向代理与 TLS。
+- **管理接口**：只绑 `127.0.0.1`（端口 `api.port`，默认 7801），每个请求都要带 `<stateDir>/api.json` 里的 `x-pisa-token`；`pisa` CLI 与脚本共用这套接口，不直接读 `pisa.db`。`api.enabled=false` 时接口不启动。
 - **GitHub**：只处理正文以 `/pisa ` 开头的评论；评论作者不参与鉴权，任务归属由各仓库条目配置的 `chatId` / `userId` 决定。`gh` token 从 `tokenEnv` 指定的环境变量读取。
 - **定时、探针、关键词**：都用配置里的身份开单，同样走白名单；触发不了的根因通常是身份不在白名单或缺少 `scheduler` 配置。
 - **密钥**：Telegram bot token、webhook token 只从环境变量或 `~/.pisa/` 下的文件读取，不写入配置文件与 launchd plist。

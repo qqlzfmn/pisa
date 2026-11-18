@@ -98,6 +98,7 @@ function makeCfg(repoPath: string, stateDir: string, github?: Config["github"]):
   return {
     trigger: "/pisa",
     dmWithoutTrigger: true,
+    api: { enabled: false, port: 0 },
     whitelist: { users: ["u1"], repos: ["demo"] },
     repos: [{ alias: "demo", path: repoPath, baseBranch: "main" }],
     worker: { adapter: "omp", command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1 },

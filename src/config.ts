@@ -44,6 +44,8 @@ export interface Config {
   trigger: string;
   /** 私聊里不带触发词也当成任务 */
   dmWithoutTrigger: boolean;
+  /** 本机管理接口：只绑 127.0.0.1，端口 0 表示系统分配 */
+  api: { enabled: boolean; port: number };
   whitelist: { users: string[]; repos: string[] };
   repos: RepoConfig[];
   worker: {
@@ -99,6 +101,7 @@ export const DEFAULT_ENV_ALLOW: readonly string[] = [
 export const DEFAULT_CONFIG: Config = {
   trigger: "/pisa",
   dmWithoutTrigger: true,
+  api: { enabled: true, port: 7801 },
   whitelist: { users: [], repos: [] },
   repos: [],
   worker: {
@@ -119,6 +122,7 @@ function merge(base: Config, patch: Partial<Config>): Config {
   return {
     ...base,
     ...patch,
+    api: { ...base.api, ...(patch.api ?? {}) },
     whitelist: { ...base.whitelist, ...(patch.whitelist ?? {}) },
     worker: { ...base.worker, ...(patch.worker ?? {}) },
     delivery: { ...base.delivery, ...(patch.delivery ?? {}) },

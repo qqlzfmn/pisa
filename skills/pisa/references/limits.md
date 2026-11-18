@@ -10,17 +10,18 @@
 | 续跑 | `continue` 在父任务分支上继续，继承 PR |
 | 阻塞等待 | `wait` / `--wait`，带超时 |
 | 观察 | `status`、`list`、`show`、`logs`、心跳 |
-| 取消 | queued/paused 立即取消；running 登记取消请求 |
+| 取消 | `stop`：queued/paused 立即取消；running 登记取消请求 |
+| 重试 / 合并 / 撤销 | `retry`、`merge`、`rewind`（走守护进程的管理接口） |
+| 暂停派发 | `executor pause` / `executor resume` |
 | 机器可读输出 | 所有查询命令 `--json` |
 
 ## 不能做
 
-- **远程调度**：CLI 只读写本机配置与 SQLite。agent 必须在装有 pisa、能访问目标仓库的机器上运行。
+- **远程调度**：CLI 只连本机 `127.0.0.1` 的管理接口。agent 必须在装有 pisa、能访问目标仓库的机器上运行。
 - **直接执行 Worker**：CLI 只入队。守护进程不在，任务不会跑。
 - **恢复 paused 任务**：`resume` 只在 pisa 会话里；CLI 没有该子命令。
-- **合并 / 撤销**：`merge`、`rewind` 只在 pisa 会话里；需要人类操作。
 - **管理定时任务**：`schedules` 只在会话里。
-- **改任务状态**：除 cancel 外，CLI 不写运行中/完成状态；状态由守护进程推进。
+- **改任务状态**：除 stop/retry 外，CLI 不写运行中/完成状态；状态由守护进程推进。
 - **跨机器共享状态**：`pisa.db` 是本地文件，不要放网络盘并发写。
 - **自动重试**：没有内建重试；由调用方决定。
 

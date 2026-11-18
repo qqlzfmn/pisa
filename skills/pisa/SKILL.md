@@ -38,7 +38,7 @@ pisa repos --json                              # 配置了哪些仓库、是否�
 pisa status --json                             # 守护进程是否在跑
 ```
 
-`status --json` 里 `daemon.alive` 为 `false` 时，`pisa task` 仍会入队，但 stderr 会警告，任务不会自己开始。此时先让人类启动守护进程（`bun run src/index.ts` 或 launchd），否则不要进入轮询。
+`status --json` 里 `daemon.alive` 为 `false` 时，`pisa run` 仍会入队，但 stderr 会警告，任务不会自己开始；`pisa status` 本身会以 1 退出。此时先让人类启动守护进程（`bun run src/index.ts` 或 launchd），否则不要进入轮询。
 
 ## 标准流程
 
@@ -47,7 +47,7 @@ pisa status --json                             # 守护进程是否在跑
 3. **提交**：
 
    ```bash
-   pisa task "<brief>" --repo <别名> --event-id "<幂等键>" --json
+   pisa run "<brief>" --repo <别名> --event-id "<幂等键>" --json
    ```
 
    `--event-id` 用稳定值（如 `ci:<run-id>`、`issue:<n>`），重试不会建重复任务。
@@ -60,12 +60,12 @@ pisa status --json                             # 守护进程是否在跑
 不要写 `sleep 5 && pisa show` 的固定循环；`pisa wait` 已经做完了：
 
 ```bash
-pisa wait <id> --timeout 900 --json      # 阻塞到终态，退出码 0/1/4/5
+pisa wait <id> --timeout 900 --json      # 阻塞到终态，退出码 0/2
 ```
 
 - 有 CI 时限：`--timeout` 小于 CI 超时，留出收尾时间。
-- 多任务并行：先全部 `task` 拿到 id，再对每个 id `wait`；或定期 `pisa status --json` 看整体。
-- 等待超时（5）：不要重提，先 `pisa show <id> --json`；仍 running 就继续等。
+- 多任务并行：先全部 `run` 拿到 id，再对每个 id `wait`；或定期 `pisa status --json` 看整体。
+- 等待超时（2，JSON 里 `timeout:true`）：不要重提，先 `pisa show <id> --json`；仍 running 就继续等。
 - 需要边等边做别的事：单次查 `pisa status --json`，不要高频轮询。
 - 守护进程死亡：`status --json.daemon.alive=false`，任务变不动；交给人恢复，不要重复提交。
 
@@ -74,22 +74,21 @@ pisa wait <id> --timeout 900 --json      # 阻塞到终态，退出码 0/1/4/5
 | 码 | 含义 | 你的动作 |
 | --- | --- | --- |
 | 0 | 成功 | 读 `summary` / `prUrl`，做自己的验收 |
-| 1 | 任务失败 | 读 `error` 与日志，判断是 brief 问题还是环境问题 |
-| 2 | 用法或配置错误 | 修参数/配置，不要原样重试 |
-| 3 | 找不到任务 | 检查任务号；不要假设任务存在 |
-| 4 | 任务不可运行 | paused / cancelled / rewound，交给人处理 |
-| 5 | 等待超时 | 任务可能仍在跑；用 `pisa status` 继续观察，不要重复提交 |
+| 1 | 需要重启或重连 | `api.json` 缺失、连不上接口、令牌失效、`status` 心跳过期；先让人类恢复守护进程 |
+| 2 | 命令失败 | 任务 failed/cancelled/rewound、等待超时、接口 404/409、用法错误；读 `error` 与日志，不要原样重试 |
+| 3 | 待配置 | 配置缺失、管理接口未启用、仓库未授权或不是 git 仓库；先修配置 |
 
 ## 常用命令速查
 
 ```bash
-pisa task "<brief>" --repo demo --event-id ci:123 --wait --timeout 1200 --json
+pisa run "<brief>" --repo demo --event-id ci:123 --wait --timeout 1200 --json
 pisa wait <id> --timeout 600 --json
 pisa status --json
 pisa list --repo demo --status succeeded --limit 10 --json
 pisa show <id> --json
 pisa logs <id> --tail 120
-pisa cancel <id>
+pisa stop <id>
+pisa retry <id>
 pisa continue <id> "按评论第 2 点改" --json
 ```
 

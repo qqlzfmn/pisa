@@ -1,4 +1,7 @@
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { startApi, type ApiServerHandle } from "./api";
+import { writeApiInfo, removeApiInfo } from "./management";
 import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, githubRepos, loadConfig } from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
@@ -119,6 +122,20 @@ async function main(): Promise<void> {
       console.log(`[pisa] webhook listening on 127.0.0.1:${cfg.webhook.port}`);
     }
   }
+  // 管理接口：只绑 127.0.0.1，地址与令牌写进 stateDir/api.json 供 CLI 读取
+  let api: ApiServerHandle | null = null;
+  if (cfg.api.enabled) {
+    const token = randomBytes(24).toString("hex");
+    try {
+      api = startApi({ cfg, store, router }, token, cfg.api.port);
+    } catch (err) {
+      console.error(`[pisa] 管理接口启动失败（127.0.0.1:${cfg.api.port}）：${(err as Error).message}`);
+      process.exit(1);
+    }
+    writeApiInfo(cfg.stateDir, { port: api.port, token });
+    console.log(`[pisa] 管理接口 listening on 127.0.0.1:${api.port}`);
+  }
+
   const allowedEnv = Object.keys(workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env));
   console.log(`[pisa] Worker 环境白名单 · ${allowedEnv.join(",") || "(空)"}`);
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
@@ -130,6 +147,8 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     await router.stop(3000);
+    api?.stop();
+    removeApiInfo(cfg.stateDir);
     proactive.stop();
     githubWatcher.stop();
     scheduler.stop();

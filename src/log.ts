@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
@@ -47,4 +47,24 @@ export class TaskLogger {
 
 export function ensureDir(p: string): void {
   mkdirSync(dirname(p), { recursive: true });
+}
+
+/** 读日志尾部；日志可能很大，只取最后 maxBytes。没有日志文件时返回空数组 */
+export function readLogTail(stateDir: string, taskId: string, count: number, maxBytes = 64 * 1024): string[] {
+  const file = join(stateDir, "logs", `${taskId}.log`);
+  if (!existsSync(file)) return [];
+  const size = statSync(file).size;
+  const start = Math.max(0, size - maxBytes);
+  const buf = Buffer.alloc(size - start);
+  const fd = openSync(file, "r");
+  try {
+    readSync(fd, buf, 0, buf.length, start);
+  } finally {
+    closeSync(fd);
+  }
+  return buf
+    .toString("utf8")
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .slice(-Math.max(1, count));
 }

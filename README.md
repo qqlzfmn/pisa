@@ -186,23 +186,33 @@ curl -X POST http://127.0.0.1:8799/event \
 
 ## Agent CLI 与 skill
 
-不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 只读写 `pisa.config.json` 与同一个 `pisa.db`，执行仍由守护进程负责。
+coding agent 或脚本用 `pisa` CLI 操作正在运行的守护进程：CLI 不打开 `pisa.db`，只读 `pisa.config.json` 与 `<stateDir>/api.json`（守护进程启动时写入的端口与令牌），执行仍由守护进程负责。
 
 ```bash
 bun link                 # 把 pisa 命令链到 PATH；也可直接用 bun run src/cli.ts
-pisa task "修 CI：test 失败日志见 ci.log" --repo demo --json
-pisa wait <任务号> --timeout 900 --json
-pisa status --json
-pisa show <任务号>
+pisa run "修 CI：test 失败日志见 ci.log" --repo demo --json
+pisa run "..." --wait --json          # 阻塞到终态
+pisa status --json                    # 看板 + 心跳 + 执行器暂停状态
+pisa show <任务号> --json
 pisa logs <任务号> --tail 100
-pisa cancel <任务号>
 pisa continue <任务号> "按 PR 评论再改"
+pisa stop <任务号>
+pisa retry <任务号>
+pisa merge <任务号>
+pisa rewind <任务号> [--yes] --json
+pisa executor pause | resume
+```
+
+- 管理接口只监听 `127.0.0.1:<api.port>`（默认 7801），每个请求都带 `x-pisa-token`；端口与令牌在 `<stateDir>/api.json`（权限 0600），守护进程退出时删除。`api.enabled=false` 时不启动服务，CLI 管理命令返回 3。
+
+```json
+"api": { "enabled": true, "port": 7801 }
 ```
 
 - `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省从当前目录向上找 `pisa.config.json`
 - 相对 `stateDir` 与仓库路径以配置文件目录为基准，从子目录调用也指向同一份状态
-- 退出码：`0` 成功、`1` 任务失败、`2` 用法/配置、`3` 找不到、`4` 不可运行、`5` 等待超时
-- 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
+- 退出码：`0` 成功；`1` 需要重启或重连（`api.json` 缺失、连不上接口、令牌失效、`status` 心跳过期）；`2` 命令失败（任务失败或取消、等待超时、接口拒绝、用法错误）；`3` 待配置（配置文件缺失、管理接口未启用、仓库未授权或不可用）
+- `pisa run` 在心跳过期时仍会入队，只在 stderr 警告；脚本探活用 `pisa status` 的退出码
 
 给 agent 的可复用说明在 `skills/pisa/`：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
 
