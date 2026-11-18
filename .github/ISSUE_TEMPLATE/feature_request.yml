@@ -1,0 +1,56 @@
+name: 功能需求
+description: 提出一个新能力或行为变更
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先看 [docs/usage.md](../docs/usage.md) 的「能力边界」与 [README](../README.md) 的「当前状态」，
+        避免重复提已经有或明确不做的能力。
+
+  - type: textarea
+    id: need
+    attributes:
+      label: 需求
+      description: 一句话说清要什么，先写结论。
+      placeholder: 希望 /pisa status 能按仓库分组显示
+    validations:
+      required: true
+
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景
+      description: 现在做不到什么，具体在哪个场景卡住；贴出现有命令与输出。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 方案设想
+      description: 可选。你想到的实现方向或接口形态；不填也可以。
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 怎样算做完了。写成可验证的句子，一条一行。
+      placeholder: |
+        给定两个仓库各有运行中任务，/pisa status 分别列出，并给出各自的汇总行
+    validations:
+      required: true
+
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: 非目标
+      description: 明确不在这条需求范围内的东西，避免实现时扩大范围。
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已读过 docs/usage.md 的能力边界，确认这不是明确不做的能力
+          required: true

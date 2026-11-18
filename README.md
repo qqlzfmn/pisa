@@ -411,6 +411,8 @@ specify → plan → tasks → implement → converge
 
 工程规范见 [AGENTS.md](./AGENTS.md)：SSOT、深度封装、插件化、日志可观测、禁止技术债。
 
+参与方式见 [CONTRIBUTING.md](./CONTRIBUTING.md)（环境、测试命令、分支与提交规范）；部署前先读 [SECURITY.md](./SECURITY.md) 的信任边界，漏洞不要开公开 Issue；版本变更见 [CHANGELOG.md](./CHANGELOG.md)。
+
 ## 路线图
 
 | 阶段 | 目标 | 验收 |
