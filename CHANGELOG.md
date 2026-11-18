@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 变更
+
+- README 从配置说明改为产品首页：一句话定位、三类读者路径、30 秒上手、架构图与分层表、三个带预期输出的场景、与 CNB NPC / Copilot cloud agent 的边界对比、FAQ、已知限制、演示 GIF（`docs/assets/demo.gif`）
+- 配置与运维细节（全部配置项、IM/CLI 命令、webhook、多仓库、GitHub 评论、定时、保留、launchd）迁到 [docs/operations.md](./docs/operations.md)，README 只保留入口
+
+### 新增
+
+- `LICENSE`（MIT），徽章与 GitHub 仓库许可字段据此生效
+- `tests/docs-links.test.ts`：所有 Markdown 的相对链接必须有落点，README 的页内锚点必须落在真实标题上
+
 ## [0.1.0] - 2026-11-18
 
 ### 新增

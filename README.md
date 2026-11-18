@@ -2,179 +2,159 @@
 
 # PISA
 
-**Pi Super Agent** · 用 pi 作底座，把编码 Agent 从「一个会话」变成「一个常驻团队」
+**Pi Super Agent** · 常驻在你机器上的编码 Agent 调度器
 
-![status](https://img.shields.io/badge/status-spec--first-blue)
-![base](https://img.shields.io/badge/base-pi-111111)
-![method](https://img.shields.io/badge/method-SDD-2f6b5a)
-![lang](https://img.shields.io/badge/lang-TypeScript-3178c6)
+一句话接活，多个隔离 Worker 并行改代码，结果落到分支和 PR
+
+[![CI](https://github.com/qqlzfmn/pisa/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qqlzfmn/pisa/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-2f6b5a)](./LICENSE)
+[![bun](https://img.shields.io/badge/bun-1.4.4-111111?logo=bun&logoColor=white)](https://bun.sh)
+[![typescript](https://img.shields.io/badge/lang-TypeScript-3178c6?logo=typescript&logoColor=white)](./tsconfig.json)
+
+[30 秒上手](#30-秒上手) · [它是什么](#它是什么) · [架构](#架构) · [三个真实场景](#三个真实场景) · [边界](#与云端-agent-的边界) · [FAQ](#faq)
 
 </div>
 
----
+![pisa 本地通道演示：派一个任务，实时回传进度，回执带分支名](docs/assets/demo.gif)
 
-## 目录
+演示跑的是真实 CLI 通道与真实回执格式；Worker 换成了一段 stub 脚本，省掉模型思考的几十秒，链路与真实任务一致。
 
-- [为什么做](#为什么做)
-- [它是什么](#它是什么)
-- [架构](#架构)
-- [与 pi 的关系](#与-pi-的关系)
-- [目录结构](#目录结构)
-- [Agent CLI 与 skill](#agent-cli-与-skill)
-- [Web 控制台](#web-控制台)
-- [常驻（launchd）](#常驻launchd)
-- [开发方式](#开发方式)
-- [路线图](#路线图)
-- [当前状态](#当前状态)
-- [致谢](#致谢)
+## 三类读者
 
-## 为什么做
-
-单个编码 Agent 已经很能干，但它仍被绑在一个**会话**上：
-
-- 同时推进三件事，你就要在三个窗口之间来回切换，自己记住每件事的进度
-- 上一条命令没跑完，下一条只能等着
-- 设备一休眠，任务就停
-- 不同任务的上下文混在同一个会话里，互相污染
-
-结果就是：**单任务的上限取决于模型，多任务的上限取决于人的注意力。**
-
-PISA 要把这层限制从人身上移到系统里：会话管理、上下文同步、任务分派由系统负责，人只负责目标设定和结果验收。
+| 你是 | 从哪进 | 大约耗时 |
+| --- | --- | --- |
+| **使用者**：想让它替自己改代码 | [30 秒上手](#30-秒上手) → [配置与运维](./docs/operations.md) → [场景与边界](./docs/usage.md) | 10 分钟 |
+| **贡献者**：想改 pisa 本身 | [CONTRIBUTING](./CONTRIBUTING.md) → [SDD 流程](./SDD.md) → [架构文档](./docs/architecture.md) | 30 分钟 |
+| **好奇者**：想先看设计取舍 | [它是什么](#它是什么) → [架构](#架构) → [与云端 Agent 的边界](#与云端-agent-的边界) | 5 分钟 |
 
 ## 它是什么
 
-一个常驻在线的 Agent 系统，四个特征：
+单个编码 Agent 已经很强，但它绑在一个会话上：
+
+- 同时推进三件事，就得在三个窗口间来回切，进度自己记
+- 上一条命令没跑完，下一条只能等
+- 设备一休眠，任务就停
+- 不同任务的上下文混在一个会话里，互相污染
+
+**单任务的上限取决于模型，多任务的上限取决于人的注意力。** PISA 把这层限制从人身上挪到系统里：
 
 | 特征 | 含义 |
 | --- | --- |
-| **连续** | 你在 IM 里定方案 A，在 PR 评论里改成方案 B，它接得上，不用管背后开了几个会话 |
-| **高效** | 上一条任务没结束，下一条随时能进；多任务并行推进 |
-| **主动** | 监听环境事件，值得处理就处理，不值得就保持安静 |
-| **持久** | 始终在线，断线重连能续上，异常能自己恢复 |
+| **连续** | IM 里定方案 A、PR 评论里改成方案 B，它接得上，不用管背后开了几个会话 |
+| **高效** | 上一条没结束，下一条随时能进；并发上限可配 |
+| **隔离** | 一个任务一个 git worktree、一个分支，上下文不串 |
+| **持久** | 常驻进程，崩溃自动拉起；中断的任务可从原分支续跑 |
+| **可撤销** | 交付动作记在账本里，`/pisa rewind` 预览并回退 |
 
-核心判断：**没有任何单个 ReAct 循环能同时提供这四个特征**，它们必须来自循环之外的系统架构。
+没有单个 ReAct 循环能同时给出这五点，它们只能来自循环之外的系统架构。
+
+## 30 秒上手
+
+前置：Bun（CI 固定 1.4.4）、git，以及一个能跑起来的 coding agent CLI（默认适配器是 `omp`，`src/adapters/`）。
+
+```bash
+git clone https://github.com/qqlzfmn/pisa.git && cd pisa
+bun install
+
+# 最小配置：只管当前仓库，白名单里只有你自己
+cat > pisa.config.json <<JSON
+{
+  "whitelist": { "users": ["$USER"], "repos": ["pisa"] },
+  "repos": [{ "alias": "pisa", "path": ".", "baseBranch": "main" }]
+}
+JSON
+
+# 起服务，注入一行需求
+bun run src/index.ts --channel cli
+```
+
+看到 `[pisa] ready · channel=cli · repos=pisa` 就是起来了，接着输入：
+
+```
+/pisa 在 README 末尾加一行 "wake up"
+```
+
+任务执行期间在 `.pisa/worktrees/<任务号>` 里跑（结束后清理），改完提交到 `pisa/<任务号>` 分支，主分支不动。`/status` 看板，`/pisa examples` 看可直接照抄的场景。
+
+其余通道（Telegram、webhook、GitHub 评论、定时任务、Web 控制台）与全部配置项见 [配置与运维](./docs/operations.md)。
 
 ## 架构
 
-下图是参考架构（来源见「致谢」）。pisa 当前实现是确定性 Router、单级程序过滤、单机存储，实现与这张图的差异及理由见 [docs/architecture.md](./docs/architecture.md)。
+```mermaid
+flowchart TB
+    subgraph entry["入口：只做通道适配，装配在 src/index.ts"]
+        cli["CLI 通道<br/>src/channels/cli.ts"]
+        tg["Telegram 通道<br/>src/channels/telegram.ts"]
+        hook["Webhook<br/>POST /event"]
+        gh["GitHub 评论轮询<br/>src/github-watcher.ts"]
+        web["Web 控制台<br/>src/web.ts"]
+    end
 
-```
-              IM / GitHub / 邮件 / CI / 定时器
-                            │
-                  ┌─────────▼─────────┐
-                  │      Router       │   常驻 · 全局记忆 · 只分派
-                  │   （轻量模型）     │   不直接执行任务
-                  └──┬──────┬──────┬──┘
-                     │      │      │
-            ┌────────▼──┐ ┌─▼────────┐ ┌▼──────────┐
-            │ Worker 1  │ │ Worker 2 │ │ Worker N  │  隔离上下文 · 全套工具
-            │   (pi)    │ │   (pi)   │ │   (pi)    │  强模型 · 可再开子代理
-            └───────────┘ └──────────┘ └───────────┘
-```
+    subgraph core["Core：不认识通道，也不认识 agent"]
+        router["Router<br/>鉴权 · 命令 · 任务状态机<br/>src/router.ts"]
+        store[("SQLite<br/>.pisa/pisa.db")]
+        gitops["git 副作用<br/>worktree · 提交 · 交付<br/>src/git.ts · src/deliver.ts"]
+    end
 
-- **Router**：全局入口，承接所有人类交互，维护跨任务记忆，决定「谁来做」。不碰单任务内部的拆解。
-- **Worker**：一个任务一个隔离会话，挂完整工具链，独立目录（git worktree）执行，干完向 Router 汇报。
-- **事件驱动**：消息、CI 失败、Issue 变更都是触发器；两级过滤决定哪些值得唤醒 Agent。
-- **存算分离**：会话状态与执行环境解耦，设备掉线可恢复。
-- **Watchdog**：外部看护进程，负责超时、卡死、重启。
+    subgraph runtime["Runtime：一个任务一个进程"]
+        runner["WorkerRunner.run()<br/>src/worker.ts"]
+        adapter["WorkerAdapter<br/>src/adapters/omp.ts"]
+        ext["pisa 扩展<br/>进度上报 · 命令拦截"]
+        wt["git worktree<br/>.pisa/worktrees/任务号"]
+    end
 
-## 与 pi 的关系
-
-pi 提供的是**单体 Agent 运行时**：会话、工具调用、扩展机制、模型适配。
-
-PISA 不重写这些，只在它之上加一层调度：
-
-| 层 | 归属 | 职责 |
-| --- | --- | --- |
-| 交互与调度 | PISA | Router、任务队列、事件过滤、跨会话记忆 |
-| 执行 | pi | 每个 Worker 就是一个 pi 会话，跑完整的 agent loop |
-| 能力扩展 | pi extension | 工具、钩子、可观测性，按需挂载 |
-
-pi 的扩展是 TypeScript 文件，`export default async function (pi) { … }`，可订阅会话生命周期事件。PISA 的 Worker 以扩展 + 进程管理的方式接入，不 fork pi。
-
-## 目录结构
-
-```
-pisa/
-├── AGENTS.md              # 工程规范（工作原则、编码、测试、Git、子代理）
-├── SDD.md                 # 规格驱动开发流程
-├── README.md
-├── docs/
-│   ├── constitution.md    # 项目宪法：不可协商的架构与质量约束
-│   ├── architecture.md    # 分层、状态机、数据流、扩展点、失败模式
-│   └── specs/             # 每个 feature 一个目录：spec / plan / tasks
-├── src/                   # Router、任务调度、事件总线、CLI
-├── extensions/            # pi 扩展：进度上报 + 策略拦截
-├── skills/pisa/           # agent skill：命令、brief 模板、失败模式、能力边界
-├── scripts/supervise.sh   # 崩溃自动重启
-└── tests/
+    cli --> router
+    tg --> router
+    hook --> router
+    gh --> router
+    web --> router
+    router --> store
+    router -->|"run(task, workdir)"| runner
+    runner --> wt
+    runner --> adapter
+    adapter -.->|"-e extensions/pisa-worker.ts"| ext
+    runner -->|"提交到 pisa/任务号"| gitops
+    gitops --> store
 ```
 
-## 快速开始
+| 层 | 代码 | 职责 | 刻意不做 |
+| --- | --- | --- | --- |
+| 入口 | `src/index.ts`、`src/channels/`、`src/web.ts` | 把外部消息翻成 `IncomingMessage`，把回执写回来源 | 不做调度、不碰数据库细节 |
+| Core | `src/router.ts`、`src/store.ts` | 鉴权、命令、状态机（queued → running → succeeded/failed/paused）、去重、账本 | 不认识 Telegram 与 omp |
+| Runtime | `src/worker.ts`、`src/adapters/`、`extensions/` | 起进程、喂 prompt、收进度、超时与卡死判定 | 不改任务状态 |
+| 交付 | `src/git.ts`、`src/deliver.ts` | worktree、提交、push、PR 链接 | 不判断任务成功与否 |
 
-```bash
-bun install
-cp pisa.config.example.json pisa.config.json   # 改成你的仓库与白名单
-bun run src/index.ts --channel cli             # 本地通道
-```
+Core 与 Runtime 之间只有一个 `WorkerRunner.run()`；换成别的 agent 只需实现 `WorkerAdapter`（`src/adapters/types.ts`），Router 一行不改。分层依据与失败模式见 [docs/architecture.md](./docs/architecture.md)。
 
-Telegram：
+## 三个真实场景
 
-```bash
-export PISA_TELEGRAM_TOKEN="<bot token>"
-# pisa.config.json 里把 channels.telegram.enabled 设为 true
-bun run src/index.ts
-```
+### 1. 本地一句话派活
 
-用法：
+2026-11-18 的实跑记录（Worker 用 stub 脚本，回执格式与真实任务相同）：
 
 ```
-/pisa <需求>            接一个任务
-/pisa examples          可直接照抄的场景（触发方式 + 预期产出）
-/pisa cancel [任务号]   取消
-/pisa help              按用途分组的命令帮助
+❯ /pisa 给 README 加一节「安装」，并补一条测试
+已接单 · t_20261118_79f103
+仓库：demo
+排队中。
+开始执行 · t_20261118_79f103
+分支 pisa/t_20261118_79f103
+🛠 bun test 2>&1 | tail -5
+✅ t_20261118_79f103 完成
 
-私聊里可以直接说需求，不用加 /pisa；群聊仍需触发词。
-/status、/cancel、/help 在私聊可直接用。
+已在 README.md 增加「安装」一节。
+验证：bun test 通过（0 fail）。
 
-/pisa continue <任务号> <新要求>   从上一轮的分支和上下文继续做
-/pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
-/pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
-/pisa status                     任务看板（私聊可用 /status）
+改动 1 个文件：README.md
+
+分支：pisa/t_20261118_79f103
 ```
 
-场景说明、最佳实践与能力边界（无沙箱、回滚范围、单机、并发、鉴权面）见 [docs/usage.md](./docs/usage.md)。
+`/status` 随后变成 `成功 · 5s · demo · 给 README 加一节「安装」，并补一条测试`。
 
-撤销：
+### 2. CI 失败自动开单
 
-- `/pisa rewind <任务号>` 只读预览：将关闭的 PR、将删除的本地/远程分支、是否已合并、哪些动作不可撤销
-- `/pisa rewind <任务号> --yes` 执行；已合并的任务用 `revert` 提交回退，不改写历史
-- `gh` 查不到 PR 状态时保留分支、不标记完成，修好后重发
-- 任务执行期间的其它外部调用（API、消息、数据库）不在账本内，无法撤销
-
-误触保护：
-
-- 只有一个 token 且与命令编辑距离 ≤ 2（如 `/pisa stats`）不会建任务，直接回复建议命令
-- 其余单英文词（如 `/pisa refactor`）先要求确认，回复 `/pisa confirm` 才建任务，10 分钟内有效
-- 中文正文与多词正文照常直接建任务
-
-Telegram 启动时用 `setMyCommands` 注册命令菜单（私聊可直接点选）。
-
-`/pisa status` 分三段：
-
-- **运行中**：每行 `任务号 · 仓库 · 已运行 3m12s · 需求前 40 字`
-- **排队**：数量 + 最多 5 条 `任务号 · 仓库 · 需求前 40 字`
-- **最近完成**：最多 5 条 `状态 · 耗时 · 仓库 · 需求前 30 字 · PR 链接`
-
-末尾一行汇总 `总数 / 成功 / 失败 / 暂停`；某段为空时显示 `(无)`。
-
-进程重启后，工作副本与会话都还在的 `running` 任务进入 `paused`，可用 `resume` 拉回执行；缺任一条的标记 `failed`。
-
-**回复机器人的任意一条任务消息，等于继续那个任务**，不用记任务号。
-
-执行时会实时回传进度（`🛠 命令` / `✏️ 文件`），破坏性命令会在 agent 内部被拦下。
-
-外部事件入口：
+CI 里加一步，把失败丢给 webhook（`webhook.enabled: true`，token 由 `PISA_WEBHOOK_TOKEN` 提供）：
 
 ```bash
 curl -X POST http://127.0.0.1:8799/event \
@@ -183,274 +163,116 @@ curl -X POST http://127.0.0.1:8799/event \
   -d '{"prompt":"跑测试并修掉失败","eventId":"ci:12345"}'
 ```
 
-执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
+预期输出（实跑）：
 
-## Agent CLI 与 skill
+```json
+{"ok":true,"eventId":"ci:12345"}
+```
 
-不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 只读写 `pisa.config.json` 与同一个 `pisa.db`，执行仍由守护进程负责。
+同一 `eventId` 重投只建一个任务。回执发给 `webhook.chatId`：配了 Telegram 就推到那个会话，跑本地 CLI 通道时直接打到终端。
+
+### 3. PR 评论里继续改
+
+在已有 PR 的评论里：
+
+```
+/pisa 把空状态提示改成中文，别动其它文案
+```
+
+预期回执（节选）：
+
+```
+已接单 · t_20261118_c3f8a1
+仓库：pisa
+开始执行 · t_20261118_c3f8a1
+分支 pisa/t_20261118_4f0d2e
+```
+
+分支出自原 PR 的任务，不新开分支、不新建 PR，改动直接落到原 PR；完成后在原讨论串回帖（前提是开了 `delivery.push: true`，否则改动只留在本地分支）：
+
+```
+**pisa** 任务完成
+
+<摘要，最多 3000 字>
+```
+
+更多可直接照抄的触发语句见 `/pisa examples`，或者 [skills/pisa/references/scenarios.md](./skills/pisa/references/scenarios.md)。
+
+## 与云端 Agent 的边界
+
+| | **pisa** | **CNB CodeBuddy NPC** | **GitHub Copilot cloud agent** |
+| --- | --- | --- | --- |
+| 跑在哪 | 你自己的机器，一个常驻进程 | CNB 云原生构建流水线 | GitHub Actions 支撑的临时环境 |
+| 代码在哪 | 任意本地 git 仓库；远程可以是 GitHub、自建，也可以没有 | 必须托管在 CNB | 必须托管在 GitHub |
+| 怎么触发 | IM、webhook、GitHub 评论、cron、CLI、Web 控制台 | Issue / PR 评论 `@CodeBuddy`，或平台 API | 指派 issue、PR 里 `@copilot`、Agents 面板 |
+| 模型与运行时 | 你装了什么用什么，`worker.adapter` 可换 | CodeBuddy 模型，可配镜像与角色 | Copilot 订阅内的模型 |
+| 并行与隔离 | 并发上限可配，每任务一个 worktree + 分支 | 平台侧并发 | 一个任务一条分支、一个 PR；单会话最长 59 分钟 |
+| 权限面 | 你的账号与本地环境，无沙箱 | 委托代理：限时、限本仓库、权限上限 Developer | 仓库权限 + Actions secrets，受分支保护约束 |
+| 恢复与回溯 | 中断任务从原分支续跑；账本支持 rewind | 流水线日志 / 平台记录 | 会话记录与 PR 历史 |
+| 适合 | 自托管、私有 token、跨平台仓库、想换模型、长期常驻 | 代码已在 CNB、要开箱即用 | 代码已在 GitHub、要零运维 |
+
+三者不互斥：pisa 也能把 GitHub 评论当入口（`github.enabled`），区别在任务跑在自己的机器上、权限面是你本机的权限，而不是平台签发的临时令牌（[CNB NPC 文档](https://docs.cnb.cool/zh/build/npc.html)、[Copilot cloud agent 文档](https://docs.github.com/en/copilot/concepts/agents/coding-agent/about-coding-agent)）。
+
+## FAQ
+
+**Q：和直接在终端里跟 agent 对话有什么不同？**
+对话是串行的、上下文共享的。pisa 把「接活、排队、隔离、回执、记账」搬进系统：多个任务并行、各自 worktree、结果落分支，人只做验收。
+
+**Q：会自己 push 或开 PR 吗？**
+默认不。`delivery.push` 与 `delivery.pr` 都关着，改动只留在本地 `pisa/<任务号>` 分支；打开后才 push 到 origin（在本地裸仓库上验证过），`gh pr create` 还没在真实远程仓库实测。
+
+**Q：两个任务同时改一个仓库会互相覆盖吗？**
+不会。每任务一个 git worktree 与独立分支。同一分支被别的 worktree 占用时任务直接失败，不会另建同名分支顶替；续跑才会刻意共享父任务的分支。
+
+**Q：密钥会不会被 agent 读走？**
+Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、LANG、LC_ALL、TERM、TMPDIR、SHELL、USER），其余变量不进子进程。但 pisa 不是沙箱：进程能读写整台机器，别在不可信仓库上开自动推送。
+
+**Q：能跑在 Linux 服务器上吗？**
+代码里没有 macOS 专有依赖；常驻脚本只提供了 macOS launchd 版本（`scripts/install-launchd.sh`），Linux 用 systemd/pm2 之类托管 `bun run src/index.ts` 即可。
+
+**Q：能换模型或换 agent 吗？**
+`worker.adapter` 决定用谁执行，目前只有一个 `omp` 适配器。换 agent 只需实现 `WorkerAdapter`（`src/adapters/types.ts`：拼参数、备环境、解析一行输出）并注册到 `src/adapters/index.ts`，Router 一行不改；换模型改对应 CLI 的配置即可。
+
+**Q：任务跑飞了怎么收场？**
+`/pisa cancel <任务号>` 停执行；`/pisa rewind <任务号>` 预览并撤销已交付的副作用；单任务 `timeoutSec` 与「无输出 `idleTimeoutSec`」会兜住卡死。
+
+## 已知限制
+
+- **无沙箱**：Worker 以你的身份运行，能访问整机与网络；只在你信任的仓库上开自动执行
+- **回滚不完整**：账本只覆盖分支、push、PR；任务期间调用的 API、发的消息、改的数据库不会撤销
+- **单机单进程**：没有分布式调度，并发受本机 CPU 与 agent 进程数限制
+- **没有真正的会话持久化**：续跑靠「上一轮分支 + 上下文注入」，不是恢复 token 流
+- **`gh pr create` 未实测**：没配远程的仓库只得到 compare 链接
+- **常驻脚本仅覆盖 macOS launchd**：其它系统需要自己托管进程
+
+## 文档地图
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/operations.md](./docs/operations.md) | 全部配置项、IM/CLI 命令、事件入口、撤销、数据保留、常驻 |
+| [docs/usage.md](./docs/usage.md) | 使用场景、最佳实践、能力边界、卡住排查 |
+| [docs/architecture.md](./docs/architecture.md) | 分层、状态机、数据流、扩展点、失败模式与设计取舍 |
+| [docs/specs/](./docs/specs/) | 每个 feature 的 spec / plan / tasks |
+| [skills/pisa/](./skills/pisa/) | 给 agent 用的 skill：命令表、brief 模板、失败模式、可复制场景 |
+| [SDD.md](./SDD.md) · [AGENTS.md](./AGENTS.md) | 规格驱动开发流程与工程规范 |
+
+## 开发
+
+规格驱动：`specify → plan → tasks → implement → converge`。规格是唯一事实源，改代码前先改规格；先写失败测试，再写实现。
 
 ```bash
-bun link                 # 把 pisa 命令链到 PATH；也可直接用 bun run src/cli.ts
-pisa task "修 CI：test 失败日志见 ci.log" --repo demo --json
-pisa wait <任务号> --timeout 900 --json
-pisa status --json
-pisa show <任务号>
-pisa logs <任务号> --tail 100
-pisa cancel <任务号>
-pisa continue <任务号> "按 PR 评论再改"
+bun test              # 单元与集成测试
+bunx tsc --noEmit     # 类型检查
 ```
 
-- `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省从当前目录向上找 `pisa.config.json`
-- 相对 `stateDir` 与仓库路径以配置文件目录为基准，从子目录调用也指向同一份状态
-- 退出码：`0` 成功、`1` 任务失败、`2` 用法/配置、`3` 找不到、`4` 不可运行、`5` 等待超时
-- 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
-
-给 agent 的可复用说明在 `skills/pisa/`：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
-
-## Web 控制台
-
-任务多起来后，看板、日志、派活不必再翻聊天记录。控制台是一个单页 HTML，内联样式与原生脚本，没有前端构建步骤：
-
-```bash
-PISA_WEB_TOKEN=<自定义 token> bun run web
-# Web 控制台：http://127.0.0.1:8787/ui?token=<token>
-```
-
-- 只监听 `127.0.0.1`；`/ui` 与 `/api/*` 都要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、cookie 任一），缺失或错误一律 401
-- 用带 token 的 `/ui` 打开后下发 `HttpOnly` cookie，页面随即把地址栏里的 token 抹掉
-- 看板三段：运行中 / 排队 / 最近完成（最多 20 条），可按仓库筛选，5 秒自动刷新
-- 任务详情：prompt、状态、耗时、分支、PR、副作用与最后 200 行日志
-- 支持派活、取消、合并（浏览器二次确认）与复制任务号
-- 没配 `${web.tokenEnv}` 时启动生成一次性 token，只打印到日志，不落盘
-- 写操作走同一个 `Router`：白名单、状态机、合并前的验证与快进逻辑与 IM 完全一致
-
-```json
-{
-  "web": { "enabled": true, "port": 8787, "tokenEnv": "PISA_WEB_TOKEN", "userId": "<telegram user id>" }
-}
-```
-
-`userId` 是页面派出任务的请求者，必须在 `whitelist.users` 里；不配时取 `PISA_CLI_USER` 或 `$USER`。`chatId` 默认 `"web"`，只用于内部记账。也可以 `bun run src/index.ts --web` 临时开启，`--web` 会忽略 `web.enabled`。
-
-## 多仓库
-
-`repos` 可以写多个仓库，入口用 `@别名` 指定这次任务落在哪个仓库；不带别名时走第一个（默认仓库）。
-
-```json
-{
-  "trigger": "/pisa",
-  "whitelist": { "users": ["<telegram user id>"], "repos": ["pisa", "family"] },
-  "repos": [
-    { "alias": "pisa", "path": "/absolute/path/to/pisa", "baseBranch": "main" },
-    { "alias": "family", "path": "/absolute/path/to/family", "baseBranch": "main" }
-  ]
-}
-```
-
-```
-/pisa @family 改一下首页     群聊或带触发词
-@family 改一下首页           私聊可以直接说
-```
-
-- 别名在 `repos` 里精确匹配；写错时不会被吞掉，任务仍进默认仓库，正文保留原文
-- 别名可以放在触发词前：`@family /pisa 改一下首页` 与 `/pisa @family 改一下首页` 等价
-- 接单回执写明 `仓库：<别名>`，不用回忆默认仓库是哪个
-- 续跑固定在父任务所在仓库，别名不会把续跑带到别的仓库
-
-## 主动发现
-
-两种触发方式，都不需要人 @：
-
-```json
-{
-  "proactive": {
-    "keywords": {
-      "enabled": true,
-      "words": ["挂了", "报错", "失败"],
-      "cooldownSec": 600
-    },
-    "probe": {
-      "enabled": true,
-      "command": "gh run list --limit 1 --json conclusion -q '.[0].conclusion' | grep -q success",
-      "intervalSec": 300,
-      "chatId": "<telegram chat id>",
-      "userId": "<telegram user id>",
-      "prompt": "CI 有失败，定位并修复"
-    }
-  }
-}
-```
-
-- **关键词**：群里出现这些词且没人带触发词，自动开单（同一群有冷却）
-- **探针**：定时跑一条命令，退出码非 0 就开单；命令写法自由，CI、探活、磁盘检查都能接
-
-## 定时任务
-
-cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副本、执行、回执。
-
-```json
-{
-  "scheduler": { "chatId": "<telegram chat id>", "userId": "<telegram user id>" },
-  "schedules": [
-    { "id": "morning", "cron": "0 9 * * 1-5", "prompt": "检查昨天以来的 CI 失败并修复", "repo": "pisa" },
-    { "id": "monthly", "cron": "0 0 1 * *", "prompt": "升级依赖并跑测试", "enabled": false }
-  ]
-}
-```
-
-- cron 为 5 段 `分 时 日 月 周`，按进程本地时区；支持 `*`、`*/n`、逗号列表、区间 `a-b`、区间步长 `a-b/n`，周 `7` 等同周日
-- `scheduler` 决定任务挂在谁的会话下，缺省时 `schedules` 不生效
-- `enabled: false` 保留配置但不触发；`repo` 省略时走默认仓库
-- 每 30 秒检查一次；同一分钟只投一次，进程重启也不会重投
-- `id` 重复或 cron 非法的 job 在启动日志告警后跳过，不影响其他 job
-- `/pisa schedules`（私聊 `/schedules`）查看 id、cron、仓库与启用状态
-
-## 数据保留
-
-事件去重记录、进度文件、任务日志都会随运行时间增长，按下面的规则回收：
-
-```json
-{ "retentionDays": 30 }
-```
-
-- `retentionDays` 默认 30；≤ 0 关闭每日清理，回收照常
-- 每小时检查一次，启动时立即跑一次；同一本地日期只清理一次，重启不重复
-- 清理对象：结束时间早于 `now - retentionDays` 的终态任务（成功 / 失败 / 取消 / 撤销）的 `events` 行与 `.pisa/progress/<任务号>.jsonl`；任务行与账本保留，看板与撤销照常可用
-- 不属于任何任务的占位行（cron 每分钟占位等）按写入时间过期；不这样清它们没有任务行可依附，永远涨
-- 单个任务日志超过 10 MiB 时轮转为 `<任务号>.log.1`，只保留一代，主文件继续写
-- 每周 VACUUM 一次并 checkpoint，数据库文件实际缩小；同一 ISO 周只执行一次
-
-## GitHub 评论（PR / Issue）
-
-评审人和维护者可以直接在 PR / Issue 评论里派活，不用绕回 IM：
-
-```json
-{
-  "github": {
-    "enabled": true,
-    "intervalSec": 120,
-    "tokenEnv": "GH_TOKEN",
-    "repos": [
-      { "repo": "owner/pisa", "chatId": "<telegram chat id>", "userId": "<telegram user id>" },
-      { "repo": "owner/site", "chatId": "<telegram chat id>", "userId": "<telegram user id>" }
-    ]
-  }
-}
-```
-
-- `repos` 里的每个仓库独立轮询、独立增量下界；`intervalSec` 与 `tokenEnv` 仍是全局配置
-- 旧的单仓库写法 `repo` + `chatId` + `userId` 继续可用；`repos` 非空时优先，旧字段被忽略
-- 某个仓库拉取或类型判定失败只影响它自己：本轮不推进它的下界，其它仓库照常
-- 轮询仓库的 Issue 评论（PR 评论走同一个 API），默认 120 秒一轮
-- 只认正文（去首尾空白）以 `/pisa ` 开头的评论，其余一律忽略
-- 启动时刻作为下界，不回放历史评论；拉取失败不推进下界，下一轮继续
-- 同一条评论按「仓库 + 评论 id」去重（事件 id `github:comment:<repo>:<id>`），重启、轮询重叠都只建一个任务
-- 编号先判定类型（`gh api repos/<repo>/issues/<n>` 看有没有 `pull_request`）：失败就不投递，该仓库本轮也不推进下界
-- PR 上已有成功任务时直接在该任务的分支上继续并更新原 PR（不新开分支、不新建 PR）；任务按仓库匹配，`o/a#7` 与 `o/b#7` 互不干扰。上下文带 PR 号与原评论；没有就按普通任务处理，正文是去掉触发词的部分
-- Issue 评论产生的任务从主干开新分支，不继承任何父分支；完成后把摘要回帖到该 Issue
-- Issue 来源的任务新建 PR 时，正文追加一行 `Closes #<n>`，合并 PR 后自动关闭 Issue
-- 复用分支的任务失败或取消时保留共享分支；任务自己新建的 `pisa/<任务号>` 才会被清理
-- 任务成功后把摘要（限 3000 字）回帖到评论所在的仓库；旧任务或没有仓库记录时回退到配置里的单仓库；回帖失败只写日志，任务状态不变
-- GitHub 评论产生的任务仍落在本地默认仓库：配置里没有 GitHub 仓库到本地别名的映射
-
-`gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
-
-## 自举
-
-pisa 可以改自己：
-
-1. 给机器人发需求（或从 webhook 投递），Worker 在 `pisa/<任务号>` 分支上改代码
-2. `/pisa merge <任务号>`：在临时副本跑 `bun test`，通过后 `--ff-only` 合入 `main`
-3. 看护模式（`PISA_SUPERVISED=1`）下进程退出，`scripts/supervise.sh` 拉起新代码
-
-这条链路已经实测：任务改 README → merge → 进程 PID 变化 → 新内容生效。
-
-## 常驻（launchd）
-
-`scripts/supervise.sh` 交给 launchd 托管：开机自启，进程退出后自动拉起。
-
-安装（重复执行等于重装）：
-
-```bash
-./scripts/install-launchd.sh
-```
-
-脚本生成 `~/Library/LaunchAgents/ai.pisa.supervisor.plist` 并加载，工作目录是仓库根目录，日志写在 `~/Library/Logs/pisa.launchd.log`（外部卷上的路径 launchd 无权限写入）。多份 worktree 同时安装会互相覆盖，只保留一份。
-
-看日志：
-
-```bash
-tail -f ~/Library/Logs/pisa.launchd.log
-launchctl print gui/$(id -u)/ai.pisa.supervisor    # 状态
-```
-
-卸载：
-
-```bash
-launchctl bootout gui/$(id -u)/ai.pisa.supervisor
-rm ~/Library/LaunchAgents/ai.pisa.supervisor.plist
-```
-
-token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.pisa/telegram_token` 与 `~/.pisa/webhook_token`。
-
-## 开发方式
-
-本项目使用 **规格驱动开发（SDD）**，流程见 [SDD.md](./SDD.md)：
-
-```
-specify → plan → tasks → implement → converge
-```
-
-规则摘要：
-
-- 规格是唯一事实源，改代码前先改规格
-- `spec.md` 只写 WHAT / WHY，技术选型属于 `plan.md`
-- 每条需求有 ID（`US-1` / `FR-001` / `NFR-001`），任务与测试都能回溯
-- 先写失败测试，再写实现
-- 一次只做一个 feature，一个 feature 一个分支
-
-工程规范见 [AGENTS.md](./AGENTS.md)：SSOT、深度封装、插件化、日志可观测、禁止技术债。
-
-参与方式见 [CONTRIBUTING.md](./CONTRIBUTING.md)（环境、测试命令、分支与提交规范）；部署前先读 [SECURITY.md](./SECURITY.md) 的信任边界，漏洞不要开公开 Issue；版本变更见 [CHANGELOG.md](./CHANGELOG.md)。
-
-## 路线图
-
-| 阶段 | 目标 | 验收 |
-| --- | --- | --- |
-| **P0** | Router + 单 Worker：一个入口收消息，分派给一个隔离会话执行，结果回到原对话 | 一条 Issue 能被接单、执行、回复 |
-| **P1** | 多 Worker 并行（已完成）+ 任务与讨论的订阅绑定 | 三件事并行，互不串上下文 |
-| **P2** | 事件驱动与主动发现：CI 失败、群聊报障在无人 @ 时自动接手 | 无指令场景下产出可评审的 PR |
-| **P3** | 持久化与自愈：会话状态外置、断线重连、Watchdog | 杀掉进程后任务可续跑 |
-
-## 当前状态
-
-**P0、P1、P2、P3 已实现；路线图里还有两项没做。**
-
-已完成：
-
-- P0：单 Worker 闭环，真实 omp 跑通（改文件 → 提交到 `pisa/<任务号>` → 主分支零改动）
-- P1：并发上限可配（默认 2），任务级隔离，`/pisa status` 查看状态
-- P2：webhook 事件入口（CI/监控可直接投递任务）
-- P3：崩溃自动重启、孤儿任务收口、任务级超时
-- pi 集成：Worker 挂 pisa 扩展，工具级进度上报 + 命令拦截 + 分支续跑
-- 自举：`/pisa merge` 验证后合入主干，看护进程拉起新代码
-- 订阅绑定：回复任务消息即续跑（消息 → 任务映射落库）
-- GitHub 评论：`/pisa` 触发多仓库轮询（`github.repos`，旧的单仓库写法兼容），按仓库隔离增量下界、去重与回帖；PR 上已有任务则接续分支，普通 Issue 从主干开新分支；完成后回帖到评论所在仓库，Issue 来源的 PR 带 `Closes #<n>`
-- 主动发现：群聊关键词 + 定时探针
-- 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
-- Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
-- Web 控制台：`bun run web` 起单页控制台，看板 / 详情 / 派活 / 取消 / 合并 / 日志，token 鉴权
-- 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 215 个全绿；`tsc --noEmit` 无报错
-- 已接入 Telegram（@lzf_pisa_bot）
-
-未完成（路线图原计划）：
-
-- P3 真正的会话持久化——仍用「上一轮分支 + 上下文注入」替代
-- `gh pr create` 未实测——仓库没配远程，只在本地裸仓库验证了 push
+分支、提交与评审规范见 [CONTRIBUTING.md](./CONTRIBUTING.md)；部署前先读 [SECURITY.md](./SECURITY.md) 的信任边界，漏洞不要开公开 Issue；版本变更见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 致谢
 
 - 架构思路来自 DeepSeek Harness 团队《Super-agent 设计探索：迈向更自主的 Agent 系统》（2026-10-31）
 - 底座 [pi](https://github.com/earendil-works/pi) —— 会话、工具与扩展运行时
 - 规格流程参考 [GitHub spec-kit](https://github.com/github/spec-kit/blob/main/spec-driven.md)
+
+## 许可
+
+[MIT](./LICENSE)
