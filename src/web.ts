@@ -2,12 +2,15 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Server } from "bun";
-import { DEFAULT_WEB, type Config, type WebConfig } from "./config";
+import { configPath, DEFAULT_WEB, type Config, type WebConfig } from "./config";
+import { configDraft, draftFromFile, sameDraft, validateDraft, writeConfigPatch } from "./config-file";
 import type { Store } from "./store";
 import type { ChannelAdapter, DeliveryReceipt, IncomingMessage, Task } from "./types";
 import { daemonState, taskJson, type TaskJson } from "./status";
-import { computeWindowMetrics, METRICS_WINDOW_MS } from "./metrics";
+import { bucketMetrics, computeWindowMetrics, METRICS_WINDOW_MS } from "./metrics";
 import { readTail, tailLines } from "./log";
+import { rewindPlanJson } from "./rewind";
+import type { RewindExecution, RewindPreview, TaskActor } from "./router";
 import { WEB_UI } from "./web-ui";
 import { HttpError, readJson, safeEqual } from "./http";
 
@@ -15,7 +18,11 @@ import { HttpError, readJson, safeEqual } from "./http";
 export const WEB_COOKIE = "pisa_web";
 /** 详情面板展示的日志行数 */
 const LOG_TAIL_LINES = 200;
-const TASK_ROUTE = /^\/api\/tasks\/([\w-]+)(?:\/(cancel|merge))?$/;
+const TASK_ROUTE = /^\/api\/tasks\/([\w-]+)(?:\/(cancel|merge|rewind))?$/;
+/** 趋势图窗口上限：队列采样只保留 7 天 */
+const METRICS_MAX_HOURS = 168;
+const METRICS_MIN_BUCKETS = 6;
+const METRICS_MAX_BUCKETS = 96;
 
 /**
  * Router 的回执总线：本机 Web 的 chatId 由它收集，其它 chatId 原样转发给真实通道。
@@ -61,11 +68,15 @@ export interface WebDeps {
   now?: () => number;
   /** 进程启动时间（毫秒）；缺省取创建 Web 应用的时刻，作为 /health 的 uptime 起点 */
   startedAt?: number;
+  /** 可编辑的配置文件路径；缺省与 loadConfig 同一解析规则 */
+  configPath?: string;
 }
 
 /** Web 只依赖 Router 的一个能力；Router 结构化满足它 */
 export interface WebRouter {
   handle(msg: IncomingMessage): Promise<void>;
+  previewRewind(id: string, actor: TaskActor): RewindPreview;
+  executeRewind(id: string, actor: TaskActor): RewindExecution;
 }
 
 function json(value: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -73,6 +84,12 @@ function json(value: unknown, status = 200, headers: Record<string, string> = {}
     status,
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers },
   });
+}
+
+/** 查询参数里的整数：非法或越界回落到默认值，图表参数不值得报错 */
+function clampInt(raw: string | null, min: number, max: number, fallback: number): number {
+  const n = raw === null ? Number.NaN : Number(raw);
+  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
 }
 
 function cookieValue(header: string | null, name: string): string | null {
@@ -163,6 +180,29 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
   const web: WebConfig = cfg.web ?? { ...DEFAULT_WEB, enabled: true, userId: "web" };
   const now = deps.now ?? Date.now;
   const startedAt = deps.startedAt ?? now();
+  const filePath = deps.configPath ?? configPath();
+  /** 页面操作者：token 已认证，身份取配置里的 web.userId */
+  const actor: TaskActor = { admin: true, userId: web.userId };
+
+  /** 写操作统一记账：页面动作没有聊天记录，审计是唯一的痕迹 */
+  function record(action: string, target: string, detail: string): void {
+    store.audit({ at: now(), action, target, detail, actor: actor.userId });
+  }
+
+  /** 配置视图：active 是当前进程使用的值，draft 是重启后生效的值 */
+  function configView(): Record<string, unknown> {
+    const active = configDraft(cfg);
+    const file = draftFromFile(filePath, active);
+    const checked = validateDraft(file.draft);
+    return {
+      ok: true,
+      path: filePath,
+      active,
+      draft: file.draft,
+      pendingRestart: !sameDraft(file.draft, active),
+      errors: file.error ? [file.error] : checked.ok ? [] : checked.errors,
+    };
+  }
   // 写操作串行：回执总线按 chatId 收集，并发派活会互相偷走回复；合并也需要独占仓库
   let lock: Promise<unknown> = Promise.resolve();
   const serialize = <T,>(fn: () => Promise<T>): Promise<T> => {
@@ -279,43 +319,125 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
         if (!prompt) throw new HttpError(400, "任务内容不能为空");
         const repo = typeof body.repo === "string" && body.repo.trim() ? body.repo.trim() : undefined;
         const result = await dispatchTask(repo, prompt);
+        record("dispatch", result.taskId || "-", result.message || (result.ok ? "已入队" : "派活失败"));
         return json({ ...result, taskId: result.taskId || null }, result.ok ? 200 : 400, setCookie);
       }
       return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET, POST" });
     }
 
+    if (url.pathname === "/api/config") {
+      if (req.method === "GET") return json(configView(), 200, setCookie);
+      if (req.method === "POST") {
+        const body = await readJson(req);
+        if (body.confirm !== true) throw new HttpError(400, "保存配置需要二次确认（confirm: true）");
+        const checked = validateDraft(body.draft);
+        if (!checked.ok) {
+          record("config", filePath, `校验失败：${checked.errors.join("；")}`);
+          return json({ ok: false, errors: checked.errors }, 400, setCookie);
+        }
+        try {
+          writeConfigPatch(filePath, checked.draft);
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          record("config", filePath, `保存失败：${message}`);
+          return json({ ok: false, errors: [message] }, 400, setCookie);
+        }
+        record("config", filePath, `保存成功：仓库 ${checked.draft.repos.length} 个、定时任务 ${checked.draft.schedules.length} 个`);
+        return json({ ok: true, restartRequired: true, path: filePath, message: "配置已保存，重启守护进程后生效" }, 200, setCookie);
+      }
+      return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET, POST" });
+    }
+
+    if (url.pathname === "/api/metrics") {
+      if (req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
+      const hours = clampInt(url.searchParams.get("hours"), 1, METRICS_MAX_HOURS, 24);
+      const buckets = clampInt(url.searchParams.get("buckets"), METRICS_MIN_BUCKETS, METRICS_MAX_BUCKETS, 24);
+      const at = now();
+      const from = at - hours * 3_600_000;
+      const finished = store.finishedBetween(from, at);
+      return json(
+        {
+          ok: true,
+          hours,
+          buckets,
+          totals: computeWindowMetrics(finished),
+          series: bucketMetrics(finished, store.queueSamples(from, at), from, at, buckets),
+        },
+        200,
+        setCookie,
+      );
+    }
+
+    if (url.pathname === "/api/audit") {
+      if (req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
+      const limit = clampInt(url.searchParams.get("limit"), 1, 200, 50);
+      return json({ ok: true, entries: store.recentAudit(limit) }, 200, setCookie);
+    }
+
     const match = TASK_ROUTE.exec(url.pathname);
     if (match) {
       const [, id, action] = match;
-      if (action && req.method !== "POST") return json({ ok: false, error: "方法不支持" }, 405, { allow: "POST" });
-      if (!action && req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
+      const taskId = id as string;
 
       if (!action) {
-        const task = store.get(id as string);
+        if (req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
+        const task = store.get(taskId);
         if (!task) return json({ ok: false, error: "找不到任务" }, 404, setCookie);
         const at = now();
         return json(
           {
             ok: true,
             task: boardTask(task, at),
-            effects: store.effectsOf(task.id).map((e) => ({ kind: e.kind, target: e.target, detail: e.detail, createdAt: e.createdAt })),
-            logTail: tailLog(cfg, task.id),
+            effects: store.effectsOf(taskId).map((e) => ({ kind: e.kind, target: e.target, detail: e.detail, createdAt: e.createdAt })),
+            logTail: tailLog(cfg, taskId),
           },
           200,
           setCookie,
         );
       }
 
+      if (action === "rewind") {
+        if (req.method === "GET") {
+          const res = router.previewRewind(taskId, actor);
+          if (!res.ok) return json({ ok: false, error: res.reason }, store.get(taskId) ? 409 : 404, setCookie);
+          return json({ ok: true, plan: rewindPlanJson(res.plan) }, 200, setCookie);
+        }
+        if (req.method !== "POST") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET, POST" });
+        const body = await readJson(req);
+        if (body.confirm !== true) throw new HttpError(400, "撤销需要二次确认（confirm: true）");
+        const res = router.executeRewind(taskId, actor);
+        if (!res.ok) {
+          record("rewind", taskId, res.reason);
+          return json({ ok: false, error: res.reason }, store.get(taskId) ? 409 : 404, setCookie);
+        }
+        record("rewind", taskId, res.message);
+        const plan = rewindPlanJson(res.plan);
+        return json(
+          {
+            ok: true,
+            status: store.get(taskId)?.status ?? null,
+            message: res.message,
+            actions: plan.actions,
+            irreversible: plan.irreversible,
+            notes: plan.notes,
+          },
+          200,
+          setCookie,
+        );
+      }
+
+      if (req.method !== "POST") return json({ ok: false, error: "方法不支持" }, 405, { allow: "POST" });
       if (action === "merge") {
         const body = await readJson(req);
         if (body.confirm !== true) throw new HttpError(400, "合并需要二次确认（confirm: true）");
       }
-      const result = await run(webMessage(cfg, web, action as "cancel" | "merge", id as string));
-      const task = store.get(id as string);
+      const result = await run(webMessage(cfg, web, action as "cancel" | "merge", taskId));
+      const task = store.get(taskId);
       const done =
         action === "cancel"
-          ? Boolean(task && (task.status === "cancelled" || store.isCancelRequested(task.id)))
-          : store.effectsOf(id as string).some((e) => e.kind === "merge");
+          ? Boolean(task && (task.status === "cancelled" || store.isCancelRequested(taskId)))
+          : store.effectsOf(taskId).some((e) => e.kind === "merge");
+      record(action, taskId, result.message || (done ? "已执行" : "未完成"));
       return json({ ok: result.ok && done, status: task?.status ?? null, message: result.message }, result.ok && done ? 200 : 409, setCookie);
     }
 

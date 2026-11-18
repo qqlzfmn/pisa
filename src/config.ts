@@ -51,6 +51,14 @@ export interface WebConfig {
 /** events 与 progress 的默认保留天数 */
 export const DEFAULT_RETENTION_DAYS = 30;
 
+/** Worker 无输出即判定卡死的默认秒数；配置省略时用它 */
+export const DEFAULT_IDLE_TIMEOUT_SEC = 900;
+
+/** 配置文件路径：CLI、守护进程与 Web 编辑器的唯一解析规则 */
+export function configPath(): string {
+  return resolve(process.env.PISA_CONFIG ?? "pisa.config.json");
+}
+
 export interface Config {
   trigger: string;
   /** 私聊里不带触发词也当成任务 */
@@ -134,7 +142,7 @@ export const DEFAULT_CONFIG: Config = {
     extraArgs: [],
     concurrency: 2,
     envAllow: [...DEFAULT_ENV_ALLOW],
-    idleTimeoutSec: 900,
+    idleTimeoutSec: DEFAULT_IDLE_TIMEOUT_SEC,
   },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   notifications: { progress: false },
@@ -156,7 +164,7 @@ function merge(base: Config, patch: Partial<Config>): Config {
   };
 }
 
-export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json"): Config {
+export function loadConfig(path = configPath()): Config {
   const abs = resolve(path);
   const baseDir = dirname(abs);
   let cfg = DEFAULT_CONFIG;

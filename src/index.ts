@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, DEFAULT_WEB, githubRepos, loadConfig, type WebConfig } from "./config";
+import { BOT_COMMANDS, configPath, DEFAULT_ENV_ALLOW, DEFAULT_WEB, githubRepos, loadConfig, type WebConfig } from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker, workerEnv } from "./worker";
@@ -15,7 +15,9 @@ import { webhookHandler } from "./webhook";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
-  const cfg = loadConfig();
+  // 配置路径只解析一次：Web 的编辑器必须写回守护进程启动时读的同一个文件
+  const configFile = configPath();
+  const cfg = loadConfig(configFile);
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
   // `--web` 强制开启控制台；没有可用通道时回落到 CLI 通道，只当服务宿主
   const web: WebConfig = { ...(cfg.web ?? DEFAULT_WEB), enabled: cfg.web?.enabled === true || process.argv.includes("--web") };
@@ -70,7 +72,7 @@ async function main(): Promise<void> {
     if (!cfg.whitelist.users.includes(web.userId)) {
       console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
     }
-    webServer = startWebServer({ cfg, store, router, bus }, web);
+    webServer = startWebServer({ cfg, store, router, bus, configPath: configFile }, web);
   } else {
     router = new Router({
       cfg,

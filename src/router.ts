@@ -18,7 +18,15 @@ import {
   prStatus,
   type Runner,
 } from "./github";
-import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import {
+  applyRewind,
+  formatRewindPlan,
+  formatRewindResult,
+  planRewind,
+  type RewindOutcome,
+  type RewindPlan,
+  type RewindProbes,
+} from "./rewind";
 import { formatExamples, formatHelp } from "./usage";
 import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
@@ -45,6 +53,21 @@ export interface RouterDeps {
 /** 单英文词任务的待确认正文，10 分钟过期 */
 const PENDING_TTL_MS = 10 * 60 * 1000;
 
+/** 队列深度采样间隔：一分钟一行，一天 1440 行 */
+const QUEUE_SAMPLE_INTERVAL_MS = 60 * 1000;
+
+/** 写操作执行者：IM 用消息里的身份，web 用已认证操作者 */
+export interface TaskActor {
+  admin: boolean;
+  userId: string;
+}
+
+/** 预览或执行撤销的结果：失败时带拒绝原因，成功时带计划 */
+export type RewindPreview = { ok: true; plan: RewindPlan } | { ok: false; reason: string };
+export type RewindExecution =
+  | { ok: true; plan: RewindPlan; results: RewindOutcome[]; message: string }
+  | { ok: false; reason: string };
+
 interface PendingTask {
   prompt: string;
   repo?: string;
@@ -58,6 +81,8 @@ export class Router {
   private timer: ReturnType<typeof setInterval> | null = null;
   /** 上次孤儿任务巡检时间 */
   private lastReconcile = 0;
+  /** 上次队列深度采样时间 */
+  private lastSample = 0;
   /** 过程消息开关：默认关，只发生命周期消息 */
   private progressOn: boolean;
   private readonly now: () => number;
@@ -115,12 +140,14 @@ export class Router {
     if (this.timer) return;
     this.deps.store.beat();
     this.effects.start();
+    this.sampleQueue();
     this.timer = setInterval(() => {
       this.deps.store.beat();
       if (this.now() - this.lastReconcile > 5000) {
         this.lastReconcile = this.now();
         this.reconcileOrphans();
       }
+      if (this.now() - this.lastSample >= QUEUE_SAMPLE_INTERVAL_MS) this.sampleQueue();
       void this.fill();
     }, intervalMs);
   }
@@ -756,65 +783,58 @@ export class Router {
     };
   }
 
+  /** 记一次队列深度；趋势图与看板的瞬时值同源（countByStatus） */
+  private sampleQueue(): void {
+    this.lastSample = this.now();
+    const counts = this.deps.store.countByStatus();
+    this.deps.store.sampleQueue({ at: this.lastSample, queued: counts.queued, running: counts.running });
+  }
+
   /**
-   * `/pisa rewind <任务号> [--yes]`：先给预览，带 --yes 才执行。
-   * 已合并的任务用 revert 提交回退；无法确认 PR 状态时不动分支，避免误删已合并成果。
+   * 撤销预览：权限、状态与仓库检查后给出计划，只读、不改任何东西。
+   * IM 的 `/pisa rewind <任务号>` 与页面预览共用这一条路径。
    */
-  private async handleRewind(msg: IncomingMessage, body: string): Promise<void> {
+  previewRewind(id: string, actor: TaskActor): RewindPreview {
     const { cfg, store } = this.deps;
-    const words = body.split(/\s+/).filter(Boolean);
-    const yes = words.includes("--yes");
-    const id = words.find((w) => !w.startsWith("--")) ?? "";
-    if (!id) {
-      await this.reply(msg.chatId, `用法：${cfg.trigger} rewind <任务号> [--yes]`);
-      return;
-    }
     const task = store.get(id);
-    if (!task) {
-      await this.reply(msg.chatId, `找不到任务 ${id}`);
-      return;
-    }
-    if (!msg.admin && task.requester !== msg.userId) {
-      await this.reply(msg.chatId, "只有原请求者可以撤销。");
-      return;
-    }
-    if (task.status === "rewound") {
-      await this.reply(msg.chatId, `任务 ${id} 已撤销。`);
-      return;
-    }
+    if (!task) return { ok: false, reason: `找不到任务 ${id}` };
+    if (!actor.admin && task.requester !== actor.userId) return { ok: false, reason: "只有原请求者可以撤销。" };
+    if (task.status === "rewound") return { ok: false, reason: `任务 ${id} 已撤销。` };
     if (task.status === "queued" || task.status === "running" || task.status === "paused") {
-      await this.reply(msg.chatId, `任务 ${id} 还没结束（${task.status}），先 ${cfg.trigger} cancel ${id}。`);
-      return;
+      return { ok: false, reason: `任务 ${id} 还没结束（${task.status}），先 ${cfg.trigger} cancel ${id}。` };
     }
     const repo = repoByAlias(cfg, task.repo);
-    if (!repo) {
-      await this.reply(msg.chatId, `仓库未配置：${task.repo}`);
-      return;
-    }
-
+    if (!repo) return { ok: false, reason: `仓库未配置：${task.repo}` };
     const runner = this.deps.ghRunner ?? defaultRunner;
     const plan = planRewind(task, store.effectsOf(id), {
       repoPath: repo.path,
       baseBranch: repo.baseBranch ?? "main",
       probes: this.rewindProbes(runner),
     });
-    if (!yes) {
-      await this.reply(msg.chatId, formatRewindPlan(plan, cfg.trigger));
-      return;
-    }
+    return { ok: true, plan };
+  }
+
+  /**
+   * 执行撤销：逐条动作、按成功项清账本、全部成功才落 rewound。
+   * 已合并的任务用 revert 提交回退；无法确认 PR 状态时不动分支，避免误删已合并成果。
+   */
+  executeRewind(id: string, actor: TaskActor): RewindExecution {
+    const { cfg, store } = this.deps;
+    const preview = this.previewRewind(id, actor);
+    if (!preview.ok) return preview;
+    const plan = preview.plan;
 
     if (plan.actions.length === 0) {
       if (plan.merge !== "unknown") store.transition(id, "rewound");
       const lines = [plan.merge === "unknown" ? `未完成撤销 · ${id}` : `已标记撤销 · ${id}`, "没有需要执行的撤销动作。"];
       if (plan.irreversible.length > 0) lines.push("", "不可撤销", ...plan.irreversible.map((s) => `- ${s}`));
       if (plan.notes.length > 0) lines.push("", "保留", ...plan.notes.map((s) => `- ${s}`));
-      await this.reply(msg.chatId, lines.join("\n"));
-      return;
+      return { ok: true, plan, results: [], message: lines.join("\n") };
     }
 
     const results = applyRewind(plan, {
       taskId: id,
-      runner,
+      runner: this.deps.ghRunner ?? defaultRunner,
       commitName: cfg.delivery.commitName,
       commitEmail: cfg.delivery.commitEmail,
     });
@@ -823,7 +843,27 @@ export class Router {
       if (r.ok && r.effect) store.removeEffect(id, r.effect.kind, r.effect.target);
     }
     if (plan.merge !== "unknown" && results.every((r) => r.ok)) store.transition(id, "rewound");
-    await this.reply(msg.chatId, formatRewindResult(plan, results));
+    return { ok: true, plan, results, message: formatRewindResult(plan, results) };
+  }
+
+  /** `/pisa rewind <任务号> [--yes]`：只负责参数解析与回执，检查与执行由上面两个方法共用 */
+  private async handleRewind(msg: IncomingMessage, body: string): Promise<void> {
+    const { cfg } = this.deps;
+    const words = body.split(/\s+/).filter(Boolean);
+    const yes = words.includes("--yes");
+    const id = words.find((w) => !w.startsWith("--")) ?? "";
+    if (!id) {
+      await this.reply(msg.chatId, `用法：${cfg.trigger} rewind <任务号> [--yes]`);
+      return;
+    }
+    const actor = { admin: Boolean(msg.admin), userId: msg.userId };
+    if (!yes) {
+      const res = this.previewRewind(id, actor);
+      await this.reply(msg.chatId, res.ok ? formatRewindPlan(res.plan, cfg.trigger) : res.reason);
+      return;
+    }
+    const res = this.executeRewind(id, actor);
+    await this.reply(msg.chatId, res.ok ? res.message : res.reason);
   }
 
   private async handleCancel(msg: IncomingMessage, body: string): Promise<void> {

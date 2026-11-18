@@ -1,6 +1,6 @@
 import { join, resolve } from "node:path";
 import { mkdirSync, statSync } from "node:fs";
-import { DEFAULT_ENV_ALLOW, type Config } from "./config";
+import { DEFAULT_ENV_ALLOW, DEFAULT_IDLE_TIMEOUT_SEC, type Config } from "./config";
 import type { Task, WorkerResult } from "./types";
 import { redact } from "./log";
 import { getAdapter, type WorkerAdapter } from "./adapters";
@@ -77,7 +77,7 @@ export class Worker implements WorkerRunner {
     let idleTimedOut = false;
     let cancelled = false;
     let lastActivity = Date.now();
-    const idleMs = Math.max(60, this.cfg.idleTimeoutSec ?? 900) * 1000;
+    const idleMs = Math.max(60, this.cfg.idleTimeoutSec ?? DEFAULT_IDLE_TIMEOUT_SEC) * 1000;
     const killTimer = setTimeout(() => {
       timedOut = true;
       proc.kill("SIGTERM");

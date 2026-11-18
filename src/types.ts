@@ -94,6 +94,22 @@ export interface DeliveryReceipt {
   messageId?: string;
 }
 
+/** 队列深度采样：趋势图与容量判断的数据点 */
+export interface QueueSample {
+  at: number;
+  queued: number;
+  running: number;
+}
+
+/** 写操作审计记录：页面上的动作没有聊天记录，靠它留痕 */
+export interface AuditRecord {
+  at: number;
+  action: string;
+  target: string;
+  detail: string | null;
+  actor: string;
+}
+
 export interface ChannelAdapter {
   name: string;
   start(onMessage: (m: IncomingMessage) => Promise<void> | void): Promise<void>;

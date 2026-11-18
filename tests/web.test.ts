@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_WEB, type Config } from "../src/config";
@@ -106,6 +106,7 @@ interface ActionResponse {
 describe("web 控制台", () => {
   let repo: string;
   let stateDir: string;
+  let cfgPath: string;
   let store: Store;
   let down: FakeChannel;
   let bus: ReplyBus;
@@ -120,8 +121,10 @@ describe("web 控制台", () => {
     down = new FakeChannel();
     bus = new ReplyBus("web", down);
     cfg = makeCfg(repo, stateDir);
+    cfgPath = join(stateDir, "pisa.config.json");
+    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
     router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel: bus });
-    const deps: WebDeps = { cfg, store, router, bus, token: TOKEN };
+    const deps: WebDeps = { cfg, store, router, bus, token: TOKEN, configPath: cfgPath };
     app = createWebApp(deps);
   });
 
@@ -448,6 +451,218 @@ describe("web 控制台", () => {
       const res = await post("/api/tasks/t_queued_merge/merge", { confirm: true });
       expect(res.status).toBe(409);
       expect(store.effectsOf("t_queued_merge")).toHaveLength(0);
+    });
+  });
+
+  describe("撤销", () => {
+    interface PlanBody {
+      ok: boolean;
+      plan: { taskId: string; merge: string; actions: Array<{ kind: string; label: string }>; notes: string[] };
+    }
+
+    /** 已成功、本地分支还在的任务：撤销动作可预测为删本地分支 */
+    function finishedWithBranch(): string {
+      const id = "t_rewind";
+      store.insertTask({
+        id,
+        source: `seed:${id}`,
+        channel: "fake",
+        chatId: "web",
+        requester: "u1",
+        repo: "demo",
+        prompt: "既有任务",
+        status: "succeeded",
+        branch: "pisa/t_rewind",
+        prUrl: null,
+        sessionId: null,
+        baseRef: "main",
+        context: null,
+        replyPr: null,
+        replyIssue: null,
+        replyRepo: null,
+        summary: null,
+        error: null,
+        createdAt: Date.now() - 3000,
+        startedAt: Date.now() - 2000,
+        endedAt: Date.now() - 1000,
+        cancelRequested: false,
+      });
+      sh(["git", "-C", repo, "branch", "pisa/t_rewind"]);
+      store.effect(id, "branch", "pisa/t_rewind", "本地分支");
+      return id;
+    }
+
+    test("预览列出动作但不改仓库", async () => {
+      const id = finishedWithBranch();
+      const res = await call(`/api/tasks/${id}/rewind`, { headers: auth });
+      const body = (await res.json()) as PlanBody;
+      expect(res.status).toBe(200);
+      expect(body.plan.merge).toBe("none");
+      expect(body.plan.actions.map((a) => a.kind)).toEqual(["delete-local-branch"]);
+      expect(body.plan.actions[0]!.label).toBe("删除本地分支 pisa/t_rewind");
+      expect(sh(["git", "-C", repo, "rev-parse", "--verify", "pisa/t_rewind"]).code).toBe(0);
+    });
+
+    test("缺少 confirm 时 400，分支仍在", async () => {
+      const id = finishedWithBranch();
+      const res = await post(`/api/tasks/${id}/rewind`, {});
+      expect(res.status).toBe(400);
+      expect(sh(["git", "-C", repo, "rev-parse", "--verify", "pisa/t_rewind"]).code).toBe(0);
+      expect(store.get(id)!.status).toBe("succeeded");
+    });
+
+    test("二次确认后执行并落 rewound、记审计", async () => {
+      const id = finishedWithBranch();
+      const res = await post(`/api/tasks/${id}/rewind`, { confirm: true });
+      const body = (await res.json()) as ActionResponse;
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(body.status).toBe("rewound");
+      expect(sh(["git", "-C", repo, "rev-parse", "--verify", "pisa/t_rewind"]).code).not.toBe(0);
+      expect(store.effectsOf(id)).toHaveLength(0);
+      expect(store.recentAudit(5)[0]).toMatchObject({ action: "rewind", target: id, actor: "u1" });
+    });
+
+    test("未结束的任务拒绝撤销", async () => {
+      seedTask({ id: "t_running_rewind", status: "running" });
+      const res = await call("/api/tasks/t_running_rewind/rewind", { headers: auth });
+      const body = (await res.json()) as { ok: boolean; error: string };
+      expect(res.status).toBe(409);
+      expect(body.error).toContain("还没结束");
+    });
+
+    test("找不到任务时 404", async () => {
+      const res = await call("/api/tasks/t_missing/rewind", { headers: auth });
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("趋势", () => {
+    interface MetricsBody {
+      ok: boolean;
+      hours: number;
+      buckets: number;
+      totals: { finished: number; succeeded: number };
+      series: Array<{ finished: number; successRate: number | null; p50Ms: number | null; queueMax: number | null }>;
+    }
+
+    function finished(id: string, at: number, ok: boolean): void {
+      seedTask({ id, status: ok ? "succeeded" : "failed", createdAt: at - 1000, startedAt: at - 900, endedAt: at });
+    }
+
+    test("按桶返回完成数、成功率与队列深度", async () => {
+      const at = Date.now();
+      finished("t_m1", at - 60_000, true);
+      finished("t_m2", at - 120_000, false);
+      store.sampleQueue({ at: at - 30_000, queued: 2, running: 1 });
+      store.sampleQueue({ at: at - 90_000, queued: 0, running: 0 });
+
+      const res = await call("/api/metrics?hours=1&buckets=6", { headers: auth });
+      const body = (await res.json()) as MetricsBody;
+      expect(res.status).toBe(200);
+      expect(body.hours).toBe(1);
+      expect(body.buckets).toBe(6);
+      expect(body.series).toHaveLength(6);
+      expect(body.series.reduce((n, b) => n + b.finished, 0)).toBe(2);
+      expect(body.totals).toMatchObject({ finished: 2, succeeded: 1 });
+      expect(body.series.some((b) => b.queueMax === 2)).toBe(true);
+      expect(body.series.filter((b) => b.finished > 0).every((b) => b.successRate !== null)).toBe(true);
+    });
+
+    test("非法参数回落到默认窗口", async () => {
+      const res = await call("/api/metrics?hours=0&buckets=1", { headers: auth });
+      const body = (await res.json()) as MetricsBody;
+      expect(body.hours).toBe(24);
+      expect(body.buckets).toBe(24);
+      expect(body.series).toHaveLength(24);
+    });
+  });
+
+  describe("配置", () => {
+    interface ConfigBody {
+      ok: boolean;
+      path: string;
+      active: { worker: { concurrency: number } };
+      draft: { worker: { concurrency: number }; repos: Array<{ alias: string }> };
+      pendingRestart: boolean;
+      errors: string[];
+    }
+
+    function readFileConfig(): Record<string, unknown> {
+      return JSON.parse(readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
+    }
+
+    test("读取配置：草稿等于文件值，无待生效改动", async () => {
+      const res = await call("/api/config", { headers: auth });
+      const body = (await res.json()) as ConfigBody;
+      expect(res.status).toBe(200);
+      expect(body.path).toBe(cfgPath);
+      expect(body.draft.repos.map((r) => r.alias)).toEqual(["demo"]);
+      expect(body.draft.worker.concurrency).toBe(1);
+      expect(body.pendingRestart).toBe(false);
+      expect(body.errors).toEqual([]);
+    });
+
+    test("缺少 confirm 时 400，文件不变", async () => {
+      const res = await post("/api/config", { draft: (await (await call("/api/config", { headers: auth })).json() as ConfigBody).draft });
+      expect(res.status).toBe(400);
+      expect(readFileConfig().worker).toMatchObject({ concurrency: 1 });
+    });
+
+    test("校验失败时 400、列全部错误并记审计", async () => {
+      const draft = (await (await call("/api/config", { headers: auth })).json() as ConfigBody).draft;
+      draft.worker.concurrency = 0;
+      const res = await post("/api/config", { confirm: true, draft });
+      const body = (await res.json()) as { ok: boolean; errors: string[] };
+      expect(res.status).toBe(400);
+      expect(body.errors).toEqual(["worker.concurrency 必须是 1–32 的整数"]);
+      expect(readFileConfig().worker).toMatchObject({ concurrency: 1 });
+      expect(store.recentAudit(5)[0]).toMatchObject({ action: "config", target: cfgPath });
+    });
+
+    test("保存后文件更新、其它键保留、提示重启并记审计", async () => {
+      const before = readFileConfig();
+      const draft = (await (await call("/api/config", { headers: auth })).json() as ConfigBody).draft;
+      draft.worker.concurrency = 3;
+      const res = await post("/api/config", { confirm: true, draft });
+      const body = (await res.json()) as { ok: boolean; restartRequired: boolean; message: string };
+      expect(res.status).toBe(200);
+      expect(body.restartRequired).toBe(true);
+      expect(body.message).toContain("重启");
+      const after = readFileConfig();
+      expect(after.worker).toMatchObject({ concurrency: 3, extraArgs: [] });
+      expect(after.trigger).toBe(before.trigger);
+      expect(after.whitelist).toEqual(before.whitelist);
+      expect(store.recentAudit(5)[0]).toMatchObject({ action: "config", actor: "u1" });
+
+      // 进程仍持有旧配置，页面据此提示「重启后生效」
+      const view = (await (await call("/api/config", { headers: auth })).json()) as ConfigBody;
+      expect(view.active.worker.concurrency).toBe(1);
+      expect(view.pendingRestart).toBe(true);
+    });
+  });
+
+  describe("审计", () => {
+    test("派活与取消都落一条记录", async () => {
+      const dispatch = (await (await post("/api/tasks", { prompt: "写 out.txt" })).json()) as DispatchResponse;
+      const entries = (await (await call("/api/audit", { headers: auth })).json()) as {
+        entries: Array<{ action: string; target: string; actor: string }>;
+      };
+      expect(entries.entries[0]).toMatchObject({ action: "dispatch", target: dispatch.taskId, actor: "u1" });
+
+      await post(`/api/tasks/${dispatch.taskId}/cancel`, {});
+      const after = (await (await call("/api/audit?limit=5", { headers: auth })).json()) as {
+        entries: Array<{ action: string; target: string }>;
+      };
+      expect(after.entries[0]).toMatchObject({ action: "cancel", target: dispatch.taskId });
+    });
+
+    test("limit 越界回落到默认 50", async () => {
+      const res = await call("/api/audit?limit=9999", { headers: auth });
+      const body = (await res.json()) as { ok: boolean; entries: unknown[] };
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(body.entries).toHaveLength(0);
     });
   });
 });

@@ -1,5 +1,5 @@
 import type { Store } from "./store";
-import type { Task } from "./types";
+import type { QueueSample, Task } from "./types";
 
 /** 健康指标的统计窗口：最近 24 小时 */
 export const METRICS_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -55,4 +55,61 @@ export function computeWindowMetrics(tasks: readonly Task[]): WindowMetrics {
 /** 看板、CLI 与 /health 共用同一口径：查库 + 聚合 */
 export function windowMetrics(store: Store, now = Date.now()): WindowMetrics {
   return computeWindowMetrics(store.finishedBetween(now - METRICS_WINDOW_MS, now));
+}
+
+/** 趋势图的一个时间桶；窗口内没有任何样本的字段为 null，图表据此留空 */
+export interface MetricBucket {
+  /** 桶起点（毫秒时间戳） */
+  from: number;
+  finished: number;
+  succeeded: number;
+  failed: number;
+  successRate: number | null;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  /** 排队数的均值与峰值 */
+  queueAvg: number | null;
+  queueMax: number | null;
+  runningAvg: number | null;
+}
+
+/**
+ * 把 [from, to] 等分成 buckets 个桶：任务按结束时间、采样按采样时间归桶。
+ * 末桶包含右端点，其余左闭右开，与 finishedBetween 的闭区间口径衔接。
+ */
+export function bucketMetrics(
+  tasks: readonly Task[],
+  samples: readonly QueueSample[],
+  from: number,
+  to: number,
+  buckets: number,
+): MetricBucket[] {
+  const width = (to - from) / buckets;
+  const inBucket = (at: number, start: number, end: number, last: boolean): boolean =>
+    at >= start && (last ? at <= end : at < end);
+  const avg = (values: readonly number[]): number | null =>
+    values.length > 0 ? Math.round((values.reduce((sum, v) => sum + v, 0) / values.length) * 10) / 10 : null;
+  const result: MetricBucket[] = [];
+  for (let i = 0; i < buckets; i++) {
+    const start = from + width * i;
+    const end = i === buckets - 1 ? to : start + width;
+    const last = i === buckets - 1;
+    const window = computeWindowMetrics(tasks.filter((t) => inBucket(t.endedAt ?? t.createdAt, start, end, last)));
+    const points = samples.filter((s) => inBucket(s.at, start, end, last));
+    const queued = points.map((p) => p.queued);
+    const running = points.map((p) => p.running);
+    result.push({
+      from: start,
+      finished: window.finished,
+      succeeded: window.succeeded,
+      failed: window.failed,
+      successRate: window.successRate,
+      p50Ms: window.p50Ms,
+      p95Ms: window.p95Ms,
+      queueAvg: avg(queued),
+      queueMax: queued.length > 0 ? Math.max(...queued) : null,
+      runningAvg: avg(running),
+    });
+  }
+  return result;
 }

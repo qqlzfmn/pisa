@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
-import type { Effect, EffectKind, Task, TaskStatus } from "./types";
+import type { AuditRecord, Effect, EffectKind, QueueSample, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
@@ -94,7 +94,30 @@ CREATE TABLE IF NOT EXISTS effects (
   PRIMARY KEY (kind, key)
 );
 CREATE INDEX IF NOT EXISTS idx_effects_due ON effects(status, next_at);
+
+-- 队列深度采样：趋势图的数据点，每分钟一行
+CREATE TABLE IF NOT EXISTS queue_samples (
+  at      INTEGER PRIMARY KEY,
+  queued  INTEGER NOT NULL,
+  running INTEGER NOT NULL
+);
+
+-- 写操作审计：页面上的派活、取消、合并、撤销、配置保存
+CREATE TABLE IF NOT EXISTS audit (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  at     INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  target TEXT NOT NULL,
+  detail TEXT,
+  actor  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit(at DESC);
 `;
+
+/** 审计保留行数：写操作不多，按条数封顶即可，不做时间清理 */
+const AUDIT_KEEP = 5000;
+/** 队列采样保留窗口：趋势图最长可选 7 天 */
+const QUEUE_SAMPLE_RETENTION_MS = 7 * 86_400_000;
 
 /** 外部动作的执行状态：pending 待执行/重试，done 已完成，failed 超过重试上限后终止 */
 export type EffectStatus = "pending" | "done" | "failed";
@@ -342,6 +365,36 @@ export class Store {
       .query("SELECT task_id, kind, target, detail, created_at FROM task_effects WHERE task_id = ? ORDER BY created_at, kind, target")
       .all(taskId) as Array<{ task_id: string; kind: EffectKind; target: string; detail: string | null; created_at: number }>;
     return rows.map((r) => ({ taskId: r.task_id, kind: r.kind, target: r.target, detail: r.detail, createdAt: r.created_at }));
+  }
+
+  /** 记一条写操作审计；只保留最近 AUDIT_KEEP 行，插入后顺手裁掉更早的 */
+  audit(entry: AuditRecord): void {
+    this.db
+      .query("INSERT INTO audit (at, action, target, detail, actor) VALUES (?, ?, ?, ?, ?)")
+      .run(entry.at, entry.action, entry.target, entry.detail, entry.actor);
+    this.db.query("DELETE FROM audit WHERE id <= (SELECT MAX(id) - ? FROM audit)").run(AUDIT_KEEP);
+  }
+
+  /** 最近的审计行，新的在前 */
+  recentAudit(limit: number): AuditRecord[] {
+    return this.db
+      .query("SELECT at, action, target, detail, actor FROM audit ORDER BY id DESC LIMIT ?")
+      .all(limit) as AuditRecord[];
+  }
+
+  /** 记一次队列深度采样；写入时删掉保留窗口之外的样本，表大小有界 */
+  sampleQueue(sample: QueueSample): void {
+    this.db
+      .query("INSERT OR REPLACE INTO queue_samples (at, queued, running) VALUES (?, ?, ?)")
+      .run(sample.at, sample.queued, sample.running);
+    this.db.query("DELETE FROM queue_samples WHERE at < ?").run(sample.at - QUEUE_SAMPLE_RETENTION_MS);
+  }
+
+  /** 窗口内的队列样本，按时间升序 */
+  queueSamples(from: number, to: number): QueueSample[] {
+    return this.db
+      .query("SELECT at, queued, running FROM queue_samples WHERE at BETWEEN ? AND ? ORDER BY at")
+      .all(from, to) as QueueSample[];
   }
 
   /** 入队一条外部动作；键已存在时原样返回已有行，由调用方决定是否执行 */

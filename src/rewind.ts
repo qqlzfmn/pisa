@@ -213,6 +213,31 @@ export interface RewindOutcome {
   effect: Effect | null;
 }
 
+/** 计划的结构化投影：页面直接渲染，标签与文本预览同一来源 */
+export interface RewindPlanJson {
+  taskId: string;
+  status: string;
+  repo: string;
+  merge: MergeState;
+  mergeLabel: string;
+  actions: Array<{ kind: RewindAction["kind"]; label: string }>;
+  irreversible: string[];
+  notes: string[];
+}
+
+export function rewindPlanJson(plan: RewindPlan): RewindPlanJson {
+  return {
+    taskId: plan.task.id,
+    status: plan.task.status,
+    repo: plan.task.repo,
+    merge: plan.merge,
+    mergeLabel: MERGE_LABEL[plan.merge],
+    actions: plan.actions.map((a) => ({ kind: a.kind, label: a.label })),
+    irreversible: plan.irreversible,
+    notes: plan.notes,
+  };
+}
+
 export interface RewindDeps {
   taskId: string;
   runner: Runner;
