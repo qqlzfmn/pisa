@@ -611,6 +611,14 @@ export class Store {
     return row ? toTask(row) : null;
   }
 
+  /** 最早的排队追问（isFollowup 的判定：base_ref 非空），优先槽位专用 */
+  nextQueuedFollowup(): Task | null {
+    const row = this.db
+      .query("SELECT * FROM tasks WHERE status = 'queued' AND base_ref IS NOT NULL ORDER BY created_at LIMIT 1")
+      .get() as Row | null;
+    return row ? toTask(row) : null;
+  }
+
   /** 唯一的状态写入入口；非法跃迁返回 false */
   transition(id: string, to: TaskStatus, patch: Partial<Omit<Task, "id" | "status">> = {}): boolean {
     const cur = this.get(id);

@@ -63,6 +63,8 @@ export interface Config {
     timeoutSec: number;
     extraArgs: string[];
     concurrency: number;
+    /** 人类追问专用的额外槽位，默认 1；0 表示追问与新任务一起排队 */
+    prioritySlots?: number;
     /** Worker 子进程从 process.env 继承的变量白名单；缺省见 DEFAULT_ENV_ALLOW */
     envAllow?: string[];
     /** 多久没有任何输出/进度就算卡死并杀掉，默认 900 秒 */
@@ -133,6 +135,7 @@ export const DEFAULT_CONFIG: Config = {
     timeoutSec: 3600,
     extraArgs: [],
     concurrency: 2,
+    prioritySlots: 1,
     envAllow: [...DEFAULT_ENV_ALLOW],
     idleTimeoutSec: 900,
   },

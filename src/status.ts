@@ -1,4 +1,4 @@
-import type { Task, TaskStatus } from "./types";
+import { isFollowup, type Task, type TaskStatus } from "./types";
 import type { Store } from "./store";
 import { STAGE_LABEL, stageText, taskStage, type TaskStage } from "./stage";
 
@@ -84,20 +84,47 @@ export function statusSnapshot(store: Store): StatusSnapshot {
   };
 }
 
-/** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
-export function formatStatusBoard(store: Store, now = Date.now()): string {
+/** 调度槽位快照：Router 运行时状态；CLI 直接读库时没有 */
+export interface SlotState {
+  normal: number;
+  normalLimit: number;
+  priority: number;
+  priorityLimit: number;
+}
+
+/** 排队原因：普通槽位是否已满、追问还能不能插队 */
+function queueReason(slots: SlotState | undefined, queued: number): string {
+  if (queued === 0 || !slots) return "";
+  if (slots.normal < slots.normalLimit) return "，等待补位";
+  if (slots.priority < slots.priorityLimit) return "，槽位已满：新任务按序等待，人类追问占优先槽";
+  return "，槽位已满：新任务与追问都按序等待";
+}
+
+/** 需求预览；续跑任务标注来源，避免排队行列里分不清追问与新任务 */
+function demand(t: Task, max: number): string {
+  const text = preview(t.prompt, max);
+  return isFollowup(t) ? `追问 · ${text}` : text;
+}
+
+/** 任务看板：运行中 / 排队 / 最近完成，末尾汇总；传 slots 时附带槽位占用与排队原因 */
+export function formatStatusBoard(store: Store, now = Date.now(), slots?: SlotState): string {
   const { running, queued, finished, counts, total } = statusSnapshot(store);
 
   const lines = ["运行中"];
   if (running.length === 0) lines.push("(无)");
   for (const t of running) {
     const elapsed = formatDuration(now - (t.startedAt ?? t.createdAt));
-    lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · 已运行 ${elapsed} · ${preview(t.prompt, 40)}`);
+    lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · 已运行 ${elapsed} · ${demand(t, 40)}`);
+  }
+  if (slots) {
+    lines.push(
+      `槽位：普通 ${slots.normal}/${slots.normalLimit} · 优先 ${slots.priority}/${slots.priorityLimit}（人类追问专用）`,
+    );
   }
 
-  lines.push("", `排队（${queued.length}）`);
+  lines.push("", `排队（${queued.length}${queueReason(slots, queued.length)}）`);
   if (queued.length === 0) lines.push("(无)");
-  for (const t of queued.slice(0, 5)) lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · ${preview(t.prompt, 40)}`);
+  for (const t of queued.slice(0, 5)) lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · ${demand(t, 40)}`);
 
   lines.push("", "最近完成");
   if (finished.length === 0) lines.push("(无)");

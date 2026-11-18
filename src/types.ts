@@ -82,6 +82,14 @@ export interface Task {
   cancelRequested: boolean;
 }
 
+/**
+ * 人类追问：从上一轮分支续跑的任务（continue、回复任务消息、PR 评论续跑）。
+ * 调度上只有这类任务能用优先槽位；新建任务一律排普通槽位。
+ */
+export function isFollowup(t: Pick<Task, "baseRef">): boolean {
+  return t.baseRef !== null;
+}
+
 export interface WorkerResult {
   ok: boolean;
   summary: string;

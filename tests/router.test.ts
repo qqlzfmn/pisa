@@ -466,6 +466,168 @@ describe("Router", () => {
     expect(spans[1]![0]).toBeGreaterThanOrEqual(spans[0]![1] - 5);
   });
 
+  describe("槽位与人类优先通道", () => {
+    /** 长任务挂住普通槽位，其余任务立刻完成；waitStarted 等到 Worker 真正被调用 */
+    function gatedWorker(started: string[]) {
+      const gate = Promise.withResolvers<void>();
+      const waiters: Array<{ prompt: string; resolve: () => void }> = [];
+      const waitStarted = (prompt: string) =>
+        started.includes(prompt)
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => waiters.push({ prompt, resolve }));
+      const worker: WorkerRunner = {
+        async run(task, workdir): Promise<WorkerResult> {
+          started.push(task.prompt);
+          for (const w of waiters.splice(0)) if (w.prompt === task.prompt) w.resolve();
+          if (task.prompt === "长任务") await gate.promise;
+          writeFileSync(join(workdir, "out.txt"), "hi\n");
+          return { ok: true, summary: "ok", exitCode: 0 };
+        },
+      };
+      return { worker, gate, waitStarted };
+    }
+
+    /** 先跑完一个任务，拿到可续跑的分支 */
+    async function seedParent(router: Router): Promise<Task> {
+      await router.handle(msg("/pisa 第一件"));
+      await router.drainOnce();
+      const parent = store.recentTasks().find((t) => t.prompt === "第一件")!;
+      expect(parent.status).toBe("succeeded");
+      return parent;
+    }
+
+    test("满槽时人类追问占优先槽位，新任务继续排队", async () => {
+      cfg.worker.concurrency = 1;
+      cfg.worker.prioritySlots = 1;
+      const started: string[] = [];
+      const { worker, gate, waitStarted } = gatedWorker(started);
+      const router = build(worker);
+      const parent = await seedParent(router);
+
+      await router.handle(msg("/pisa 长任务"));
+      router.tick();
+      await waitStarted("长任务");
+
+      await router.handle(msg("/pisa 新任务"));
+      await router.handle(msg(`/pisa continue ${parent.id} 再改一处`));
+      const fresh = store.recentTasks().find((t) => t.prompt === "新任务")!;
+      const follow = store.recentTasks().find((t) => t.prompt === "再改一处")!;
+
+      router.tick();
+      await waitStarted("再改一处");
+      expect(store.get(follow.id)?.status).toBe("running");
+      expect(store.get(fresh.id)?.status).toBe("queued");
+      expect(started).not.toContain("新任务");
+
+      gate.resolve();
+      await router.drainOnce();
+      expect(store.get(fresh.id)?.status).toBe("succeeded");
+    });
+
+    test("优先槽位只有一个：第二个追问仍排队", async () => {
+      cfg.worker.concurrency = 1;
+      cfg.worker.prioritySlots = 1;
+      const started: string[] = [];
+      const { worker, gate, waitStarted } = gatedWorker(started);
+      const router = build(worker);
+      const parent = await seedParent(router);
+
+      await router.handle(msg("/pisa 长任务"));
+      router.tick();
+      await waitStarted("长任务");
+
+      await router.handle(msg(`/pisa continue ${parent.id} 再改一处`));
+      await router.handle(msg(`/pisa continue ${parent.id} 再改两处`));
+      const first = store.recentTasks().find((t) => t.prompt === "再改一处")!;
+      const second = store.recentTasks().find((t) => t.prompt === "再改两处")!;
+
+      router.tick();
+      await waitStarted("再改一处");
+      expect(store.get(first.id)?.status).toBe("running");
+      expect(store.get(second.id)?.status).toBe("queued");
+
+      gate.resolve();
+      await router.drainOnce();
+      expect(store.get(second.id)?.status).toBe("succeeded");
+    });
+
+    test("prioritySlots 为 0 时追问与新任务一起排队", async () => {
+      cfg.worker.concurrency = 1;
+      cfg.worker.prioritySlots = 0;
+      const started: string[] = [];
+      const { worker, gate, waitStarted } = gatedWorker(started);
+      const router = build(worker);
+      const parent = await seedParent(router);
+
+      await router.handle(msg("/pisa 长任务"));
+      router.tick();
+      await waitStarted("长任务");
+
+      await router.handle(msg(`/pisa continue ${parent.id} 再改一处`));
+      const follow = store.recentTasks().find((t) => t.prompt === "再改一处")!;
+      router.tick();
+
+      expect(store.get(follow.id)?.status).toBe("queued");
+      expect(started).not.toContain("再改一处");
+
+      gate.resolve();
+      await router.drainOnce();
+      expect(store.get(follow.id)?.status).toBe("succeeded");
+    });
+
+    test("普通槽位满时 resume 占用优先槽位", async () => {
+      cfg.worker.concurrency = 1;
+      cfg.worker.prioritySlots = 1;
+      const started: string[] = [];
+      const { worker, gate, waitStarted } = gatedWorker(started);
+      const router = build(worker);
+
+      const paused = seedTask({ id: "t_paused", prompt: "恢复我" });
+      const branch = `pisa/${paused.id}`;
+      expect(store.claimQueued(paused.id, Date.now(), branch)).toBe(true);
+      expect(createWorktree(repo, join(stateDir, "worktrees", paused.id), branch).code).toBe(0);
+      expect(store.transition(paused.id, "paused")).toBe(true);
+
+      await router.handle(msg("/pisa 长任务"));
+      router.tick();
+      await waitStarted("长任务");
+
+      await router.handle(msg(`/pisa resume ${paused.id}`));
+      expect(channel.sent.some((s) => s.text.includes("恢复执行"))).toBe(true);
+      await waitStarted("恢复我");
+      expect(store.get(paused.id)?.status).toBe("running");
+
+      gate.resolve();
+      await router.drainOnce();
+      expect(store.get(paused.id)?.status).toBe("succeeded");
+    });
+
+    test("status 显示槽位占用与排队原因", async () => {
+      cfg.worker.concurrency = 1;
+      const now = 1_700_000_000_000;
+      seedTask({ id: "t_wait", prompt: "新派的事", createdAt: now - 1000 });
+      seedTask({ id: "t_cont", prompt: "追问的事", baseRef: "pisa/parent", createdAt: now - 500 });
+
+      const router = build(okWorker, () => now);
+      await router.handle(msg("/pisa status"));
+
+      const text = channel.sent.at(-1)!.text;
+      expect(text).toContain("槽位：普通 0/1 · 优先 0/1（人类追问专用）");
+      expect(text).toContain("排队（2，等待补位）");
+      expect(text).toContain("t_cont · working/queued（等空闲槽位） · demo · 追问 · 追问的事");
+      expect(text).toContain("t_wait · working/queued（等空闲槽位） · demo · 新派的事");
+    });
+
+    test("nextQueuedFollowup 只取续跑任务且按创建时间", () => {
+      seedTask({ id: "t_a", prompt: "新任务", createdAt: 100 });
+      seedTask({ id: "t_b", prompt: "追问一", baseRef: "pisa/a", createdAt: 200 });
+      seedTask({ id: "t_c", prompt: "追问二", baseRef: "pisa/b", createdAt: 300 });
+
+      expect(store.nextQueuedFollowup()?.id).toBe("t_b");
+      expect(store.nextQueued()?.id).toBe("t_a");
+    });
+  });
+
   test("continue 继承上一个任务的会话", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 第一个任务"));
@@ -587,7 +749,7 @@ describe("Router", () => {
     expect(text).toContain("t_running · working（执行中） · demo · 已运行 3m12s");
     expect(text).toContain(longPrompt.slice(0, 40));
     expect(text).not.toContain(longPrompt);
-    expect(text).toContain("排队（1）");
+    expect(text).toContain("排队（1，等待补位）");
     expect(text).toContain("t_queued · working/queued（等空闲槽位） · demo · 排队中的事");
     expect(text).toContain("成功 · person/review（等你评审） · 4m0s · demo · 加一条校验 · https://github.com/o/r/pull/12");
     expect(text).toContain("汇总：3 个任务 · 成功 1 · 失败 0 · 暂停 0");

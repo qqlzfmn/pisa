@@ -24,7 +24,7 @@ import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
-import { formatStatusBoard } from "./status";
+import { formatStatusBoard, type SlotState } from "./status";
 
 export { formatDuration } from "./status";
 
@@ -51,8 +51,16 @@ interface PendingTask {
   at: number;
 }
 
+/** 任务占用的槽位通道：优先槽位只给人类追问 */
+type SlotLane = "normal" | "priority";
+
+interface ActiveRun {
+  lane: SlotLane;
+  done: Promise<void>;
+}
+
 export class Router {
-  private active = new Map<string, Promise<void>>();
+  private active = new Map<string, ActiveRun>();
   /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
   private stopping = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -121,7 +129,7 @@ export class Router {
         this.lastReconcile = this.now();
         this.reconcileOrphans();
       }
-      void this.fill();
+      this.tick();
     }, intervalMs);
   }
 
@@ -137,7 +145,7 @@ export class Router {
     this.timer = null;
     const cap = Promise.withResolvers<void>();
     const capTimer = setTimeout(cap.resolve, timeoutMs);
-    await Promise.race([Promise.all([...this.active.values()]), cap.promise]);
+    await Promise.race([Promise.all([...this.active.values()].map((run) => run.done)), cap.promise]);
     clearTimeout(capTimer);
   }
 
@@ -192,24 +200,57 @@ export class Router {
   }
 
   /** 立即执行一个已进入 running 的任务；不等待完成 */
-  private launch(task: Task): void {
+  private launch(task: Task, lane: SlotLane): void {
     const branch = task.branch ?? `pisa/${task.id}`;
-    const p = this.runTask(task, branch)
+    const done = this.runTask(task, branch)
       .catch(() => {})
       .finally(() => this.active.delete(task.id));
-    this.active.set(task.id, p);
+    this.active.set(task.id, { lane, done });
   }
 
-  /** 按并发上限补位；不等待任务完成 */
-  private async fill(): Promise<void> {
+  /** 槽位上限：普通 concurrency，优先是额外的人类追问通道 */
+  private slotLimits(): { normal: number; priority: number } {
+    const worker = this.deps.cfg.worker;
+    return {
+      normal: Math.max(1, worker.concurrency ?? 1),
+      priority: Math.max(0, worker.prioritySlots ?? 1),
+    };
+  }
+
+  private laneCount(lane: SlotLane): number {
+    let n = 0;
+    for (const run of this.active.values()) if (run.lane === lane) n += 1;
+    return n;
+  }
+
+  /** 当前槽位占用，看板与测试共用 */
+  slotState(): SlotState {
+    const limits = this.slotLimits();
+    return {
+      normal: this.laneCount("normal"),
+      normalLimit: limits.normal,
+      priority: this.laneCount("priority"),
+      priorityLimit: limits.priority,
+    };
+  }
+
+  /**
+   * 补位一拍：普通槽位有空时先取最早的排队追问，没有追问才取最早的排队任务；
+   * 普通槽位满了才让追问占优先槽位；新任务不占优先槽位，静默排队。
+   */
+  tick(): void {
     if (this.stopping) return;
-    const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
-    while (this.active.size < limit) {
-      const task = this.deps.store.nextQueued();
+    const limits = this.slotLimits();
+    for (;;) {
+      const normalFree = this.laneCount("normal") < limits.normal;
+      const priorityFree = this.laneCount("priority") < limits.priority;
+      const followup = this.deps.store.nextQueuedFollowup();
+      const task = normalFree ? (followup ?? this.deps.store.nextQueued()) : priorityFree ? followup : null;
       if (!task) break;
+      const lane: SlotLane = normalFree ? "normal" : "priority";
       const branch = task.branch ?? `pisa/${task.id}`;
       if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
-      this.launch({ ...task, branch, status: "running" });
+      this.launch({ ...task, branch, status: "running" }, lane);
     }
   }
 
@@ -391,7 +432,7 @@ export class Router {
     }
 
     if (cmd.kind === "status") {
-      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now()));
+      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now(), this.slotState()));
       return;
     }
 
@@ -892,9 +933,14 @@ export class Router {
       await this.reply(msg.chatId, `任务 ${id} 的工作副本已不存在，无法恢复。`);
       return;
     }
-    const limit = Math.max(1, cfg.worker.concurrency ?? 1);
-    if (this.active.size >= limit) {
-      await this.reply(msg.chatId, `当前并发已满（${limit}），稍后再恢复 ${id}。`);
+    const limits = this.slotLimits();
+    const normalFree = this.laneCount("normal") < limits.normal;
+    const lane: SlotLane = normalFree ? "normal" : "priority";
+    if (!normalFree && this.laneCount("priority") >= limits.priority) {
+      await this.reply(
+        msg.chatId,
+        `槽位已满（普通 ${limits.normal} + 优先 ${limits.priority}），稍后再恢复 ${id}。`,
+      );
       return;
     }
 
@@ -904,7 +950,7 @@ export class Router {
       return;
     }
     await this.reply(msg.chatId, `恢复执行 · ${id}\n分支 ${task.branch ?? `pisa/${id}`}`, id);
-    this.launch({ ...task, status: "running", startedAt });
+    this.launch({ ...task, status: "running", startedAt }, lane);
   }
 
   /** 取一个排队任务执行；返回是否真的执行了 */
@@ -912,10 +958,10 @@ export class Router {
     if (this.stopping) return false;
     let started = false;
     while (true) {
-      await this.fill();
+      this.tick();
       if (this.active.size === 0) break;
       started = true;
-      await Promise.all([...this.active.values()]);
+      await Promise.all([...this.active.values()].map((run) => run.done));
       if (!this.deps.store.nextQueued()) break;
     }
     return started;
