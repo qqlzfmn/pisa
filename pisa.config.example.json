@@ -48,6 +48,13 @@
       "proxy": ""
     }
   },
+  "web": {
+    "enabled": false,
+    "port": 8787,
+    "tokenEnv": "PISA_WEB_TOKEN",
+    "userId": "<telegram user id>",
+    "chatId": "web"
+  },
   "webhook": {
     "enabled": false,
     "port": 8799,

@@ -228,7 +228,8 @@ export class Router {
     }
 
     // 命令误触防护：打错命令只给建议；其余单英文词先要求确认，不落库
-    if (cmd.kind === "task" && !fromConfirm) {
+    // admin 入口（web）是明确的表单提交，没有可回 confirm 的聊天，直接放行
+    if (cmd.kind === "task" && !fromConfirm && !msg.admin) {
       const guard = taskGuard(cmd.body);
       if (guard?.kind === "suggest") {
         await this.reply(msg.chatId, this.suggestText(msg, guard.command, cmd.body.trim()));
@@ -316,7 +317,7 @@ export class Router {
         return;
       }
       // IM 续跑只允许原请求者；PR 评论以配置身份投递，评论作者与 IM 用户无从对应
-      if (cmd.kind === "continue" && parent.requester !== msg.userId) {
+      if (!msg.admin && cmd.kind === "continue" && parent.requester !== msg.userId) {
         await this.reply(msg.chatId, "只有原请求者可以续跑。");
         return;
       }
@@ -446,7 +447,7 @@ export class Router {
       await this.reply(msg.chatId, `找不到任务 ${id || ""}`);
       return;
     }
-    if (task.requester !== msg.userId) {
+    if (!msg.admin && task.requester !== msg.userId) {
       await this.reply(msg.chatId, "只有原请求者可以合并。");
       return;
     }
@@ -558,7 +559,7 @@ export class Router {
       await this.reply(msg.chatId, `找不到任务 ${id}`);
       return;
     }
-    if (task.requester !== msg.userId) {
+    if (!msg.admin && task.requester !== msg.userId) {
       await this.reply(msg.chatId, "只有原请求者可以撤销。");
       return;
     }
@@ -629,7 +630,7 @@ export class Router {
       await this.reply(msg.chatId, `找不到任务 ${id}`);
       return;
     }
-    if (task.requester !== msg.userId) {
+    if (!msg.admin && task.requester !== msg.userId) {
       await this.reply(msg.chatId, "只有原请求者可以取消。");
       return;
     }
@@ -661,7 +662,7 @@ export class Router {
       await this.reply(msg.chatId, `找不到任务 ${id || ""}`);
       return;
     }
-    if (task.requester !== msg.userId) {
+    if (!msg.admin && task.requester !== msg.userId) {
       await this.reply(msg.chatId, "只有原请求者可以恢复。");
       return;
     }

@@ -421,10 +421,14 @@ export class Store {
   }
 
   /** 终态任务，按创建时间倒序；看板「最近完成」用，先筛后限避免被未完成任务挤掉 */
-  recentFinished(limit = 5): Task[] {
-    const rows = this.db
-      .query(`SELECT * FROM tasks WHERE status IN ${FINISHED_IN} ORDER BY created_at DESC LIMIT ?`)
-      .all(limit) as Row[];
+  recentFinished(limit = 5, repo?: string): Task[] {
+    const rows = repo
+      ? (this.db
+          .query(`SELECT * FROM tasks WHERE status IN ${FINISHED_IN} AND repo = ? ORDER BY created_at DESC LIMIT ?`)
+          .all(repo, limit) as Row[])
+      : (this.db
+          .query(`SELECT * FROM tasks WHERE status IN ${FINISHED_IN} ORDER BY created_at DESC LIMIT ?`)
+          .all(limit) as Row[]);
     return rows.map(toTask);
   }
 

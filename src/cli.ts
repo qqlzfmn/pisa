@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { findConfig, loadConfig, repoByAlias, type Config } from "./config";
@@ -8,7 +8,8 @@ import { isGitRepo } from "./git";
 import type { Task, TaskStatus } from "./types";
 import { newTaskId } from "./ids";
 import { continuationContext } from "./task-context";
-import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot } from "./status";
+import { readTail, tailLines } from "./log";
+import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
 
 /** 退出码：脚本据此分支，不要在版本间随意改语义 */
 const EXIT = {
@@ -98,24 +99,6 @@ function flagNumber(args: ParsedArgs, name: string): number | undefined {
 
 function json(io: Io, value: unknown): void {
   io.out(JSON.stringify(value, null, 2));
-}
-
-/** 任务 JSON：只暴露 CLI 使用者需要且无敏感信息的字段 */
-function taskJson(t: Task) {
-  return {
-    id: t.id,
-    status: t.status,
-    repo: t.repo,
-    branch: t.branch,
-    prUrl: t.prUrl,
-    baseRef: t.baseRef,
-    prompt: t.prompt,
-    summary: t.summary,
-    error: t.error,
-    createdAt: t.createdAt,
-    startedAt: t.startedAt,
-    endedAt: t.endedAt,
-  };
 }
 
 function openState(configPath: string): { cfg: Config; store: Store } {
@@ -243,24 +226,6 @@ function taskHuman(io: Io, task: Task, logPath: string): void {
   if (task.summary) rows.push(["摘要", task.summary]);
   if (task.error) rows.push(["错误", task.error]);
   for (const [k, v] of rows) io.out(`${k}：${v}`);
-}
-
-/** 读文件尾部；日志可能很大，只取最后 maxBytes */
-function readTail(path: string, maxBytes = 64 * 1024): string {
-  const size = statSync(path).size;
-  const start = Math.max(0, size - maxBytes);
-  const buf = Buffer.alloc(size - start);
-  const fd = openSync(path, "r");
-  try {
-    readSync(fd, buf, 0, buf.length, start);
-  } finally {
-    closeSync(fd);
-  }
-  return buf.toString("utf8");
-}
-
-function tailLines(text: string, count: number): string[] {
-  return text.split("\n").filter((line) => line.length > 0).slice(-count);
 }
 
 export function helpText(): string {

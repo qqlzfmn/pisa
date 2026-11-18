@@ -37,6 +37,17 @@ export interface GithubConfig {
   repos?: GithubRepoConfig[];
 }
 
+/** 本机 Web 控制台；只监听 127.0.0.1，token 是唯一的鉴权因子 */
+export interface WebConfig {
+  enabled: boolean;
+  port: number;
+  /** token 所在的环境变量名 */
+  tokenEnv: string;
+  /** 页面派活与操作使用的身份；必须在 whitelist.users 里 */
+  userId: string;
+  chatId: string;
+}
+
 /** events 与 progress 的默认保留天数 */
 export const DEFAULT_RETENTION_DAYS = 30;
 
@@ -59,6 +70,8 @@ export interface Config {
   };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string; proxy?: string } };
+  /** 本机 Web 控制台；缺省值见 DEFAULT_WEB */
+  web?: WebConfig;
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
   /** 评论 → 任务 → 回帖；repo 形如 owner/repo */
   github?: GithubConfig;
@@ -98,6 +111,15 @@ export const DEFAULT_ENV_ALLOW: readonly string[] = [
   "USER",
 ];
 
+/** Web 控制台默认值：默认关闭，`bun run web` 用 `--web` 强制开启 */
+export const DEFAULT_WEB: WebConfig = {
+  enabled: false,
+  port: 8787,
+  tokenEnv: "PISA_WEB_TOKEN",
+  userId: process.env.PISA_CLI_USER ?? process.env.USER ?? "web",
+  chatId: "web",
+};
+
 export const DEFAULT_CONFIG: Config = {
   trigger: "/pisa",
   dmWithoutTrigger: true,
@@ -114,6 +136,7 @@ export const DEFAULT_CONFIG: Config = {
   },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
+  web: DEFAULT_WEB,
   retentionDays: DEFAULT_RETENTION_DAYS,
   stateDir: ".pisa",
 };
@@ -126,6 +149,7 @@ function merge(base: Config, patch: Partial<Config>): Config {
     worker: { ...base.worker, ...(patch.worker ?? {}) },
     delivery: { ...base.delivery, ...(patch.delivery ?? {}) },
     channels: { ...base.channels, ...(patch.channels ?? {}) },
+    web: { ...(base.web ?? DEFAULT_WEB), ...(patch.web ?? {}) },
   };
 }
 

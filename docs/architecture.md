@@ -10,7 +10,7 @@
 
 ```
 ┌──────────────── web（外部世界）─────────────────────────────┐
-│ Telegram Bot API   GitHub（gh CLI：评论/PR）   HTTP /event   stdin/stdout │
+│ Telegram Bot API   GitHub（gh CLI：评论/PR）   HTTP /event · /ui   stdin/stdout │
 └──────────────▲─────────────────────────────────▲────────────┘
                │ 入站事件                          │ 出站文本
 ┌──────────────┴─────────────────────────────────┴────────────┐
@@ -64,6 +64,7 @@ core 内部模块关系：
 | `scheduler.ts` | cron 到点开单 | 构造时注入 `enqueue` |
 | `proactive.ts` | 群聊关键词与定时探针 | 构造时注入 `enqueue` |
 | `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
+| `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机 | `createWebApp()`、`startWebServer()`、`ReplyBus` |
 | `log.ts` / `config.ts` / `types.ts` | 日志脱敏、配置加载与默认值、共享类型与状态机表 | — |
 
 ## 2. 任务状态机与恢复语义
@@ -131,9 +132,10 @@ cancelled ─┘
 
 逐步（括号内是代码位置）：
 
-1. **事件进入**。五类触发源都产生 `IncomingMessage`，`eventId` 是唯一键：
+1. **事件进入**。六类触发源都产生 `IncomingMessage`，`eventId` 是唯一键：
    - IM：`channel.start(onMessage)` 回调里先喂 `Proactive.observe`，再 `router.handle`（`src/index.ts`）。
    - webhook：`Bun.serve` 只接 127.0.0.1 的 `POST /event`，校验 `x-pisa-token`，body `{prompt, repo?, eventId?}`，缺省 `eventId` 为 `webhook:<ts>:<rand>`（`src/index.ts`）。
+   - Web 控制台：`Bun.serve` 只接 127.0.0.1 的 `/ui` 与 `/api/*`，token 鉴权通过后把派活/取消/合并拼成 `IncomingMessage`（`admin: true`）交给 `router.handle`，回执经 `ReplyBus` 收集后回给页面（`src/web.ts`）。`admin` 让 Router 跳过单英文词误触防护与原请求者校验——浏览器里的操作由 token 直接认证，没有可回 `confirm` 的聊天。
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
@@ -190,12 +192,13 @@ interface WorkerAdapter {
 
 ### 4.2 Trigger：加事件源
 
-契约只有一条：产出 `IncomingMessage` 并调用 `router.handle`，`eventId` 必须稳定（同一物理事件重复投递得到同一个字符串）。内置五种触发源都按这个模式接：
+契约只有一条：产出 `IncomingMessage` 并调用 `router.handle`，`eventId` 必须稳定（同一物理事件重复投递得到同一个字符串）。内置六种触发源都按这个模式接：
 
 | 触发源 | 代码 | eventId 形态 | 稳定性来源 |
 | --- | --- | --- | --- |
 | IM | 通道 → `handle` | cli：`cli:<ts>:<rand>`；telegram：`telegram:<chatId>:<messageId>` | cli 一次投递一次；telegram 靠消息 id 幂等 |
 | webhook | `src/index.ts` | `webhook:<ts>:<rand>`，可由调用方覆盖 | 调用方提供即可重放去重 |
+| Web 控制台 | `src/web.ts` | `web:<uuid>` | 一次点击一次事件 |
 | GitHub 评论 | `github-watcher.ts` | `github:comment:<repo>:<commentId>` | 评论 id，天然幂等 |
 | cron | `scheduler.ts` | `cron:<jobId>:<minuteKey>`，先 `cron-claim:<jobId>:<minuteKey>` 抢占 | 分钟键，同一分钟只投一次 |
 | 主动发现 | `proactive.ts` | `proactive:kw:<ts>` / `proactive:probe:<ts>` | 一次机会一次事件 |
