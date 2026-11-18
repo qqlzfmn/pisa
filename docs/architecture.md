@@ -64,7 +64,7 @@ core 内部模块关系：
 | `github.ts` | 所有 `gh` 调用与回帖去重标记 | 测试可注入 `Runner` |
 | `github-watcher.ts` | 轮询 GitHub 评论，把命中触发词的评论转成事件 | 构造时注入 `enqueue` |
 | `scheduler.ts` | cron 到点开单 | 构造时注入 `enqueue` |
-| `proactive.ts` | 群聊关键词与定时探针 | 构造时注入 `enqueue` |
+| `proactive.ts` | 群聊关键词与定时探针；探针状态（签名 + 触发时间）落 `meta`，eventId 由签名与冷却窗口推导 | 构造时注入 `enqueue` 与探针依赖（`load`/`save`/`claim`） |
 | `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
 | `stage.ts` / `status.ts` | 任务阶段规则表与对外投影：阶段、JSON 字段、看板文本 | `taskStage()`、`taskJson()`、`formatStatusBoard()` |
 | `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机 | `createWebApp()`、`startWebServer()`、`ReplyBus` |
@@ -291,7 +291,7 @@ interface ChannelAdapter {
 3. **并发**。上限是 `worker.concurrency`（默认 2），以进程内活跃 Promise 计；多任务共享同一 `.git` 对象库，交付只 `git add -A` 自己的工作副本；同一分支不能有两个 worktree，续跑同一分支的第二个任务会直接失败；`merge` 要求主工作区停在 base 分支，并先 rebase 到最新主干（否则历史前进后快进必然失败）。
 4. **信号只到直接子进程**：超时与取消对 agent 进程 `SIGTERM`→`SIGKILL`，它派生的孙进程可能残留。
 5. **去重按触发身份**：鉴权与参数校验通过才写 `triggers`，同一触发身份只会有一个任务；载荷指纹取解析后的需求正文，同一条消息换入口包装（`/pisa X` 与裸 `X`）仍命中同一个触发。旧库升级时 `Store` 构造会按任务自身信息补齐触发器，重放旧事件不会重复建任务。
-6. **内存态丢失**：24h 拒绝提示节流、单字确认的 10 分钟待确认态、主动发现冷却都在内存。重启后这些窗口归零（去重靠 `triggers` 表长期有效；GitHub 评论游标已落库，停机期间的评论会补拉）。
+6. **内存态丢失**：24h 拒绝提示节流、单字确认的 10 分钟待确认态、主动发现的关键词冷却都在内存。重启后这些窗口归零（探针冷却与「这个故障已开过单」落在 `meta`/`events`，重启不重复开单；去重靠 `triggers` 表长期有效；GitHub 评论游标已落库，停机期间的评论会补拉）。
 7. **调度不补跑**：cron 粒度到分钟、tick 30s，停机错过的时间窗不补；同一分钟只投一次。
 8. **`gh pr create` 未在生产验证**（README「已知限制」）：没配远程的仓库只得到 compare 链接。
 9. **撤销有边界**：只覆盖记账的副作用（分支、推送、PR、回帖、工作副本、合并）。已发出的评论不可撤回；PR 状态无法确认时保留分支且不标 `rewound`；只允许原请求者操作，运行中的任务要求先取消。

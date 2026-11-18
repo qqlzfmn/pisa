@@ -20,7 +20,10 @@
 ### 2.2 主动发现
 
 - **关键词**：群聊消息命中配置词、且没有触发词时开单；同一群按 `cooldownSec` 限流
-- **探针**：定时执行 `bash -lc <command>`，退出码非 0 就开单；同一输出只在冷却后重复提醒
+- **探针**：定时执行 `bash -lc <command>`，退出码非 0 就开单
+  - 状态跨重启：`{signature, firedAt}` 写入 `meta` 的 `probe:<jobId>`（jobId 是命令的短 sha1）；同一签名且未过 `cooldownSec` 不再开单
+  - eventId 由签名与冷却窗口推导：`proactive:probe:<jobId>:<sha1(signature)>:<floor(now/cooldownMs)>`；同一窗口内的重复运行由 `events` 表占位吞掉
+  - 探针成功时把签名清空，同一故障再次出现按新故障处理
 
 探针是通用的：CI 用 `gh run list`，服务探活用 `curl -f`，磁盘用 `df`。
 
@@ -40,6 +43,6 @@
 
 1. 回复任意任务消息，生成的新任务 `base_ref` 等于上一轮分支
 2. 群里发「支付挂了」且配置了关键词 → 自动开单；10 分钟内第二条不再触发
-3. 探针命令 `exit 3` → 开单并带上退出码与输出
+3. 探针命令 `exit 3` → 开单并带上退出码与输出；冷却内重启进程不再为同一故障开第二张单，跨过冷却才允许再开单
 4. `delivery.push=true` → 裸仓库里能 `rev-parse` 到任务分支
 5. 换适配器不需要改 Router
