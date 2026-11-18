@@ -975,7 +975,7 @@ describe("执行器丢失与合并门禁", () => {
     const store = new Store(":memory:");
     const channel = new FakeChannel();
     const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
-    return { store, channel, router, stateDir };
+    return { store, channel, router, stateDir, repo };
   }
 
   test("running 但没有执行器 → failed", () => {
@@ -996,6 +996,17 @@ describe("执行器丢失与合并门禁", () => {
     expect(router.reconcileOrphans()).toBe(1);
     expect(store.get("t_resume")!.status).toBe("paused");
     store.close();
+  });
+
+  test("gc 清理已结束任务的分支", async () => {
+    const { store, router, channel, repo } = mk();
+    sh(["git", "-C", repo, "branch", "pisa/t_gc", "main"]);
+    store.insertTask({ ...base("t_gc"), status: "queued", branch: "pisa/t_gc" });
+    store.claimQueued("t_gc", Date.now() - 60_000, "pisa/t_gc");
+    store.transition("t_gc", "failed", { endedAt: 1, error: "x" });
+    await router.handle(msg("/pisa gc 0"));
+    expect(sh(["git", "-C", repo, "rev-parse", "--verify", "pisa/t_gc"]).code).not.toBe(0);
+    expect(channel.sent.at(-1)!.text).toContain("已清理");
   });
 
   test("过程消息默认关闭，可开关", async () => {

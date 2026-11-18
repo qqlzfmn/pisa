@@ -672,6 +672,16 @@ export class Store {
     return rows.map(toTask);
   }
 
+  /** 已结束且结束时间早于 cutoff 的任务；GC 据此清理分支、工作副本与 PR */
+  terminalTasksBefore(cutoff: number, limit = 300): Task[] {
+    const rows = this.db
+      .query(
+        "SELECT * FROM tasks WHERE status IN ('succeeded','failed','cancelled') AND ended_at IS NOT NULL AND ended_at < ? ORDER BY ended_at ASC LIMIT ?",
+      )
+      .all(cutoff, limit) as Row[];
+    return rows.map(toTask);
+  }
+
   /** CLI 列表：按仓库、状态过滤，先筛后限 */
   listTasks(opts: { repo?: string; status?: TaskStatus; limit?: number } = {}): Task[] {
     const where: string[] = [];

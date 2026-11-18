@@ -365,6 +365,11 @@ export class Router {
       return;
     }
 
+    if (cmd.kind === "gc") {
+      await this.handleGc(msg, cmd.body);
+      return;
+    }
+
     if (cmd.kind === "schedules") {
       const jobs = cfg.schedules ?? [];
       if (jobs.length === 0) {
@@ -552,6 +557,60 @@ export class Router {
     } catch (err) {
       console.error(`[pisa] 清理合并分支失败：${String(err).slice(0, 200)}`);
     }
+  }
+
+  /**
+   * 清理已结束任务的残留：工作副本、本地/远端分支、未关闭的 PR。
+   * 只处理结束时间早于 cutoff 的任务；dry-run 只统计不动手。
+   */
+  private async handleGc(msg: IncomingMessage, body: string): Promise<void> {
+    const dry = /--dry|预览/.test(body);
+    const days = Math.max(0, Number(body.replace(/--dry|预览/g, "").trim() || 7));
+    const r = await this.gc(days, dry);
+    await this.reply(
+      msg.chatId,
+      [
+        `${dry ? "可清理" : "已清理"}（结束超过 ${days} 天的任务 ${r.tasks} 个）`,
+        `工作副本 ${r.worktrees} · 本地分支 ${r.localBranches} · 远端分支 ${r.remoteBranches} · PR ${r.prs}`,
+      ].join("\n"),
+    );
+  }
+
+  /** 供命令与定时任务共用的清理入口 */
+  async gc(days = 7, dry = false): Promise<{ tasks: number; worktrees: number; localBranches: number; remoteBranches: number; prs: number }> {
+    const { cfg, store } = this.deps;
+    const cutoff = this.now() - days * 86_400_000;
+    const tasks = store.terminalTasksBefore(cutoff, 300);
+    const out = { tasks: tasks.length, worktrees: 0, localBranches: 0, remoteBranches: 0, prs: 0 };
+    for (const t of tasks) {
+      const repo = repoByAlias(cfg, t.repo) ?? cfg.repos[0];
+      if (!repo) continue;
+      const dir = resolve(cfg.stateDir, "worktrees", t.id);
+      if (existsSync(dir)) {
+        if (!dry) removeWorktree(repo.path, dir);
+        out.worktrees += 1;
+      }
+      if (t.branch && t.branch !== "main") {
+        const exists = sh(["git", "-C", repo.path, "rev-parse", "--verify", t.branch]).code === 0;
+        if (exists) {
+          if (!dry) deleteBranch(repo.path, t.branch);
+          out.localBranches += 1;
+        }
+        if (repo.remote) {
+          if (!dry) sh(["git", "-C", repo.path, "push", "origin", "--delete", t.branch]);
+          out.remoteBranches += 1;
+        }
+      }
+      if (t.prUrl) {
+        const n = prNumberFromIssueUrl(t.prUrl);
+        if (n) {
+          if (!dry) sh(["gh", "pr", "close", String(n)]);
+          out.prs += 1;
+        }
+      }
+    }
+    if (!dry && cfg.repos[0]) sh(["git", "-C", cfg.repos[0].path, "worktree", "prune"]);
+    return out;
   }
 
   private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {

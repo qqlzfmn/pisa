@@ -96,6 +96,13 @@ async function main(): Promise<void> {
   githubWatcher.start();
   scheduler.start();
   retention.start();
+
+  // 定期清理已结束任务的残留分支/工作副本/PR：启动 2 分钟后一次，之后每 6 小时
+  const gc = () => {
+    router.gc(7, false).catch((err) => console.error(`[pisa] gc 失败：${String(err).slice(0, 200)}`));
+  };
+  setTimeout(gc, 120_000).unref?.();
+  setInterval(gc, 6 * 3600_000).unref?.();
   if (gh?.enabled) {
     const watched = githubRepos(gh).map((r) => r.repo);
     console.log(`[pisa] GitHub 评论轮询已启用 · ${watched.join(", ") || "(无仓库)"}`);
