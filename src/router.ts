@@ -22,6 +22,7 @@ import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type Rew
 import { formatExamples, formatHelp } from "./usage";
 import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
+import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
 import { formatStatusBoard } from "./status";
 
@@ -235,14 +236,17 @@ export class Router {
     msg = this.routeByAlias(msg);
 
     // 回复某条任务消息 = 对该任务续跑
-    if (msg.replyToMessageId) {
-      const parentId = store.taskByMessage(msg.chatId, String(msg.replyToMessageId));
+    const replyTaskId = msg.replyToMessageId ? store.taskByMessage(msg.chatId, String(msg.replyToMessageId)) : null;
+    if (replyTaskId) {
       const text = msg.text.trim();
-      if (parentId && !text.startsWith(cfg.trigger) && !text.startsWith("/")) {
-        const parent = store.get(parentId);
-        msg = { ...msg, repo: parent?.repo ?? msg.repo, text: `${cfg.trigger} continue ${parentId} ${text}` };
+      if (!text.startsWith(cfg.trigger) && !text.startsWith("/")) {
+        const parent = store.get(replyTaskId);
+        msg = { ...msg, repo: parent?.repo ?? msg.repo, text: `${cfg.trigger} continue ${replyTaskId} ${text}` };
       }
     }
+    // 线程解析前置：后续建任务与去重都按这条线程算
+    const threadKey = threadKeyOf(msg, replyTaskId);
+    msg = { ...msg, threadKey };
 
     let cmd = parseCommand(msg.text, cfg.trigger);
 
@@ -267,7 +271,24 @@ export class Router {
         }
       }
     }
-    if (!cmd) return;
+    if (!cmd) {
+      // 同线程的后续消息（没有命令）：并进该线程未结束任务的上下文，不新建任务
+      const open = store.openTaskByThread(threadKey);
+      const text = msg.text.trim();
+      if (open && text) {
+        const trigger = makeTrigger({
+          source: msg.channel,
+          threadKey,
+          messageKey: msg.messageKey ?? msg.eventId,
+          actor: msg.actor ?? msg.userId,
+          at: msg.receivedAt ?? this.now(),
+          text,
+          version: msg.version,
+        });
+        store.attachThreadNote(trigger, open.id, `补充说明：${text}`);
+      }
+      return;
+    }
 
     // 除确认以外的下一条命令视为放弃待确认；避免旧单词被迟到的 confirm 建单
     if (cmd.kind !== "confirm") this.pending.delete(this.pendingKey(msg));
@@ -411,9 +432,6 @@ export class Router {
     }
 
     const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
-    const taskId = newTaskId(this.now());
-    // 去重：同一事件只登记一次；重复投递直接丢弃
-    if (!store.claimEvent(msg.eventId, taskId)) return;
 
     const denied = this.checkAccess(msg, repo);
     if (denied) {
@@ -433,8 +451,19 @@ export class Router {
       return;
     }
 
+    // 触发身份只看「线程 + 消息 + 版本 + 载荷」：重复投递与编辑都命中同一条
+    const at = msg.receivedAt ?? this.now();
+    const trigger = makeTrigger({
+      source: msg.channel,
+      threadKey,
+      messageKey: msg.messageKey ?? msg.eventId,
+      actor: msg.actor ?? msg.userId,
+      at,
+      text: prompt,
+      version: msg.version,
+    });
     const task: Task = {
-      id: taskId,
+      id: newTaskId(this.now()),
       source: msg.eventId,
       channel: msg.channel,
       chatId: msg.chatId,
@@ -457,7 +486,12 @@ export class Router {
       endedAt: null,
       cancelRequested: false,
     };
-    store.insertTask(task);
+    const claim = store.createTaskFromTrigger(trigger, task);
+    if (!claim.created) {
+      if (claim.promptUpdated) await this.reply(msg.chatId, `任务 ${claim.taskId} 还没开跑，已按最新版本更新需求。`);
+      else if (claim.edited) await this.reply(msg.chatId, `任务 ${claim.taskId} 已在执行，这次修改只做了留痕。`);
+      return;
+    }
     await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库：${repo.alias}\n排队中。`);
   }
 

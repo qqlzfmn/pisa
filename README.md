@@ -169,7 +169,7 @@ curl -X POST http://127.0.0.1:8799/event \
 {"ok":true,"eventId":"ci:12345"}
 ```
 
-同一 `eventId` 重投只建一个任务。回执发给 `webhook.chatId`：配了 Telegram 就推到那个会话，跑本地 CLI 通道时直接打到终端。
+同一 `eventId` 重投只建一个任务；带同一个 `threadKey`（业务单号）的投递跨入口命中同一个任务，编辑后的新版本按 `version` 归到原任务。回执发给 `webhook.chatId`：配了 Telegram 就推到那个会话，跑本地 CLI 通道时直接打到终端。
 
 ### 3. PR 评论里继续改
 

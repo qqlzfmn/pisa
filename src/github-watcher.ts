@@ -21,7 +21,8 @@ function sinceKey(repo: string): string {
 
 /**
  * Issue / PR 评论 → 任务：按仓库定时拉增量评论，把带触发词的投给 Router。
- * 去重靠投递时的稳定 eventId（`github:comment:<repo>:<id>`），由 Router 的 claimEvent 落库。
+ * 身份靠 (线程, 评论 id, 编辑时间)：线程是 `github:<repo>:issue:<n>`，
+ * 同一条评论被编辑后带上新版本，由 Router 挂回原任务而不是新建。
  * 每个仓库各自维护增量下界并落库（`meta` 表的 `github:since:<repo>`），一个仓库失败不影响其它仓库。
  * 编号是 PR 时接续该 PR 的任务并回帖到 PR；是普通 Issue 时从主干开新分支、回帖到 Issue。
  */
@@ -82,7 +83,7 @@ export class GithubWatcher {
     }
 
     const prefix = `${this.deps.cfg.trigger} `;
-    // 类型判定失败不推进下界：下一轮重试，已投递的评论由 eventId 去重
+    // 类型判定失败不推进下界：下一轮重试，已投递的评论由触发器身份去重
     let complete = true;
     for (const comment of res.value) {
       const text = comment.body.trim();
@@ -102,6 +103,10 @@ export class GithubWatcher {
         userId,
         text,
         replyRepo: repo,
+        threadKey: `github:${repo}:issue:${n}`,
+        messageKey: String(comment.id),
+        version: comment.updatedAt,
+        actor: comment.userLogin,
       };
       if (isPr.value) {
         await this.deps.enqueue({ ...base, continueFrom: this.deps.store.taskByPr(n, repo)?.id, replyPr: n });

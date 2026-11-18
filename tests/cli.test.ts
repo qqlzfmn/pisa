@@ -160,6 +160,17 @@ describe("pisa task", () => {
     store.close();
   });
 
+  test("--event-id 重投不同正文按编辑处理，排队任务换成最新需求", async () => {
+    const first = parse<TaskJson>(await cli(...base("task", "修 CI", "--event-id", "e2", "--json")));
+    const edited = parse<TaskJson>(await cli(...base("task", "修 CI 并补测试", "--event-id", "e2", "--json")));
+    expect(edited.id).toBe(first.id);
+    expect(edited.message).toContain("需求已按最新版本更新");
+
+    const store = new Store(join(stateDir, "pisa.db"));
+    expect(store.listTasks()[0]!.prompt).toBe("修 CI 并补测试");
+    store.close();
+  });
+
   test("未知仓库别名与未授权仓库都以用法错误退出", async () => {
     expect((await cli(...base("task", "x", "--repo", "nope"))).code).toBe(2);
     writeConfig({ whitelist: { users: [], repos: ["other"] } });

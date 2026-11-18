@@ -139,9 +139,16 @@ async function readJson(req: Request): Promise<Record<string, unknown>> {
 }
 
 /** 把 Web 表单动作翻译成一条 IM 消息，交给 Router；不复制白名单、状态机与合并校验 */
-function webMessage(cfg: Config, web: WebConfig, kind: "task" | "cancel" | "merge", body: string, repo?: string): IncomingMessage {
+function webMessage(
+  cfg: Config,
+  web: WebConfig,
+  kind: "task" | "cancel" | "merge",
+  body: string,
+  repo?: string,
+): IncomingMessage & { threadKey: string } {
+  const eventId = `web:${randomUUID()}`;
   return {
-    eventId: `web:${randomUUID()}`,
+    eventId,
     channel: "web",
     chatId: web.chatId,
     userId: web.userId,
@@ -150,6 +157,8 @@ function webMessage(cfg: Config, web: WebConfig, kind: "task" | "cancel" | "merg
     isDirect: true,
     admin: true,
     receivedAt: Date.now(),
+    // 一次表单提交就是一件事：线程与消息都绑在这个提交上
+    threadKey: `web:${eventId}`,
   };
 }
 
@@ -204,7 +213,8 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
   async function dispatchTask(repo: string | undefined, prompt: string): Promise<{ taskId: string; message: string; ok: boolean }> {
     const msg = webMessage(cfg, web, "task", prompt, repo);
     const result = await run(msg);
-    const task = store.taskByEvent(msg.eventId);
+    const bound = store.triggerByMessage(msg.threadKey, msg.eventId);
+    const task = bound?.taskId ? store.get(bound.taskId) : null;
     return { taskId: task?.id ?? "", ...result, ok: result.ok && Boolean(task) };
   }
 

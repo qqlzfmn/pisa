@@ -14,6 +14,8 @@ export interface PrComment {
   /** API 给的 issue_url，形如 https://api.github.com/repos/o/r/issues/12 */
   issueUrl: string;
   userLogin: string;
+  /** 最后编辑时间：评论被编辑后同一个 id 会以新时间再次出现，作为消息版本 */
+  updatedAt: string;
 }
 
 /** 从 .../issues/<n> 或 .../pull/<n> 提取 PR 号 */
@@ -90,6 +92,7 @@ export function listComments(runner: Runner, repo: string, sinceIso: string): Gh
       body: String(raw["body"] ?? ""),
       issueUrl: String(raw["issue_url"] ?? ""),
       userLogin: String(user?.["login"] ?? ""),
+      updatedAt: String(raw["updated_at"] ?? ""),
     });
   }
   return { ok: true, value: comments };

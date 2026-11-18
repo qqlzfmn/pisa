@@ -48,7 +48,7 @@
 
 ## 一致性
 
-- SQLite WAL 支持 CLI 与守护进程并发；`insertTaskOnce` 保证事件与任务同事务。
+- SQLite WAL 支持 CLI 与守护进程并发；`createTaskFromTrigger` 保证触发器与任务同事务，同一触发身份只会有一个任务。
 - 状态机唯一入口是 `Store.transition`；CLI 的 cancel 也走它。
 - 心跳阈值 10 秒；守护进程每 800ms 写一次。
 - 任务号格式 `t_<yyyyMMdd>_<6位十六进制>`，只用于定位，不要解析出语义。

@@ -182,8 +182,8 @@ describe("listComments / postComment", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.value).toEqual([
-      { id: 11, body: "/pisa 修一下", issueUrl: "https://api.github.com/repos/o/r/issues/12", userLogin: "alice" },
-      { id: 12, body: "只是聊天", issueUrl: "https://api.github.com/repos/o/r/issues/13", userLogin: "alice" },
+      { id: 11, body: "/pisa 修一下", issueUrl: "https://api.github.com/repos/o/r/issues/12", userLogin: "alice", updatedAt: "" },
+      { id: 12, body: "只是聊天", issueUrl: "https://api.github.com/repos/o/r/issues/13", userLogin: "alice", updatedAt: "" },
     ]);
     expect(calls[0]).toEqual([
       "gh",

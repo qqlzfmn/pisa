@@ -113,7 +113,7 @@ async function main(): Promise<void> {
         async fetch(req) {
           if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
           if (req.headers.get("x-pisa-token") !== token) return new Response("forbidden", { status: 403 });
-          let body: { prompt?: string; repo?: string; eventId?: string };
+          let body: { prompt?: string; repo?: string; eventId?: string; threadKey?: string; version?: string };
           try {
             body = (await req.json()) as typeof body;
           } catch {
@@ -129,6 +129,9 @@ async function main(): Promise<void> {
             text: body.prompt,
             repo: body.repo,
             isDirect: true,
+            // 调用方带上业务单号就能跨入口命中同一个任务
+            threadKey: body.threadKey,
+            version: body.version,
           });
           return Response.json({ ok: true, eventId });
         },
