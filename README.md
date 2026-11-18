@@ -249,7 +249,10 @@ Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/operations.md](./docs/operations.md) | 全部配置项、IM/CLI 命令、事件入口、撤销、数据保留、常驻 |
+| [docs/operations.md](./docs/operations.md) | 全部配置项、IM/CLI 命令、事件入口、撤销、数据保留 |
+| [docs/deployment.md](./docs/deployment.md) | 安装、升级、回滚、退出码、数据目录与排障表 |
+| [docs/domain.md](./docs/domain.md) | 术语表：任务、状态、触发身份、来源、适配器、交付、账本 |
+| [docs/extending.md](./docs/extending.md) | 加来源、加 Worker 适配器的完整步骤与测试 |
 | [docs/usage.md](./docs/usage.md) | 使用场景、最佳实践、能力边界、卡住排查 |
 | [docs/architecture.md](./docs/architecture.md) | 分层、状态机、数据流、扩展点、失败模式与设计取舍 |
 | [docs/specs/](./docs/specs/) | 每个 feature 的 spec / plan / tasks |

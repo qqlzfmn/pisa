@@ -2,7 +2,7 @@
 
 面向两类读者：要改内核的贡献者，和半年后回来读代码的自己。内容只回答五个问题——层怎么分、任务怎么流转、数据怎么走、哪里能插东西、哪里会坏。
 
-代码是唯一事实源；本文给位置和约束，不复述实现。规格细节见 `docs/specs/`（尤其 001 状态机、003 事件入口、005 恢复语义、013 撤销）。
+代码是唯一事实源；本文给位置和约束，不复述实现。规格细节见 `docs/specs/`（尤其 001 状态机、003 事件入口、005 恢复语义、013 撤销）。术语见 [domain.md](./domain.md)，部署与排障见 [deployment.md](./deployment.md)，动手加来源或适配器见 [extending.md](./extending.md)。
 
 ## 1. 分层与职责
 
@@ -182,6 +182,8 @@ cancelled ─┘
 
 ## 4. 扩展点
 
+动手前先读 [extending.md](./extending.md)：那里有完整的文件落点、配置、路由与测试步骤。本节只给约束与边界。
+
 ### 4.1 WorkerAdapter：换 agent
 
 接口在 `src/adapters/types.ts`：
@@ -204,6 +206,8 @@ interface WorkerAdapter {
 3. 支持一次性的非交互执行；有会话续跑能力时用 `resumeSessionId`，没有就忽略（任务仍能跑，只是 `paused` 无法续跑）。
 4. 环境变量至少透传 `PISA_WORKDIR`；`PISA_PROGRESS_FILE` 只有在 agent 侧也有对应 skill 时才有意义。
 5. 退出码约定：0 成功，非 0 失败且最后若干行 stdout/stderr 会进 `error`。
+
+完整实现、注册、配置与测试见 [extending.md 的「加 WorkerAdapter」](./extending.md#5-加-workeradapter)。
 
 策略拦截没有做成适配器的一部分：它依赖 agent 的事件钩子（omp 的 pi 扩展）。换成不提供钩子的 agent 时，拦截会一起消失，`delivery` 与 `git.ts` 里的命令仍然是最后一道限制。
 
@@ -248,7 +252,7 @@ id = hex(sha256(source, threadKey, messageKey, version, payloadHash))[:32]
 
 触发记录不随保留策略清理：它是「这件事已经做过」的唯一凭据，删掉会让重放复活成新任务。
 
-新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。
+新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。协议型入口的实现、配置、路由与测试见 [extending.md 的「加协议型 Source」](./extending.md#3-加协议型-sourcetriggeradapter)，常驻型见 [「加常驻型 Source」](./extending.md#4-加常驻型-source)。
 
 新协议走适配器，不直接写 `router.handle`。`TriggerAdapter`（`src/triggers/types.ts`）把入口逻辑拆成三段，各自只有一个落点：
 
@@ -359,3 +363,6 @@ interface ChannelAdapter {
 | 资源对账 | `src/reconcile.ts`、`docs/specs/019-reconcile/` |
 | 配置项 | `src/config.ts`、`pisa.config.example.json` |
 | 控制台配置编辑与写操作审计 | `src/config-edit.ts`、`src/audit.ts`、`docs/specs/021-web-console-phase2/` |
+| 术语与领域模型 | [domain.md](./domain.md) |
+| 安装、升级、退出码与排障 | [deployment.md](./deployment.md) |
+| 加来源或 Worker 适配器 | [extending.md](./extending.md) |
