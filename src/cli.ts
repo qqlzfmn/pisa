@@ -11,6 +11,7 @@ import { makeTrigger } from "./trigger";
 import { continuationContext } from "./task-context";
 import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
+import { evaluateOpsStatus, formatOpsIssues } from "./ops-status";
 import { windowMetrics } from "./metrics";
 import { stageText } from "./stage";
 
@@ -263,6 +264,7 @@ export function helpText(): string {
 退出码：
   0 成功    1 任务失败或命令被拒    2 用法/配置错误
   3 找不到任务    4 任务不可运行（暂停/取消/撤销）    5 等待超时
+  status 例外：0 正常    1 需重启    2 部件错误    3 待配置
 `;
 }
 
@@ -325,10 +327,13 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
       }
 
       case "status": {
-        const daemon = daemonState(store);
+        const at = Date.now();
+        const daemon = daemonState(store, at);
+        const ops = evaluateOpsStatus(cfg, store, at);
         if (args.flags.get("json")) {
           const snapshot = statusSnapshot(store);
           json(io, {
+            ops,
             daemon,
             counts: snapshot.counts,
             total: snapshot.total,
@@ -337,12 +342,16 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
             finished: snapshot.finished.map(taskJson),
             last24h: windowMetrics(store),
           });
-          return EXIT.ok;
+          return ops.exitCode;
         }
         io.out(formatStatusBoard(store));
         const beat = daemon.ageMs === null ? "无心跳记录" : `最后心跳 ${formatDuration(daemon.ageMs)} 前`;
         io.out(`守护进程：${daemon.alive ? "运行中" : "未运行"}（${beat}）`);
-        return EXIT.ok;
+        if (ops.exitCode !== EXIT.ok) {
+          io.err(`巡检：${ops.label}（退出码 ${ops.exitCode}）`);
+          for (const line of formatOpsIssues(ops.issues)) io.err(line);
+        }
+        return ops.exitCode;
       }
 
       case "list": {

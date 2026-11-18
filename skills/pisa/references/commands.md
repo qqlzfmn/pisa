@@ -17,7 +17,7 @@
 
 | 命令 | 作用 | 关键选项 |
 | --- | --- | --- |
-| `pisa status` | 看板 + 守护进程心跳 | `--json` |
+| `pisa status` | 看板 + 守护进程心跳；退出码 0 正常、1 需重启、2 部件错误、3 待配置 | `--json` |
 | `pisa list` | 任务列表 | `--repo`、`--status`、`--limit`（默认 20）、`--pr <编号>`、`--github-repo <owner/repo>`、`--json` |
 | `pisa show <任务号>` | 单个任务详情 | `--json` |
 | `pisa logs <任务号>` | 任务日志尾部 | `--tail <行数>`（默认 80） |

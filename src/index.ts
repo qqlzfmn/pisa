@@ -5,6 +5,8 @@ import { Router } from "./router";
 import { Worker, workerEnv } from "./worker";
 import { GitDeliverer } from "./deliver";
 import { Proactive } from "./proactive";
+import { StatusPatrol } from "./patrol";
+import { evaluateOpsStatus } from "./ops-status";
 import { GithubWatcher } from "./github-watcher";
 import { Scheduler } from "./scheduler";
 import { Retention } from "./retention";
@@ -90,11 +92,18 @@ async function main(): Promise<void> {
   }
 
   const proactive = new Proactive(cfg, (m) => router.handle(m), { store });
+  const patrol = new StatusPatrol({
+    cfg,
+    store,
+    enqueue: (m) => router.handle(m),
+    evaluate: () => evaluateOpsStatus(cfg, store),
+  });
   const githubWatcher = new GithubWatcher({ cfg, store, enqueue: (m) => router.handle(m) });
   const scheduler = new Scheduler({ cfg, store, enqueue: (m) => router.handle(m) });
   const retention = new Retention({ cfg, store });
   router.start();
   proactive.start();
+  patrol.start();
   githubWatcher.start();
   scheduler.start();
   retention.start();
@@ -165,6 +174,7 @@ async function main(): Promise<void> {
     if (webServer) await webServer.stop();
     await router.stop(3000);
     proactive.stop();
+    patrol.stop();
     triggers?.stop();
     githubWatcher.stop();
     scheduler.stop();

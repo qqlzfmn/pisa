@@ -262,26 +262,55 @@ describe("pisa continue", () => {
 describe("查询与操作", () => {
   test("status 输出看板与守护进程状态", async () => {
     seed({ prompt: "排队中" });
+    const store = new Store(join(stateDir, "pisa.db"));
+    store.beat();
+    store.close();
+
     const text = await cli(...base("status"));
     expect(text.code).toBe(0);
     expect(text.out).toContain("排队（1）");
     expect(text.out).toContain("working/queued（等空闲槽位）");
     expect(text.out).toContain("最近 24h：无完成");
-    expect(text.out).toContain("守护进程：未运行");
+    expect(text.out).toContain("守护进程：运行中");
+    expect(text.err).toBe("");
 
-    const store = new Store(join(stateDir, "pisa.db"));
-    store.beat();
-    store.close();
-    const body = parse<{ daemon: { alive: boolean }; total: number; queued: TaskJson[]; last24h: WindowMetrics }>(
-      await cli(...base("status", "--json")),
-    );
+    const body = parse<{
+      daemon: { alive: boolean };
+      ops: { exitCode: number; label: string; issues: unknown[] };
+      total: number;
+      queued: TaskJson[];
+      last24h: WindowMetrics;
+    }>(await cli(...base("status", "--json")));
     expect(body.daemon.alive).toBe(true);
+    expect(body.ops).toEqual({ exitCode: 0, label: "正常", issues: [] });
     expect(body.last24h).toEqual({ finished: 0, succeeded: 0, failed: 0, successRate: null, durationSamples: 0, p50Ms: null, p95Ms: null });
     expect(body.total).toBe(1);
     expect(body.queued[0]!.prompt).toBe("排队中");
     expect(body.queued[0]!.status).toBe("queued");
     expect(body.queued[0]!.stage).toBe("working/queued");
     expect(body.queued[0]!.stageLabel).toBe("等空闲槽位");
+  });
+
+  test("status 退出码：需重启 / 待配置 / 部件错误", async () => {
+    const dead = await cli(...base("status"));
+    expect(dead.code).toBe(1);
+    expect(dead.err).toContain("巡检：需重启");
+    expect(dead.err).toContain("守护进程没有心跳记录");
+
+    writeConfig({ repos: [] });
+    expect((await cli(...base("status"))).code).toBe(3);
+    writeConfig();
+
+    const store = new Store(join(stateDir, "pisa.db"));
+    store.beat();
+    store.enqueueEffect({ kind: "push", key: "k1", taskId: null, payload: "{}", at: Date.now() });
+    store.failEffect("push", "k1", "origin rejected", { nextAt: 0, terminal: true }, Date.now());
+    store.close();
+
+    const broken = await cli(...base("status"));
+    expect(broken.code).toBe(2);
+    expect(broken.err).toContain("巡检：部件错误");
+    expect(broken.err).toContain("外部动作 push:k1");
   });
 
   test("show 与 logs", async () => {

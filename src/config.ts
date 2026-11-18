@@ -172,6 +172,14 @@ export interface Config {
       repo?: string;
       prompt?: string;
     };
+    /** 状态巡检：每小时判定一次，异常投递消息；身份缺省回落到 scheduler */
+    patrol?: {
+      enabled?: boolean;
+      intervalSec?: number;
+      chatId?: string;
+      userId?: string;
+      repo?: string;
+    };
   };
   stateDir: string;
 }

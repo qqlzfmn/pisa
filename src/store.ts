@@ -378,6 +378,14 @@ export class Store {
     return rows.map(toEffect);
   }
 
+  /** 重试用尽的 outbox 行：部件错误的信号，重启不会自愈 */
+  failedEffects(limit = 20): EffectRow[] {
+    const rows = this.db
+      .query("SELECT * FROM effects WHERE status = 'failed' ORDER BY updated_at DESC, rowid DESC LIMIT ?")
+      .all(limit) as EffectDbRow[];
+    return rows.map(toEffect);
+  }
+
   completeEffect(kind: string, key: string, result: string | null, at: number): EffectRow | null {
     this.db.run(
       "UPDATE effects SET status = 'done', result = ?, last_error = NULL, updated_at = ? WHERE kind = ? AND key = ?",

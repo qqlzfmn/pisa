@@ -66,6 +66,8 @@ core 内部模块关系：
 | `pr-review.ts` | 评审线程键、事件键与提示词（纯函数） | `reviewThreadKey`、`reviewEventId`、`buildReviewPrompt` |
 | `scheduler.ts` | cron 到点开单 | 构造时注入 `enqueue` |
 | `proactive.ts` | 群聊关键词与定时探针 | 构造时注入 `enqueue` |
+| `patrol.ts` | 每小时状态巡检：正常静默，异常发一条并按问题集合去重 | `StatusPatrol.start()/stop()` |
+| `ops-status.ts` | 状态判定：0 正常 / 1 需重启 / 2 部件错误 / 3 待配置；CLI 与巡检共用 | `evaluateOpsStatus()`、`formatOpsIssues()` |
 | `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
 | `reconcile.ts` | 资源对账：任务记录与分支/工作副本/PR 的差异（纯计划 + 执行） | `planReconcile`、`applyReconcile`、`formatReconcile` |
 | `stage.ts` / `status.ts` | 任务阶段规则表与对外投影：阶段、JSON 字段、看板文本 | `taskStage()`、`taskJson()`、`formatStatusBoard()` |

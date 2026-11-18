@@ -161,6 +161,12 @@
       "userId": "<telegram user id>",
       "repo": "pisa",
       "prompt": "自动探针失败，定位原因并修复。"
+    },
+    "patrol": {
+      "enabled": false,
+      "intervalSec": 3600,
+      "chatId": "<telegram chat id>",
+      "userId": "<telegram user id>"
     }
   },
   "stateDir": ".pisa",
