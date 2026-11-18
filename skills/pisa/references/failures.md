@@ -2,10 +2,10 @@
 
 先看退出码，再看任务状态与 `error`，最后看日志。不要在所有失败上重试同一个命令。
 
-## 1. 提交时 stderr 出现"没有检测到运行中的 pisa 守护进程"
+## 1. 提交时 stderr 出现"守护进程心跳已过期"或"管理 API 不可达"
 
-- 含义：10 秒内没有心跳，任务已入队但不会被执行。
-- 确认：`pisa status --json` 的 `daemon.alive`。
+- 含义：`run` 已经把任务写进库，但没有活着的守护进程会执行它。
+- 确认：`pisa status` 是否以 2 退出；能读到数据说明 API 在。
 - 处理：让人类启动 `bun run src/index.ts` 或对应 launchd 服务；启动后任务会自动被取走。不要重复提交。
 
 ## 2. 任务一直是 queued
@@ -20,7 +20,9 @@ pisa repos --json                  # 仓库是否 allowed
 
 - 守护进程在跑但 `running` 已满：排队是正常的，等。
 - `allowed=false`：`whitelist.repos` 没包含该别名，改配置后重新提交。
-- 仓库路径不是 git 仓库：`pisa task` 会直接以 2 退出，不会入队。
+- 仓库路径不是 git 仓库：`pisa run` 会直接以 2 退出，不会入队。
+- 管理 API 不可达：守护进程没在跑，或 `web.port` 不对。
+- 操作被拒（409）：合并未成功任务、重试进行中的任务、撤销未结束任务，文案里已给下一步。
 
 ## 3. 退出码 2
 
@@ -32,9 +34,9 @@ pisa repos --json                  # 仓库是否 allowed
 - `找不到配置文件`：用 `--config` 指定，或从包含配置的目录调用。
 - `未知选项` / 缺少正文：修命令。
 
-## 4. 退出码 1：任务 failed
+## 4. 退出码 2 且任务 failed
 
-读 `pisa show <id> --json` 的 `error` 与 `pisa logs <id> --tail 200`。常见分类：
+`wait` / `run --wait` 在任务失败时以 2 退出；读 `pisa show <id> --json` 的 `error` 与 `pisa logs <id> --tail 200`。常见分类：
 
 | error / 日志特征 | 原因 | 处理 |
 | --- | --- | --- |
@@ -46,7 +48,7 @@ pisa repos --json                  # 仓库是否 allowed
 
 失败任务的分支与工作副本：失败时会删除工作副本；只有自建的 `pisa/<任务号>` 分支会被删，续跑共享的父分支保留。不要依赖失败任务的分支继续改。要续跑，先确认父任务 `branch` 非空。
 
-## 5. 退出码 5：wait 超时
+## 5. wait 超时（退出码 2，输出 `timeout: true`）
 
 任务可能仍在 running。处理顺序：
 
@@ -57,10 +59,10 @@ pisa repos --json                  # 仓库是否 allowed
 
 不要因为超时就重复提交同一需求。
 
-## 6. 退出码 4：任务不可运行
+## 6. 任务不可运行（退出码 2，`wait` 返回非成功终态）
 
-- `paused`：进程重启且工作副本与会话都在时进入。当前只能由人类在 pisa 会话里执行 `resume <任务号>`；CLI 不能恢复。
-- `cancelled`：已取消，需要就新建任务。
+- `paused`：进程重启且工作副本与会话都在时进入。当前只能由人类在 pisa 会话里执行 `resume <任务号>`；CLI 不能恢复，但 `pisa show` 能确认状态。
+- `cancelled`：已取消，需要就新建任务或 `pisa retry`。
 - `rewound`：副作用已被撤销，不能继续。
 
 ## 7. `continue` 报"没有可续跑的分支"
@@ -82,7 +84,7 @@ pisa repos --json                  # 仓库是否 allowed
 
 ## 10. 数据库锁 / 读不到任务
 
-CLI 与守护进程共用 SQLite（WAL）。正常并发不会锁死。若出现 `database is locked`：
+只有建单（`run` / `continue`）直接写 SQLite（WAL），其余命令经管理 API。若建单出现 `database is locked`：
 
 - 确认没有脚本长时间持有事务
 - 不要删除 `pisa.db`；先让人类停守护进程再排查

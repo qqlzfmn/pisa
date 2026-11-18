@@ -38,7 +38,7 @@ pisa repos --json                              # 配置了哪些仓库、是否�
 pisa status --json                             # 守护进程是否在跑
 ```
 
-`status --json` 里 `daemon.alive` 为 `false` 时，`pisa task` 仍会入队，但 stderr 会警告，任务不会自己开始。此时先让人类启动守护进程（`bun run src/index.ts` 或 launchd），否则不要进入轮询。
+`status` 能读到数据，就说明守护进程与管理 API 都在（CLI 经本机 API 读状态）。命令以 3 退出说明 `web.enabled` 或 `web.tokenEnv` 没配好；以 2 退出且 stderr 是「管理 API 不可达」说明守护进程没在跑——此时 `pisa run` 仍会入队，但任务不会自己开始，先让人类启动守护进程（`bun run src/index.ts` 或 launchd），否则不要进入轮询。
 
 ## 标准流程
 
@@ -47,12 +47,12 @@ pisa status --json                             # 守护进程是否在跑
 3. **提交**：
 
    ```bash
-   pisa task "<brief>" --repo <别名> --event-id "<幂等键>" --json
+   pisa run "<brief>" --repo <别名> --event-id "<幂等键>" --json
    ```
 
    `--event-id` 用稳定值（如 `ci:<run-id>`、`issue:<n>`），重试不会建重复任务。
 4. **轮询**：优先 `pisa wait <id> --timeout <秒> --json`，让 CLI 阻塞到终态；需要边等边做别的事时用 `pisa status --json` 或 `pisa list --status running --json`。
-5. **验收**：看退出码、`summary`、`branch`、`prUrl`；需要细节时 `pisa logs <id> --tail 150`。
+5. **验收**：看 `status`、`summary`、`branch`、`prUrl`；需要细节时 `pisa logs <id> --tail 150 --json`。
 6. **迭代**：同一分支继续改，用 `pisa continue <父任务号> "<新要求>" --json`，不要新建任务重做。
 
 ## 轮询策略
@@ -60,36 +60,40 @@ pisa status --json                             # 守护进程是否在跑
 不要写 `sleep 5 && pisa show` 的固定循环；`pisa wait` 已经做完了：
 
 ```bash
-pisa wait <id> --timeout 900 --json      # 阻塞到终态，退出码 0/1/4/5
+pisa wait <id> --timeout 900 --json      # 阻塞到终态，退出码 0 或 2
 ```
 
 - 有 CI 时限：`--timeout` 小于 CI 超时，留出收尾时间。
-- 多任务并行：先全部 `task` 拿到 id，再对每个 id `wait`；或定期 `pisa status --json` 看整体。
-- 等待超时（5）：不要重提，先 `pisa show <id> --json`；仍 running 就继续等。
+- 多任务并行：先全部 `run` 拿到 id，再对每个 id `wait`；或定期 `pisa status --json` 看整体。
+- 退出码 2 且 `--json` 里 `timeout: true`：不要重提，先 `pisa show <id> --json`；仍 running 就继续等。
+- 退出码 2 且 `status: failed`：读 `error` 与日志，判断是 brief 问题还是环境问题。
 - 需要边等边做别的事：单次查 `pisa status --json`，不要高频轮询。
-- 守护进程死亡：`status --json.daemon.alive=false`，任务变不动；交给人恢复，不要重复提交。
+- 守护进程死亡：`status` 直接以 2 退出（管理 API 不可达），任务变不动；交给人恢复，不要重复提交。
 
 ## 退出码即契约
 
 | 码 | 含义 | 你的动作 |
 | --- | --- | --- |
-| 0 | 成功 | 读 `summary` / `prUrl`，做自己的验收 |
-| 1 | 任务失败 | 读 `error` 与日志，判断是 brief 问题还是环境问题 |
-| 2 | 用法或配置错误 | 修参数/配置，不要原样重试 |
-| 3 | 找不到任务 | 检查任务号；不要假设任务存在 |
-| 4 | 任务不可运行 | paused / cancelled / rewound，交给人处理 |
-| 5 | 等待超时 | 任务可能仍在跑；用 `pisa status` 继续观察，不要重复提交 |
+| 0 | 正常 | 读 `summary` / `prUrl`，做自己的验收 |
+| 1 | 已保存配置但需重启 | 仅 `config --set`；让人重启 pisa，不要重试保存 |
+| 2 | 部件错误 | 用法错误、API 不可达、任务失败/超时、操作被拒；按 stderr 与 `--json` 分流 |
+| 3 | 待配置 | 找不到配置文件、`web.enabled` 未开、token 缺失或被拒 |
+
+找不到任务与「任务不可运行」不再是独立退出码（都是 2），用 `show` 的 `status` 与 stderr 文案判断。
 
 ## 常用命令速查
 
 ```bash
-pisa task "<brief>" --repo demo --event-id ci:123 --wait --timeout 1200 --json
+pisa run "<brief>" --repo demo --event-id ci:123 --wait --timeout 1200 --json
 pisa wait <id> --timeout 600 --json
 pisa status --json
 pisa list --repo demo --status succeeded --limit 10 --json
 pisa show <id> --json
-pisa logs <id> --tail 120
+pisa logs <id> --tail 120 --json
 pisa cancel <id>
+pisa retry <id> --json
+pisa merge <id> --yes
+pisa rewind <id> --yes --json
 pisa continue <id> "按评论第 2 点改" --json
 ```
 

@@ -83,6 +83,8 @@ export class Router {
   private active = new Map<string, Promise<void>>();
   /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
   private stopping = false;
+  /** 执行器暂停：只停止领取新任务，运行中的任务照常结束 */
+  private paused = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** 上次孤儿任务巡检时间 */
   private lastReconcile = 0;
@@ -229,7 +231,7 @@ export class Router {
 
   /** 按并发上限补位；不等待任务完成 */
   private async fill(): Promise<void> {
-    if (this.stopping) return;
+    if (this.stopping || this.paused) return;
     const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
     while (this.active.size < limit) {
       const task = this.deps.store.nextQueued();
@@ -239,6 +241,23 @@ export class Router {
       if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
       this.launch({ ...task, branch, status: "running" });
     }
+  }
+
+  get executorPaused(): boolean {
+    return this.paused;
+  }
+
+  /** 暂停执行器：不再领取排队任务；返回暂停后的状态 */
+  pauseExecutor(): boolean {
+    this.paused = true;
+    return this.paused;
+  }
+
+  /** 恢复执行器并立即补位 */
+  resumeExecutor(): boolean {
+    this.paused = false;
+    void this.fill();
+    return this.paused;
   }
 
   /**

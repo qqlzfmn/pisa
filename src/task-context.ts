@@ -11,7 +11,10 @@ export interface ContinueComment {
  * 续跑任务注入 Worker 的上下文：上一轮请求、结果、分支；
  * PR 评论触发的续跑再补 PR 编号与评论正文。
  */
-export function continuationContext(parent: Task, comment?: ContinueComment): string {
+export function continuationContext(
+  parent: Pick<Task, "id" | "prompt" | "summary" | "branch">,
+  comment?: ContinueComment,
+): string {
   const lines = [
     `任务号：${parent.id}`,
     `上一轮请求：${parent.prompt}`,

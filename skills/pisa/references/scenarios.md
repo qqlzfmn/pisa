@@ -27,7 +27,7 @@ bun test 2>&1 | tail -60
 git log --oneline -5
 
 # 3. 提交，event-id 用 CI run 号保证重试幂等（CI_RUN_ID 由 CI 注入，重试保持不变）
-pisa task "$(cat <<'EOF'
+pisa run "$(cat <<'EOF'
 目标：让 `bun test` 恢复全绿。
 现状：tests/router.test.ts 的 "continue 继承分支" 用例失败，received 为 undefined。
 证据：tests/router.test.ts:212；本地 `bun test tests/router.test.ts` 可复现。
@@ -49,8 +49,8 @@ pisa wait "$ID" --timeout 1200 --json
 ```
 
 - 退出码 0：读 `summary`，再自己跑一遍 `bun test` 验收。
-- 退出码 1：`pisa logs "$ID" --tail 200`，按 [failures.md](failures.md) 判断。
-- 退出码 5：`pisa show "$ID" --json`，仍在 running 就继续等，不要重提。
+- 退出码 2 且 `status: failed`：`pisa logs "$ID" --tail 200`，按 [failures.md](failures.md) 判断。
+- 退出码 2 且 `timeout: true`：`pisa show "$ID" --json`，仍在 running 就继续等，不要重提。
 
 **补一轮修改**：
 
@@ -96,7 +96,7 @@ pisa show "$PARENT" --json | jq '{id,status,branch,prUrl,summary,error}'
 
 - 新任务会落在父任务分支与同一 `prUrl`；有推送权限时 PR 自动更新。
 - 若 `list --pr` 为空：该 PR 不是 pisa 建的，先新建任务并把 PR 内容写进 brief；不要让续跑去猜分支。
-- 若退出码 4：父任务 paused/cancelled，交给人处理。
+- 若退出码 2 且父任务 paused/cancelled：交给人处理，或 `pisa retry` 重排一次。
 
 **回写评论**（需人类同意后再执行）：
 
@@ -119,13 +119,13 @@ gh issue view "$ISSUE" --repo "$GH_REPO" --json title,body,labels \
   --jq '{title,body,labels:[.labels[].name]}'
 
 # 2. 提交实现任务
-pisa task "$(cat <<'EOF'
+pisa run "$(cat <<'EOF'
 目标：实现 issue #17：CLI 增加 `--dry-run`，只输出将创建的任务，不写库。
-现状：当前 `pisa task` 无条件入队；issue 要求 dry-run 返回任务 JSON 但不创建任务。
+现状：当前 `pisa run` 无条件入队；issue 要求 dry-run 返回任务 JSON 但不创建任务。
 证据：issue #17；src/cli.ts 的 task 分支；tests/cli.test.ts 现有提交用例。
 范围：只改 src/cli.ts、tests/cli.test.ts、skills/pisa/references/commands.md；不改状态机与 schema。
 验收：
-- `pisa task "x" --dry-run --json` 输出将创建的任务字段，退出码 0
+- `pisa run "x" --dry-run --json` 输出将创建的任务字段，退出码 0
 - 执行后 `pisa list --json` 数量不变
 - 新增测试覆盖 dry-run 不入队
 - `bun test` 与 `bunx tsc --noEmit` 通过
