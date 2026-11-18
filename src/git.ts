@@ -63,6 +63,11 @@ export function remoteUrl(workdir: string): string {
   return sh(["git", "-C", workdir, "remote", "get-url", "origin"]).out;
 }
 
+/** 当前提交 sha：交付用它区分「同一分支上的新提交」，重试同一次提交仍按同键去重 */
+export function headSha(workdir: string): string {
+  return sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out;
+}
+
 export function pushBranch(workdir: string, branch: string): ExecResult {
   return sh(["git", "-C", workdir, "push", "-u", "origin", branch]);
 }

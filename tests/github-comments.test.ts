@@ -1066,6 +1066,26 @@ describe("GitDeliverer 更新既有 PR", () => {
     expect(sh(["git", "--git-dir", bare, "rev-parse", "--verify", "pisa/parent"]).code).toBe(0);
   });
 
+  test("恢复后同一任务分支有新提交时仍然推送", async () => {
+    const workdir = setup();
+    const deliverer = new GitDeliverer(cfg, { hasGh: () => false });
+    const effects = outbox(deliverer);
+    // 恢复复用同一任务号与分支；prUrl 已绑定，交付只走推送
+    const task = { ...baseTask, id: "t_resume", branch: "pisa/parent", prUrl: "https://github.com/o/r/pull/12" };
+
+    await deliverer.deliver(task, workdir, cfg.repos[0]!, effects);
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out).toBe(
+      sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out,
+    );
+
+    // 中断后恢复：同一个 worktree 里继续提交，不能因为上次推送已记账就跳过
+    writeFileSync(join(workdir, "more.txt"), "again\n");
+    await deliverer.deliver(task, workdir, cfg.repos[0]!, effects);
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out).toBe(
+      sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out,
+    );
+  });
+
   test("没有 prUrl 时按原有逻辑创建 PR", async () => {
     const workdir = setup();
     const calls: string[] = [];
