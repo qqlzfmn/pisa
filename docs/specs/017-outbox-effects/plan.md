@@ -26,7 +26,7 @@ CREATE INDEX IF NOT EXISTS idx_effects_due ON effects(status, next_at);
 
 ## D2 `EffectQueue` 持有 Store，不进 Store 内部
 
-`src/effects.ts`：`new EffectQueue(store, {now, onDone, onError})`。退避策略、执行循环、键去重都在队列里；Store 只做 CRUD（`enqueueEffect`、`effectRow`、`dueEffects`、`completeEffect`、`failEffect`、`dropPendingEffects`、`setPrUrl`）。这样退避参数可单测，不需要数据库配合。
+`src/effects.ts`：`new EffectQueue(store, {now, onError})`。退避策略、执行循环、键去重都在队列里；Store 只做 CRUD（`enqueueEffect`、`effectRow`、`dueEffects`、`completeEffect`、`failEffect`、`dropPendingEffects`、`setPrUrl`）。这样退避参数可单测，不需要数据库配合。
 
 `exec` 的语义是「确保这次动作最终发生」：先落库，`done` 直接返回 `result`，`failed` 直接抛错，否则立刻执行一次。同步失败会抛给调用方（保持现有分支行为），但行已经带着 `next_at` 留在库里，后台 `flush` 继续重试。
 

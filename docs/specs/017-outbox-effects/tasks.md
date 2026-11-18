@@ -17,6 +17,8 @@
       验证：`bun test tests/github-comments.test.ts`
 - [x] T006 失败/取消路径丢弃未完成 effect (FR-010)
       验证：`bun test tests/effects.test.ts`
+- [x] T010 推送 effect 的键加入提交 SHA：同一提交的崩溃重试不重复推，`resume` 后新增提交仍会推送 (FR-003)
+      验证：`bun test tests/github-comments.test.ts -t "同一提交只推一次"`
 
 ## 文档与回归
 

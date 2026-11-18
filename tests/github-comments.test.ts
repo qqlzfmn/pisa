@@ -1083,6 +1083,30 @@ describe("GitDeliverer 更新既有 PR", () => {
     expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
   });
 
+  test("同一提交只推一次，恢复后新提交仍会推送", async () => {
+    const workdir = setup();
+    const store = new Store(":memory:");
+    const deliverer = new GitDeliverer(cfg, { hasGh: () => false });
+    const handlers = deliverer.effectHandlers();
+    const effects = new EffectQueue(store).register("push", handlers.push).register("pr", handlers.pr);
+    const task = { ...baseTask, id: "t_resume", branch: "pisa/parent" };
+
+    const first = await deliverer.deliver(task, workdir, cfg.repos[0]!, effects);
+    const sha1 = sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out;
+    expect(first.pushed).toBe(true);
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out).toBe(sha1);
+    expect(store.effectRow("push", `t_resume:pisa/parent:${sha1}`)?.status).toBe("done");
+
+    // 恢复后继续产出：新提交同样要推到远端，不能被同一个 effect 键吞掉
+    writeFileSync(join(workdir, "more.txt"), "again\n");
+    const second = await deliverer.deliver(task, workdir, cfg.repos[0]!, effects);
+    const sha2 = sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out;
+    expect(sha2).not.toBe(sha1);
+    expect(second.pushed).toBe(true);
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out).toBe(sha2);
+    store.close();
+  });
+
   test("Issue 来源的任务在 PR 正文追加 Closes", async () => {
     const workdir = setup();
     const bodies: string[] = [];

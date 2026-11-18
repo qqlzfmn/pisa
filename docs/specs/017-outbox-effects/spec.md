@@ -42,7 +42,7 @@
 | --- | --- |
 | FR-001 | 新增 `effects` 表：`(kind, key)` 主键，字段含 `task_id`、`payload`、`status`、`result`、`attempts`、`next_at`、`last_error`、`created_at`、`updated_at` |
 | FR-002 | `EffectQueue` 提供 `exec`、`flush`、`start`、`stop`、`cancelTask`；处理器按 kind 注册 |
-| FR-003 | `exec` 先写行（`INSERT OR IGNORE`）再执行；同键已有 `done` 行时只返回上次结果，不再执行 |
+| FR-003 | `exec` 先写行（`INSERT OR IGNORE`）再执行；同键已有 `done` 行时只返回上次结果，不再执行。键的构成：推送为 `taskId:branch:提交SHA`（恢复后新增提交是新键，同一提交的崩溃重试仍是旧键），建 PR 为 `taskId:branch`，回帖为 `purpose:repo#n:taskId` |
 | FR-004 | 处理器抛错时 `attempts+1`，`next_at = now + min(2s × 2^(attempts-1), 60s)`，`last_error` 保留错误摘要 |
 | FR-005 | `attempts` 达到 10 次转 `failed`（终止），不再重试，错误信息保留 |
 | FR-006 | `start` 启动时立即 `flush` 一次，之后按间隔（默认 1s）执行所有到期的未完成行 |

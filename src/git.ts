@@ -59,6 +59,11 @@ export function commitAll(workdir: string, message: string, name: string, email:
   return sh(["git", "-C", workdir, "-c", `user.name=${name}`, "-c", `user.email=${email}`, "commit", "-m", message]);
 }
 
+/** 当前提交：outbox 用它给推送去重，同一次推送重试共用一个键，恢复后新提交另起一个 */
+export function headSha(workdir: string): string {
+  return sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out;
+}
+
 export function remoteUrl(workdir: string): string {
   return sh(["git", "-C", workdir, "remote", "get-url", "origin"]).out;
 }
