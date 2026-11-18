@@ -1264,3 +1264,143 @@ describe("GitDeliverer 更新既有 PR", () => {
     }
   });
 });
+
+describe("outbox 跨重启重放", () => {
+  let repo: string;
+  let stateDir: string;
+  let cfg: Config;
+
+  beforeEach(() => {
+    repo = makeRepo();
+    stateDir = mkdtempSync(join(tmpdir(), "pisa-outbox-state-"));
+    cfg = makeCfg(repo, stateDir, { enabled: true, repo: "o/r", chatId: "c1", userId: "u1" });
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  test("回帖 effect 跨重启补发且只发一次", async () => {
+    const dbPath = join(stateDir, "pisa.db");
+    const clock = 1_700_000_000_000;
+    let postFails = true;
+    /** 已发出去的评论正文，兼作线程列表 */
+    const bodies: string[] = [];
+    const ghRunner: Runner = (args) => {
+      if (args[1] === "pr") {
+        if (postFails) return reply(1, "", "gh: rate limited");
+        bodies.push(String(args.at(-1) ?? ""));
+        return reply(0);
+      }
+      return threadBodies(bodies);
+    };
+
+    // 第一个进程：回帖被限流，任务仍成功，effect 留在库里
+    const first = new Store(dbPath);
+    const firstQueue = new EffectQueue(first, { now: () => clock });
+    const firstRouter = new Router({
+      cfg,
+      store: first,
+      worker: okWorker,
+      deliverer: new GitDeliverer(cfg),
+      channel: new FakeChannel(),
+      ghRunner,
+      effects: firstQueue,
+      now: () => clock,
+    });
+    await firstRouter.handle({
+      eventId: "github:comment:100",
+      channel: "github",
+      chatId: "c1",
+      userId: "u1",
+      text: "/pisa 修一下登录",
+      replyPr: 12,
+    });
+    await firstRouter.drainOnce();
+
+    const task = first.recentTasks()[0]!;
+    const key = `pr:${task.replyRepo ?? "o/r"}#12:${task.id}`;
+    expect(task.status).toBe("succeeded");
+    expect(first.effectRow("comment", key)!.status).toBe("pending");
+    first.close();
+
+    // 第二个进程：同一数据库，新队列在启动后补齐未完成的回帖
+    postFails = false;
+    const second = new Store(dbPath);
+    const secondQueue = new EffectQueue(second, { now: () => clock + 2000 });
+    new Router({
+      cfg,
+      store: second,
+      worker: okWorker,
+      deliverer: new GitDeliverer(cfg),
+      channel: new FakeChannel(),
+      ghRunner,
+      effects: secondQueue,
+      now: () => clock + 2000,
+    });
+
+    try {
+      expect(await secondQueue.flush()).toEqual({ done: 1, failed: 0 });
+      expect(second.effectRow("comment", key)!.status).toBe("done");
+      expect(bodies.length).toBe(1);
+      expect(bodies[0]).toContain(replyMarker(task.id, "pr"));
+      expect(second.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
+
+      // 已完成的行不会再发
+      expect(await secondQueue.flush()).toEqual({ done: 0, failed: 0 });
+      expect(bodies.length).toBe(1);
+    } finally {
+      second.close();
+    }
+  });
+
+  test("PR 已建但未标记完成时，重放按分支认领不重复建", async () => {
+    const dbPath = join(stateDir, "pisa.db");
+    const store = new Store(dbPath);
+    const taskId = "t_crash";
+    const branch = `pisa/${taskId}`;
+    store.insertTask({ ...baseTask, id: taskId, status: "succeeded", branch });
+    // 崩溃现场：PR 已在远端建好，effects 行还是 pending
+    store.enqueueEffect({
+      kind: "pr",
+      key: `${taskId}:${branch}`,
+      taskId,
+      payload: JSON.stringify({
+        taskId,
+        repoPath: repo,
+        branch,
+        base: "main",
+        title: "pisa: 崩溃前建了 PR",
+        body: "任务号：t_crash",
+        repo: "demo",
+      }),
+      at: 0,
+    });
+
+    let created = 0;
+    const deliverer = new GitDeliverer(cfg, {
+      hasGh: () => true,
+      findPr: () => reply(0, "https://github.com/o/r/pull/9"),
+      createPr: () => {
+        created += 1;
+        return reply(0, "https://github.com/o/r/pull/99");
+      },
+    });
+    const queue = new EffectQueue(store, { now: () => 2000 });
+    new Router({ cfg, store, worker: okWorker, deliverer, channel: new FakeChannel(), effects: queue, now: () => 2000 });
+
+    try {
+      expect(await queue.flush()).toEqual({ done: 1, failed: 0 });
+      expect(created).toBe(0);
+      const row = store.effectRow("pr", `${taskId}:${branch}`)!;
+      expect(row.status).toBe("done");
+      expect(row.result).toBe(JSON.stringify({ url: "https://github.com/o/r/pull/9" }));
+      expect(store.get(taskId)!.prUrl).toBe("https://github.com/o/r/pull/9");
+      expect(store.effectsOf(taskId).map((e) => [e.kind, e.target])).toContainEqual(["pr", "9"]);
+      expect(store.taskByPr(9)?.id).toBe(taskId);
+    } finally {
+      store.close();
+    }
+  });
+});

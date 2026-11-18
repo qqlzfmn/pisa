@@ -11,8 +11,6 @@ import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree,
 import {
   defaultRunner,
   formatReply,
-  postComment,
-  postIssueComment,
   postReplyOnce,
   prNumberFromIssueUrl,
   prStatus,
