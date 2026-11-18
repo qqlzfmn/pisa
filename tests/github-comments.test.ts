@@ -613,6 +613,8 @@ describe("GitHub 评论 → 任务", () => {
     expect(task.status).toBe("succeeded");
     // 只查了列表，没有发第二条
     expect(calls.some((c) => c[1] === "pr")).toBe(false);
+    // 上次发过但没记账：跳过时补记账本，rewind 才能删到这条评论
+    expect(store.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
     const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
     expect(log).toContain("已存在同标记回帖，跳过");
   });
