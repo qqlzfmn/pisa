@@ -59,6 +59,11 @@ export function commitAll(workdir: string, message: string, name: string, email:
   return sh(["git", "-C", workdir, "-c", `user.name=${name}`, "-c", `user.email=${email}`, "commit", "-m", message]);
 }
 
+/** 当前提交 SHA：同一分支的每次交付内容不同，送达去重键要带上它 */
+export function headSha(workdir: string): string {
+  return sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out;
+}
+
 export function remoteUrl(workdir: string): string {
   return sh(["git", "-C", workdir, "remote", "get-url", "origin"]).out;
 }

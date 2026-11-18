@@ -8,6 +8,7 @@ import {
   createPr,
   findPr,
   hasGh,
+  headSha,
   pushedBranch,
   pushBranch,
   remoteUrl,
@@ -84,7 +85,9 @@ export class GitDeliverer implements Deliverer {
 
     let pushed = false;
     if (this.cfg.delivery.push && remote) {
-      await effects.exec("push", `${task.id}:${branch}`, task.id, { taskId: task.id, repoPath: repo.path, branch });
+      // 键带提交 SHA：同一内容的重放只推一次，恢复后产生的新提交仍会推送
+      const sha = headSha(workdir);
+      await effects.exec("push", `${task.id}:${branch}:${sha}`, task.id, { taskId: task.id, repoPath: repo.path, branch });
       pushed = true;
     }
 

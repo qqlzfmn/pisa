@@ -111,7 +111,7 @@ cancelled ─┘
 - `queued → running` 只能经 `claimQueued`（在 SQL 里写 `startedAt` 与分支名）；其余跃迁经 `transition`。
 - 终态只有 `rewound` 这一条出边，运行态无法回退；撤销完的任务不能再 resume。
 - 状态写入只有三个来源：事件驱动的 `runTask`、重启时的 `recoverInterrupted`、请求者发起的 `cancel`/`resume`/`rewind`。关停路径刻意不写状态。
-- 对外的写动作（推送、建 PR、回帖）只经 `EffectQueue.exec`：先按 `(kind,key)` 写 `effects` 行再执行，同一个键至多执行一次；失败留行退避重试（2s 起翻倍、60s 封顶、最多 10 次），进程重启后继续。
+- 对外的写动作（推送、建 PR、回帖）只经 `EffectQueue.exec`：先按 `(kind,key)` 写 `effects` 行再执行，同一个键至多执行一次；推送的键含提交 SHA，恢复后产生的新提交仍会推送；失败留行退避重试（2s 起翻倍、60s 封顶、最多 10 次），进程重启后继续。
 
 恢复语义（对应 005）：
 
