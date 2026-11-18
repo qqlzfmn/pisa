@@ -462,6 +462,21 @@ export class Router {
       text: prompt,
       version: msg.version,
     });
+
+    // 程序化派单（webhook）不允许重复：同一仓库里同一需求还在排队/执行/暂停时，
+    // 复用原任务并把这次触发记在它身上。调用方按回执里的 taskId 跟踪，不再按 eventId 反查。
+    if (msg.channel === "webhook") {
+      const active = store.activeTaskByPrompt(repo.alias, prompt);
+      if (active) {
+        store.bindTrigger(trigger, active.id);
+        await this.reply(
+          msg.chatId,
+          `已接单 · ${active.id}\n仓库：${repo.alias}\n同一需求的任务还没结束，复用它，不重复派单。`,
+        );
+        return;
+      }
+    }
+
     const task: Task = {
       id: newTaskId(this.now()),
       source: msg.eventId,

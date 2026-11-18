@@ -488,6 +488,26 @@ export class Store {
   }
 
   /**
+   * 某仓库里需求完全相同、还没结束的任务。
+   *
+   * webhook 派单据此识别重复：同一需求已经在排队/执行/暂停时不再建新任务。
+   */
+  activeTaskByPrompt(repo: string, prompt: string): Task | null {
+    const row = this.db
+      .query(
+        `SELECT * FROM tasks WHERE repo = ? AND prompt = ? AND status IN ('queued','running','paused')
+         ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(repo, prompt) as Row | null;
+    return row ? toTask(row) : null;
+  }
+
+  /** 重复派单不建新任务，但这次触发仍要指向原任务：反查时不能落空 */
+  bindTrigger(trigger: Trigger, taskId: string): void {
+    this.insertTrigger(trigger, "context", taskId);
+  }
+
+  /**
    * 线程补充说明：记一条 context 触发并写进任务上下文。
    *
    * 排队任务开跑、暂停任务恢复时都会读到上下文；重复投递返回 false。

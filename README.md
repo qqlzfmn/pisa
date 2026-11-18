@@ -166,10 +166,10 @@ curl -X POST http://127.0.0.1:8799/event \
 预期输出（实跑）：
 
 ```json
-{"ok":true,"eventId":"ci:12345"}
+{"ok":true,"eventId":"ci:12345","taskId":"20261118-143001-a1b2"}
 ```
 
-同一 `eventId` 重投只建一个任务；带同一个 `threadKey`（业务单号）的投递跨入口命中同一个任务，编辑后的新版本按 `version` 归到原任务。回执发给 `webhook.chatId`：配了 Telegram 就推到那个会话，跑本地 CLI 通道时直接打到终端。
+回执里的 `taskId` 就是跟踪依据：`events` 已落库才返回，按 `eventId` 反查也不会落空。程序化派单不去猜——同一 `eventId` 重投只建一个任务；同一仓库里需求完全相同、任务还在排队/执行/暂停时，直接复用原任务并返回它的 `taskId`，不建新任务。带同一个 `threadKey`（业务单号）的投递跨入口命中同一个任务，编辑后的新版本按 `version` 归到原任务。回执发给 `webhook.chatId`：配了 Telegram 就推到那个会话，跑本地 CLI 通道时直接打到终端。
 
 ### 3. PR 评论里继续改
 
