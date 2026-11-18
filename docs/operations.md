@@ -6,6 +6,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 
 - [安装与配置](#安装与配置)
 - [命令](#命令)
+- [提示词](#提示词)
 - [撤销与账本](#撤销与账本)
 - [Webhook 事件入口](#webhook-事件入口)
 - [通用触发适配层](#通用触发适配层)
@@ -43,6 +44,8 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 /pisa <需求>            接一个任务
 /pisa examples          可直接照抄的场景（触发方式 + 预期产出）
 /pisa cancel [任务号]   取消
+/pisa prompts [diff <键>] [--repo <仓库>]
+                        提示词版本、每段来源与按层 diff
 /pisa help              按用途分组的命令帮助
 
 私聊里可以直接说需求，不用加 /pisa；群聊仍需触发词。
@@ -87,6 +90,24 @@ Telegram 启动时用 `setMyCommands` 注册命令菜单（私聊可直接点选
 ### 进度回传
 
 执行时会实时回传进度（`🛠 命令` / `✏️ 文件`），破坏性命令会在 agent 内部被拦下。
+
+## 提示词
+
+Worker 与 PR 评审的提示词按「仓库 > 团队 > 内置」三层拼装，段落顺序、变量与出现条件由 `src/prompts.ts` 的段落表固定，覆盖只替换文本。改提示词不需要改代码：在 `promptsDir`（默认 `prompts`）下放覆盖文件，然后重启。
+
+```text
+prompts/
+  version                       版本号，正整数；存在覆盖时必填
+  worker.guard.md               团队层：覆盖 Worker 约束段
+  review.criteria.md            团队层：评审标准（没有内置正文，覆盖后才出现）
+  repos/owner__repo/
+    worker.task.md              仓库层：只对这个仓库生效
+    review.criteria.md
+```
+
+键是固定集合：Worker 为 `intro`、`resume`、`context`、`task`、`guard`，评审为 `header`、`requirements`、`criteria`、`diff`，文件名写成 `<模板>.<段>.md`。占位符只允许该段声明的变量（如 `worker.task` 的 `{{prompt}}`、评审的 `{{diff}}`），加载时校验；未知键、未知变量、空文件、非法版本号都会让启动失败并给出路径，不静默忽略。
+
+`/pisa prompts` 列出版本、覆盖目录和每段的来源（内置 / 团队 / 仓库 / 未设置）；`/pisa prompts diff worker.guard` 显示内置 → 团队 → 仓库的逐层 diff，`--repo owner/repo` 看仓库视角。CLI 用 `pisa prompts`，加 `--json` 拿结构化结果。没有覆盖目录时全部走内置，`version` 显示内置版本 1。
 
 ## 撤销与账本
 
@@ -409,5 +430,7 @@ token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.
 ## 完整配置项
 
 [`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+
+顶层键 `stateDir`、`promptsDir`、`retentionDays` 与各分组同级；`prompts` 不是配置项，由 `promptsDir` 指向的目录在启动时加载。
 
 解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。

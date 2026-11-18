@@ -63,7 +63,8 @@ core 内部模块关系：
 | `git.ts` | worktree、分支、提交、推送的封装 | `sh()` 之上的命令封装；`merge`、`rev-parse` 这类一次性命令在 `router.ts` 里直接调 `sh` |
 | `github.ts` | 所有 `gh` 调用与回帖去重标记 | 测试可注入 `Runner` |
 | `github-watcher.ts` | 轮询 GitHub 评论与 open PR，把命中触发词的评论、未评审的 PR 版本转成事件 | 构造时注入 `enqueue` |
-| `pr-review.ts` | 评审线程键、事件键与提示词（纯函数） | `reviewThreadKey`、`reviewEventId`、`buildReviewPrompt` |
+| `pr-review.ts` | 评审线程键、事件键与评审提示词组装（文本在 `prompts.ts`） | `reviewThreadKey`、`reviewEventId`、`buildReviewPrompt` |
+| `prompts.ts` | 提示词分层：段落表、覆盖加载、渲染与 diff（纯逻辑 + 文件读取） | `PROMPT_SECTIONS`、`loadPrompts`、`renderPrompt`、`diffPrompts` |
 | `scheduler.ts` | cron 到点开单 | 构造时注入 `enqueue` |
 | `proactive.ts` | 群聊关键词与定时探针 | 构造时注入 `enqueue` |
 | `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
@@ -282,6 +283,7 @@ interface ChannelAdapter {
 - `Deliverer`（`src/deliver.ts`）：替掉交付策略（例如先开草稿 PR、走内部镜像）。
 - `RouterDeps.ghRunner` 与 `DelivererDeps.createPr/hasGh`：测试替换 `gh`，生产不联网。
 - `RewindProbes`（`src/rewind.ts`）：撤销计划只依赖探测接口，测试用假探测验证分支/PR 各状态组合。
+- `PromptLibrary`（`src/prompts.ts`）：Worker 与评审共用同一份库；测试或插件可传入自定义库替掉内置段落，不碰代码里的段落表。
 - `now()`：时间注入，测试里控制冷却与超时。
 
 ## 5. 失败模式与已知限制
@@ -355,4 +357,5 @@ interface ChannelAdapter {
 | 交付与 PR | `src/deliver.ts`、`src/git.ts`、`src/github.ts` |
 | 撤销 | `src/rewind.ts`、`docs/specs/013-rewind/` |
 | 资源对账 | `src/reconcile.ts`、`docs/specs/019-reconcile/` |
+| 提示词 | `src/prompts.ts`、`docs/specs/021-prompt-layers/` |
 | 配置项 | `src/config.ts`、`pisa.config.example.json` |

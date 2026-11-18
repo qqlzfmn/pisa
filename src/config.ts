@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { DEFAULT_PROMPTS, loadPrompts, type PromptLibrary } from "./prompts";
 
 export interface RepoConfig {
   alias: string;
@@ -173,6 +174,10 @@ export interface Config {
       prompt?: string;
     };
   };
+  /** 提示词覆盖目录；缺省为配置文件同级的 prompts/ */
+  promptsDir?: string;
+  /** 启动时加载的提示词库；由 promptsDir 决定，不直接写在配置里 */
+  prompts?: PromptLibrary;
   stateDir: string;
 }
 
@@ -220,6 +225,8 @@ export const DEFAULT_CONFIG: Config = {
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },
   web: DEFAULT_WEB,
   retentionDays: DEFAULT_RETENTION_DAYS,
+  promptsDir: "prompts",
+  prompts: DEFAULT_PROMPTS,
   stateDir: ".pisa",
 };
 
@@ -269,7 +276,15 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
   if (process.env.PISA_TRIGGER) cfg.trigger = process.env.PISA_TRIGGER;
   if (process.env.PISA_USERS) cfg.whitelist.users = process.env.PISA_USERS.split(",").map((s) => s.trim()).filter(Boolean);
   if (process.env.PISA_STATE_DIR) cfg.stateDir = resolve(process.env.PISA_STATE_DIR);
+  // 提示词覆盖在启动时一次读完：坏配置直接让守护进程起不来，而不是运行到一半才发现
+  const promptsDir = resolve(baseDir, cfg.promptsDir ?? "prompts");
+  cfg = { ...cfg, promptsDir, prompts: loadPrompts(promptsDir) };
   return cfg;
+}
+
+/** 取提示词库：测试与调用方可能手拼 Config，缺省时走内置 */
+export function promptsOf(cfg: Config): PromptLibrary {
+  return cfg.prompts ?? DEFAULT_PROMPTS;
 }
 
 /** 从 start 向上查找配置文件；找不到时回落到 start 下的默认文件名 */
@@ -329,7 +344,8 @@ export type CommandKind =
   | "confirm"
   | "verbose"
   | "gc"
-  | "reconcile";
+  | "reconcile"
+  | "prompts";
 
 /** 帮助分组：派活（新任务与续跑）、查询（状态与用法）、维护（改撤合）、集成（不经 IM 的入口） */
 export type HelpGroup = "派活" | "查询" | "维护" | "集成";
@@ -356,6 +372,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
   { command: "verbose", alias: "进度", description: "过程消息开关（on/off）", args: "[on|off]", group: "查询", menu: true },
+  { command: "prompts", alias: "提示词", description: "查看提示词版本与覆盖", args: "[diff <键>] [--repo <仓库>]", group: "查询", menu: true },
   { command: "gc", alias: "清理", description: "清理已结束任务的分支/工作副本/PR", args: "[天数] [--dry]", group: "维护", menu: true },
   { command: "reconcile", alias: "对账", description: "对比任务记录与分支/工作副本/PR", args: "[任务号] [--fix]", group: "维护", menu: true },
   { command: "help", alias: "帮助", description: "查看命令帮助", group: "查询", menu: true },

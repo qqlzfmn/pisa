@@ -164,6 +164,7 @@
     }
   },
   "stateDir": ".pisa",
+  "promptsDir": "prompts",
   "retentionDays": 30,
   "notifications": {
     "progress": false

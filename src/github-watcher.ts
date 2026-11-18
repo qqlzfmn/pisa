@@ -1,4 +1,4 @@
-import { githubRepos, type Config } from "./config";
+import { githubRepos, promptsOf, type Config } from "./config";
 import type { Store } from "./store";
 import type { IncomingMessage } from "./types";
 import {
@@ -163,7 +163,7 @@ export class GithubWatcher {
         channel: "github",
         chatId,
         userId,
-        text: prefix + buildReviewPrompt(repo, pr, diff.value),
+        text: prefix + buildReviewPrompt(repo, pr, diff.value, promptsOf(this.deps.cfg)),
         mode: "review",
         replyRepo: repo,
         replyPr: pr.number,

@@ -7,10 +7,12 @@ import {
   DEFAULT_VERIFY_TIMEOUT_SEC,
   githubRepos,
   parseCommand,
+  promptsOf,
   repoByAlias,
   splitRepoAlias,
   taskGuard,
 } from "./config";
+import { formatPromptsCommand } from "./prompts";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
 import type { EffectRow, Store } from "./store";
 import { workerEnv, type WorkerRunner } from "./worker";
@@ -276,6 +278,7 @@ export class Router {
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
+      else if (t === "/prompts" || t.startsWith("/prompts ")) cmd = { kind: "prompts", body: t.slice(8).trim() };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
@@ -352,6 +355,11 @@ export class Router {
 
     if (cmd.kind === "examples") {
       await this.reply(msg.chatId, formatExamples(cfg.trigger));
+      return;
+    }
+
+    if (cmd.kind === "prompts") {
+      await this.reply(msg.chatId, formatPromptsCommand(promptsOf(cfg), cmd.body));
       return;
     }
 

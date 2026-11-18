@@ -2,7 +2,8 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { findConfig, loadConfig, repoByAlias, type Config } from "./config";
+import { findConfig, loadConfig, promptsOf, repoByAlias, type Config } from "./config";
+import { diffPrompts, formatPromptsCommand, parsePromptsQuery, promptSections } from "./prompts";
 import { Store } from "./store";
 import { isGitRepo } from "./git";
 import type { Task, TaskStatus } from "./types";
@@ -256,6 +257,7 @@ export function helpText(): string {
   pisa logs <任务号> [--tail N]
   pisa cancel <任务号>
   pisa repos [--json]
+  pisa prompts [diff <键>] [--repo 仓库] [--json]
 
 全局选项：
   --config <path>   配置文件；默认 PISA_CONFIG，否则从当前目录向上找 pisa.config.json
@@ -419,6 +421,31 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
         if (args.flags.get("json")) json(io, rows);
         else if (rows.length === 0) io.out("(配置里没有仓库)");
         else for (const r of rows) io.out(`${r.alias} · ${r.allowed ? "可用" : "未授权"} · ${r.path}`);
+        return EXIT.ok;
+      }
+
+      case "prompts": {
+        const lib = promptsOf(cfg);
+        const repoFlag = flagString(args, "repo");
+        const body = [...args.positional.slice(1), ...(repoFlag ? ["--repo", repoFlag] : [])].join(" ");
+        const query = parsePromptsQuery(body);
+        if (query.error !== null) throw new UsageError(query.error);
+        if (args.flags.get("json")) {
+          const meta = { version: lib.version, builtinVersion: lib.builtinVersion, dir: lib.dir, scope: query.scope };
+          if (query.sub === "diff") json(io, { ...meta, key: query.key, diff: diffPrompts(lib, query.key!, query.scope) });
+          else
+            json(io, {
+              ...meta,
+              sections: promptSections(lib, query.scope).map((s) => ({
+                key: s.key,
+                template: s.template,
+                layer: s.layer,
+                text: s.text,
+              })),
+            });
+          return EXIT.ok;
+        }
+        io.out(formatPromptsCommand(lib, body));
         return EXIT.ok;
       }
 

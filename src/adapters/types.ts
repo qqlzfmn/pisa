@@ -1,4 +1,5 @@
 import type { Config } from "../config";
+import type { PromptLibrary } from "../prompts";
 import type { Task } from "../types";
 
 export interface AdapterInput {
@@ -11,6 +12,8 @@ export interface AdapterInput {
   resume?: boolean;
   /** 恢复中断任务时的原会话 id；新任务为 null */
   resumeSessionId?: string | null;
+  /** 提示词覆盖；缺省只用内置段落 */
+  prompts?: PromptLibrary;
 }
 
 export interface ParsedLine {

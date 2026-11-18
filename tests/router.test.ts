@@ -200,6 +200,29 @@ describe("Router", () => {
       expect(channel.sent.at(-1)?.text).toContain("触发：");
     });
 
+    test("/pisa prompts 与 diff 使用配置里的提示词库", async () => {
+      cfg = {
+        ...cfg,
+        prompts: {
+          version: 2,
+          builtinVersion: 1,
+          dir: "/tmp/prompts",
+          overrides: [{ scope: null, key: "worker.guard", text: "## 团队约束" }],
+        },
+      };
+      const router = build(okWorker);
+      await router.handle(msg("/pisa prompts"));
+      const list = channel.sent.at(-1)!.text;
+      expect(list).toContain("提示词版本 2（内置 1）");
+      expect(list).toContain("worker.guard");
+      expect(list).toContain("团队");
+
+      await router.handle(msg("/pisa prompts diff worker.guard"));
+      const diff = channel.sent.at(-1)!.text;
+      expect(diff).toContain("+++ 团队 worker.guard");
+      expect(diff).toContain("+## 团队约束");
+    });
+
     test("/pisa help 按派活/查询/维护/集成分组", async () => {
       const router = build(okWorker);
       await router.handle(msg("/pisa help"));

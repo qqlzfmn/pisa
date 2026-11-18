@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, DEFAULT_WEB, githubRepos, loadConfig, type WebConfig } from "./config";
+import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, DEFAULT_WEB, githubRepos, loadConfig, promptsOf, type WebConfig } from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker, workerEnv } from "./worker";
@@ -64,7 +64,7 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, promptsOf(cfg)),
       deliverer: new GitDeliverer(cfg),
       channel: bus,
     });
@@ -76,7 +76,7 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, promptsOf(cfg)),
       deliverer: new GitDeliverer(cfg),
       channel,
     });
