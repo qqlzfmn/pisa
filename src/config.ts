@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import type { PolicyConfig } from "./policy";
 
 export interface RepoConfig {
   alias: string;
@@ -43,7 +44,7 @@ export interface WebConfig {
   port: number;
   /** token 所在的环境变量名 */
   tokenEnv: string;
-  /** 页面派活与操作使用的身份；必须在 whitelist.users 里 */
+  /** 页面派活与操作使用的身份；按 policy 的 `web` 来源判定 */
   userId: string;
   chatId: string;
 }
@@ -56,6 +57,8 @@ export interface Config {
   /** 私聊里不带触发词也当成任务 */
   dmWithoutTrigger: boolean;
   whitelist: { users: string[]; repos: string[] };
+  /** 来源准入策略；缺省值见 src/policy.ts，`/pisa policy` 看解析结果 */
+  policy?: PolicyConfig;
   repos: RepoConfig[];
   worker: {
     adapter: string;
@@ -234,7 +237,8 @@ export type CommandKind =
   | "resume"
   | "rewind"
   | "confirm"
-  | "verbose";
+  | "verbose"
+  | "policy";
 
 /** 帮助分组：派活（新任务与续跑）、查询（状态与用法）、维护（改撤合）、集成（不经 IM 的入口） */
 export type HelpGroup = "派活" | "查询" | "维护" | "集成";
@@ -258,6 +262,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "continue", alias: "继续", description: "接着上一轮分支继续", args: "<任务号> <新要求>", group: "派活", menu: true },
   { command: "confirm", alias: "确认", description: "确认被拦下的单英文词任务", group: "派活", menu: false },
   { command: "status", alias: "状态", description: "查看任务看板", group: "查询", menu: true },
+  { command: "policy", alias: "策略", description: "查看来源准入策略与版本", group: "查询", menu: true },
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
   { command: "verbose", alias: "进度", description: "过程消息开关（on/off）", args: "[on|off]", group: "查询", menu: true },

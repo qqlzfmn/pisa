@@ -13,6 +13,8 @@ export interface Effect {
   createdAt: number;
 }
 
+import type { Mandate } from "./policy";
+
 export interface IncomingMessage {
   eventId: string;
   channel: string;
@@ -50,6 +52,8 @@ export interface IncomingMessage {
   version?: string;
   /** 触发者：入口侧真实发起人；缺省用 userId（PR 评论这类以配置身份投递的入口要显式给） */
   actor?: string;
+  /** 消息是否 @ 了本服务：只有能识别的 IM 入口给出，准入策略按它区分格子 */
+  mentioned?: boolean;
 }
 
 export interface Task {
@@ -76,6 +80,10 @@ export interface Task {
   replyRepo: string | null;
   summary: string | null;
   error: string | null;
+  /** 准入凭据：派活时命中的来源策略格；agent CLI 与旧任务为 null */
+  mandate: Mandate | null;
+  /** 派活时的策略版本；恢复前复核据此说明「当初按哪版进来」 */
+  policyVersion: string | null;
   createdAt: number;
   startedAt: number | null;
   endedAt: number | null;

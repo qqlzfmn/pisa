@@ -138,6 +138,8 @@ const baseTask: Task = {
   startedAt: null,
   endedAt: null,
   cancelRequested: false,
+  mandate: null,
+  policyVersion: null,
 };
 
 describe("prNumberFromIssueUrl", () => {

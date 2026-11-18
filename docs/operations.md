@@ -51,6 +51,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
 /pisa status                     任务看板（私聊可用 /status）
+/pisa policy                     来源准入策略与版本（私聊可用 /policy）
 ```
 
 场景说明、最佳实践与能力边界（无沙箱、回滚范围、单机、并发、鉴权面）见 [usage.md](./usage.md)。
@@ -62,6 +63,33 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 - 中文正文与多词正文照常直接建任务
 
 Telegram 启动时用 `setMyCommands` 注册命令菜单（私聊可直接点选）。
+
+### 准入策略
+
+谁能派活由 `policy` 决定，不再只看 `whitelist.users`：每个来源一张表，按「名单内 / 名单外」与「是否 @ 了本服务」分成四格，每格三种处理方式。
+
+- `auto`：接单
+- `observe`：只记一条 `admissions`，不建任务，回复「已记录，未建任务（观察模式）」
+- `off`：拒绝，回复「无权限」加判定依据
+
+```json
+"whitelist": { "users": ["<telegram user id>"], "repos": ["pisa"] },
+"policy": {
+  "sources": {
+    "telegram": { "listed": { "mention": "auto", "plain": "off" }, "unlisted": "off" },
+    "web": { "listed": "auto", "unlisted": "off" },
+    "cron": { "listed": "auto", "unlisted": "auto" }
+  }
+}
+```
+
+- `listed` / `unlisted` 可以写一个模式（两格同值），也可以写 `{ "mention": …, "plain": … }` 分别控制是否 @；`allowed: false` 直接关掉整个来源。
+- 默认值：`cli` 与 `github` 四格全 `auto`（本地进程即身份；GitHub 评论作者本来就不参与鉴权）；其余来源名单内 `auto`、名单外 `off`；未登记的来源按名单外 `off` 处理。
+- 只有 IM 入口能判断 @；webhook、cron、web、GitHub 无法声明时一律落在「未 @」格。
+- 版本是名单与解析后全部来源规则的哈希，改任何一格都会换版本；配置改动后重启生效。
+- 任务落库时记下 `mandate`（来源、发起人、名单内外、是否 @、命中格）与 `policy_version`，排障时直接看任务行。
+- 策略不追溯已结束的任务；但 `resume` 等于重新开工，按当前策略复核旧任务的 `mandate`，不通过就拒绝并说明派活时与现在各是什么情况。
+- `/pisa policy` 列出当前版本、每个来源的允许状态与四格、最近的 `observe` 记录数；明细在 `pisa.db` 的 `admissions` 表，按 `retentionDays` 清理。
 
 ### 看板
 
@@ -158,7 +186,7 @@ PISA_WEB_TOKEN=<自定义 token> bun run web
 }
 ```
 
-`userId` 是页面派出任务的请求者，必须在 `whitelist.users` 里；不配时取 `PISA_CLI_USER` 或 `$USER`。`chatId` 默认 `"web"`，只用于内部记账。也可以 `bun run src/index.ts --web` 临时开启，`--web` 会忽略 `web.enabled`。
+`userId` 是页面派出任务的请求者，按 `policy` 的 `web` 来源判定（默认名单内接单、名单外拒绝）；不配时取 `PISA_CLI_USER` 或 `$USER`。`chatId` 默认 `"web"`，只用于内部记账。也可以 `bun run src/index.ts --web` 临时开启，`--web` 会忽略 `web.enabled`。
 
 ## 多仓库
 
@@ -243,7 +271,7 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 
 - `retentionDays` 默认 30；≤ 0 关闭每日清理，回收照常
 - 每小时检查一次，启动时立即跑一次；同一本地日期只清理一次，重启不重复
-- 清理对象：结束时间早于 `now - retentionDays` 的终态任务（成功 / 失败 / 取消 / 撤销）的 `events` 行与 `.pisa/progress/<任务号>.jsonl`；任务行与账本保留，看板与撤销照常可用
+- 清理对象：结束时间早于 `now - retentionDays` 的终态任务（成功 / 失败 / 取消 / 撤销）的 `events` 行、超出保留期的 `admissions` 准入留痕与 `.pisa/progress/<任务号>.jsonl`；任务行与账本保留，看板与撤销照常可用
 - 不属于任何任务的占位行（cron 每分钟占位等）按写入时间过期；不这样清它们没有任务行可依附，永远涨
 - 单个任务日志超过 10 MiB 时轮转为 `<任务号>.log.1`，只保留一代，主文件继续写
 - 每周 VACUUM 一次并 checkpoint，数据库文件实际缩小；同一 ISO 周只执行一次
@@ -323,6 +351,6 @@ token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.
 
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `policy`、`worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
 
 解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。

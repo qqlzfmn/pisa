@@ -36,13 +36,15 @@ export interface RetentionDeps {
 export interface RetentionResult {
   /** 删除的 events 行数 */
   events: number;
+  /** 删除的 admissions 行数 */
+  admissions: number;
   /** 删除的 progress 文件数 */
   progress: number;
   vacuumed: boolean;
 }
 
 /**
- * 数据保留：每日清掉过期终态任务的 events 与 progress 文件，每周 VACUUM。
+ * 数据保留：每日清掉过期终态任务的 events、过期准入留痕与 progress 文件，每周 VACUUM。
  * 幂等键落在 events 表（task_id = "retention"），进程重启后仍能认出本日/本周是否已执行。
  */
 export class Retention {
@@ -67,8 +69,8 @@ export class Retention {
   private run(): void {
     try {
       const r = this.tick();
-      if (r.events > 0 || r.progress > 0 || r.vacuumed) {
-        const parts = [`events ${r.events} 行`, `progress ${r.progress} 个`];
+      if (r.events > 0 || r.admissions > 0 || r.progress > 0 || r.vacuumed) {
+        const parts = [`events ${r.events} 行`, `admissions ${r.admissions} 行`, `progress ${r.progress} 个`];
         if (r.vacuumed) parts.push("已 VACUUM");
         console.log(`[pisa] 数据保留：清理 ${parts.join("、")}`);
       }
@@ -80,7 +82,7 @@ export class Retention {
   /** 执行一次检查；测试直接调用 */
   tick(at = new Date(this.now())): RetentionResult {
     const { cfg, store } = this.deps;
-    const result: RetentionResult = { events: 0, progress: 0, vacuumed: false };
+    const result: RetentionResult = { events: 0, admissions: 0, progress: 0, vacuumed: false };
     const stamp = at.getTime();
     const days = Math.trunc(cfg.retentionDays ?? DEFAULT_RETENTION_DAYS);
 
@@ -95,6 +97,7 @@ export class Retention {
         }
       }
       result.events = store.purgeEvents(cutoff);
+      result.admissions = store.purgeAdmissions(cutoff);
     }
 
     if (store.claimEvent(`retention:vacuum:${weekKey(stamp)}`, SELF_TASK, stamp)) {

@@ -168,6 +168,8 @@ describe("Router.rewind", () => {
       startedAt: null,
       endedAt: null,
       cancelRequested: false,
+      mandate: null,
+      policyVersion: null,
       ...rest,
     };
     store.insertTask(task);

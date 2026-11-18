@@ -29,6 +29,8 @@ const task: Task = {
   startedAt: null,
   endedAt: null,
   cancelRequested: false,
+  mandate: null,
+  policyVersion: null,
 };
 
 const roots: string[] = [];

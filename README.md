@@ -56,7 +56,7 @@
 git clone https://github.com/qqlzfmn/pisa.git && cd pisa
 bun install
 
-# 最小配置：只管当前仓库，白名单里只有你自己
+# 最小配置：只管当前仓库，名单里只有你自己
 cat > pisa.config.json <<JSON
 {
   "whitelist": { "users": ["$USER"], "repos": ["pisa"] },
@@ -74,7 +74,7 @@ bun run src/index.ts --channel cli
 /pisa 在 README 末尾加一行 "wake up"
 ```
 
-任务执行期间在 `.pisa/worktrees/<任务号>` 里跑（结束后清理），改完提交到 `pisa/<任务号>` 分支，主分支不动。`/status` 看板，`/pisa examples` 看可直接照抄的场景。
+任务执行期间在 `.pisa/worktrees/<任务号>` 里跑（结束后清理），改完提交到 `pisa/<任务号>` 分支，主分支不动。`/status` 看板，`/policy` 看谁能派活，`/pisa examples` 看可直接照抄的场景。
 
 其余通道（Telegram、webhook、GitHub 评论、定时任务、Web 控制台）与全部配置项见 [配置与运维](./docs/operations.md)。
 

@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
+import type { Mandate, PolicyDecision } from "./policy";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
@@ -27,6 +28,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_pr         INTEGER,
   reply_issue      INTEGER,
   reply_repo       TEXT,
+  mandate          TEXT,
+  policy_version   TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -77,6 +80,21 @@ CREATE TABLE IF NOT EXISTS task_effects (
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+-- 准入决策留痕：observe 与 off 不建任务，决策本身仍要能查
+CREATE TABLE IF NOT EXISTS admissions (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  at             INTEGER NOT NULL,
+  source         TEXT NOT NULL,
+  actor          TEXT NOT NULL,
+  chat_id        TEXT NOT NULL,
+  listed         INTEGER NOT NULL,
+  mentioned      INTEGER NOT NULL,
+  cell           TEXT NOT NULL,
+  mode           TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  reason         TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS effects (
@@ -161,6 +179,8 @@ interface Row {
   reply_pr: number | null;
   reply_issue: number | null;
   reply_repo: string | null;
+  mandate: string | null;
+  policy_version: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -207,6 +227,16 @@ function toTrigger(r: TriggerRow): TriggerRecord {
   };
 }
 
+/** mandate 以 JSON 落在 tasks.mandate；坏值按缺失处理，不能让一行旧数据挡住整张表 */
+function parseMandate(raw: string | null): Mandate | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Mandate;
+  } catch {
+    return null;
+  }
+}
+
 function toTask(r: Row): Task {
   return {
     id: r.id,
@@ -227,6 +257,8 @@ function toTask(r: Row): Task {
     replyRepo: r.reply_repo,
     summary: r.summary,
     error: r.error,
+    mandate: parseMandate(r.mandate),
+    policyVersion: r.policy_version,
     createdAt: r.created_at,
     startedAt: r.started_at,
     endedAt: r.ended_at,
@@ -242,25 +274,20 @@ export class Store {
     this.db = new Database(path, { create: true });
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec(SCHEMA);
-    // 轻量迁移：给已有库补列
-    const cols = this.db.query("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
-    if (!cols.some((c) => c.name === "session_id")) {
-      this.db.exec("ALTER TABLE tasks ADD COLUMN session_id TEXT");
-    }
-    if (!cols.some((c) => c.name === "base_ref")) {
-      this.db.exec("ALTER TABLE tasks ADD COLUMN base_ref TEXT");
-    }
-    if (!cols.some((c) => c.name === "context")) {
-      this.db.exec("ALTER TABLE tasks ADD COLUMN context TEXT");
-    }
-    if (!cols.some((c) => c.name === "reply_pr")) {
-      this.db.exec("ALTER TABLE tasks ADD COLUMN reply_pr INTEGER");
-    }
-    if (!cols.some((c) => c.name === "reply_issue")) {
-      this.db.exec("ALTER TABLE tasks ADD COLUMN reply_issue INTEGER");
-    }
-    if (!cols.some((c) => c.name === "reply_repo")) {
-      this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    // 轻量迁移：给已有库补列（表驱动的列名 → 类型）
+    const added: Record<string, string> = {
+      session_id: "TEXT",
+      base_ref: "TEXT",
+      context: "TEXT",
+      reply_pr: "INTEGER",
+      reply_issue: "INTEGER",
+      reply_repo: "TEXT",
+      mandate: "TEXT",
+      policy_version: "TEXT",
+    };
+    const cols = new Set((this.db.query("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map((c) => c.name));
+    for (const [name, type] of Object.entries(added)) {
+      if (!cols.has(name)) this.db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
     }
     this.backfillTriggers();
   }
@@ -541,6 +568,25 @@ export class Store {
     return byTask.changes + orphan.changes;
   }
 
+  /** 准入决策留痕：observe/off 不建任务，这里记下是谁在什么来源被哪一格挡下 */
+  recordAdmission(d: PolicyDecision, chatId: string, at: number): void {
+    this.db.run(
+      `INSERT INTO admissions (at, source, actor, chat_id, listed, mentioned, cell, mode, policy_version, reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [at, d.source, d.actor, chatId, d.listed ? 1 : 0, d.mentioned ? 1 : 0, d.cell, d.mode, d.version, d.reason],
+    );
+  }
+
+  countAdmissions(mode: string): number {
+    const row = this.db.query("SELECT COUNT(*) AS n FROM admissions WHERE mode = ?").get(mode) as { n: number };
+    return row.n;
+  }
+
+  /** 清掉过期准入留痕，返回删除行数；与 events 同一套保留期 */
+  purgeAdmissions(cutoff: number): number {
+    return this.db.run("DELETE FROM admissions WHERE at < ?", [cutoff]).changes;
+  }
+
   /** 回收磁盘空间；每周由 Retention 调用。WAL 模式下文件要等 checkpoint 才实际缩小 */
   vacuum(): void {
     this.db.exec("VACUUM;");
@@ -549,8 +595,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mandate, policy_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -568,6 +614,8 @@ export class Store {
         t.replyPr,
         t.replyIssue,
         t.replyRepo,
+        t.mandate ? JSON.stringify(t.mandate) : null,
+        t.policyVersion,
       ],
     );
   }

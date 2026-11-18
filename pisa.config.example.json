@@ -9,6 +9,13 @@
       "pisa"
     ]
   },
+  "policy": {
+    "sources": {
+      "telegram": { "listed": { "mention": "auto", "plain": "off" }, "unlisted": "off" },
+      "web": { "listed": "auto", "unlisted": "off" },
+      "cron": { "listed": "auto", "unlisted": "auto" }
+    }
+  },
   "repos": [
     {
       "alias": "pisa",

@@ -100,6 +100,8 @@ function seed(over: Partial<Task> = {}): Task {
     startedAt: null,
     endedAt: null,
     cancelRequested: false,
+    mandate: null,
+    policyVersion: null,
     ...over,
   };
   store.insertTask(task);

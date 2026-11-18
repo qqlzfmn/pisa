@@ -48,6 +48,8 @@ function seed(store: Store, id: string, status: TaskStatus, endedAt: number | nu
     startedAt: null,
     endedAt,
     cancelRequested: false,
+    mandate: null,
+    policyVersion: null,
   };
   store.insertTask(task);
 }
@@ -132,7 +134,7 @@ describe("每日清理", () => {
     store.claimEvent("github:comment:1:t_b", "t_b", NOW - 50 * DAY);
     writeProgress(dir, "t_b");
     const again = retention.tick(new Date(NOW));
-    expect(again).toEqual({ events: 0, progress: 0, vacuumed: false });
+    expect(again).toEqual({ events: 0, admissions: 0, progress: 0, vacuumed: false });
     expect(store.get("t_b")).not.toBeNull();
     expect(existsSync(join(dir, "progress", "t_b.jsonl"))).toBe(true);
 

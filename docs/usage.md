@@ -55,11 +55,15 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 
 ### 鉴权面
 
-- **IM**：`whitelist.users` 与 `whitelist.repos` 双重白名单，未授权用户不建任务（24 小时内只提示一次）。群里仍需要触发词；私聊可直接说需求。
-- **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，所以它也必须进白名单。要从外网调用，自己加反向代理与 TLS。
-- **Web 控制台**：只监听 `127.0.0.1`，`/ui` 与 `/api/*` 全部要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、`HttpOnly` cookie 任一），否则 401。页面派出的任务归 `web.userId`，同样要进白名单；取消与合并不再校验原请求者，因为浏览器里的操作由 token 直接认证。
-- **GitHub**：只处理正文以 `/pisa ` 开头的评论；评论作者不参与鉴权，任务归属由各仓库条目配置的 `chatId` / `userId` 决定。`gh` token 从 `tokenEnv` 指定的环境变量读取。
-- **定时、探针、关键词**：都用配置里的身份开单，同样走白名单；触发不了的根因通常是身份不在白名单或缺少 `scheduler` 配置。
+派活权限由 `policy` 按来源决定：每个来源一张准入表，按「名单内（`whitelist.users`）/ 名单外」与「是否 @ 了本服务」分四格，每格是 `auto` 接单、`observe` 只记录、`off` 拒绝。冒烟期可以先把可疑来源设成 `observe`，看清谁在敲门再收紧。规则与版本用 `/pisa policy` 查看，写入 `<stateDir>/pisa.db` 的 `admissions` 表。
+
+- **IM**：群里仍需触发词；私聊可直接说需求。名单内用户默认接单；名单外默认拒绝（24 小时内只提示一次）。要「只认点名」，把该来源的 `listed.plain` 设成 `off`。
+- **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，按 `webhook` 来源的准入格判定。
+- **Web 控制台**：只监听 `127.0.0.1`，`/ui` 与 `/api/*` 全部要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、`HttpOnly` cookie 任一），否则 401。页面派出的任务归 `web.userId`，按 `web` 来源的准入格判定；取消与合并不再校验原请求者，因为浏览器里的操作由 token 直接认证。
+- **GitHub**：只处理正文以 `/pisa ` 开头的评论；评论作者不参与鉴权，任务归属由各仓库条目配置的 `chatId` / `userId` 决定，`github` 来源默认四格全放开。`gh` token 从 `tokenEnv` 指定的环境变量读取。
+- **定时、探针、关键词**：都用配置里的身份开单，按 `cron` / `proactive` 来源判定；触发不了的根因通常是身份不在名单内、来源被关或缺少 `scheduler` 配置。
+- **任务留痕**：任务行记 `mandate`（来源、发起人、名单内外、是否 @、命中格）与 `policy_version`；策略改动不追溯已结束的任务，`resume` 前会按当前策略复核，不通过就拒绝并列出派活时与现在的判定。
+- **仓库**：`whitelist.repos` 是独立一层，准入通过后仍要求仓库在名单内且路径是 git 仓库。
 - **密钥**：Telegram bot token、webhook token 只从环境变量或 `~/.pisa/` 下的文件读取，不写入配置文件与 launchd plist。
 
 ## 消息太多怎么办

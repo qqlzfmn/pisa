@@ -6,6 +6,12 @@
 
 ### 新增
 
+- 来源准入策略（`src/policy.ts`，spec [018](./docs/specs/018-policy-admission/spec.md)）：每个来源一张准入表，按「名单内外 × 是否 @」分四格，每格 `auto` / `observe` / `off`；`cli` 与 `github` 默认全放开，其余来源名单内接单、名单外拒绝，未登记来源按最严处理
+- 准入留痕与观察模式：被挡下的消息写 `pisa.db` 的 `admissions` 表（来源、发起人、命中格、策略版本、理由），`observe` 只记录不建任务，随 `retentionDays` 清理
+- 任务记录 `mandate` 与 `policy_version`；`resume` 前按当前策略复核旧任务的派活凭据，不通过就拒绝并列出派活时与现在的判定
+- `/pisa policy`（私聊 `/policy`）：当前策略版本、每个来源的允许状态与四格、最近 `observe` 记录数
+- Telegram 用 `getMe` 取机器人身份，按消息 `entities` 判定是否 @ 了本服务
+
 - `triggers` 表：任务创建改为按触发身份（`source` + 线程 + 消息 + 版本 + 载荷指纹）落库，触发器与任务同一事务；旧库在 `Store` 构造时按任务自身信息补齐，重放旧事件不会重复建单
 - 编辑与线程归属：同一消息的新版本按 `version` 留痕，任务仍在排队就更新需求正文；同线程不带命令的后续消息并进未结束任务的上下文
 - 入口身份字段：`IncomingMessage` 新增 `threadKey` / `messageKey` / `version` / `actor`；Telegram 处理 `edited_message` 与论坛话题线程，GitHub 评论用 `updated_at` 作版本、评论作者作 actor，webhook 接受 `threadKey` / `version`
@@ -17,6 +23,7 @@
 
 ### 变更
 
+- `whitelist.users` 从「唯一开关」变为准入表的「名单内」一维：不再逐条比对用户，改由 `policy` 按来源决定谁可以派活；仓库白名单与 git 目录校验保持不变
 - 推送、建 PR、回帖改为经 outbox 执行：失败不再只记日志，退避到期后自动补发；建 PR 失败仍退回 `compare` 链接，任务终态不变
 - README 从配置说明改为产品首页：一句话定位、三类读者路径、30 秒上手、架构图与分层表、三个带预期输出的场景、与 CNB NPC / Copilot cloud agent 的边界对比、FAQ、已知限制、演示 GIF（`docs/assets/demo.gif`）
 - 配置与运维细节（全部配置项、IM/CLI 命令、webhook、多仓库、GitHub 评论、定时、保留、launchd）迁到 [docs/operations.md](./docs/operations.md)，README 只保留入口

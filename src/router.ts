@@ -25,6 +25,7 @@ import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
 import { formatStatusBoard } from "./status";
+import { decideAdmission, describeMandate, formatPolicy, resolvePolicy, type PolicyDecision, type ResolvedPolicy } from "./policy";
 
 export { formatDuration } from "./status";
 
@@ -255,6 +256,7 @@ export class Router {
       const t = msg.text.trim();
       if (t === "/start" || t === "/help" || t === "帮助") cmd = { kind: "help", body: "" };
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
+      else if (t === "/policy" || t === "策略") cmd = { kind: "policy", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
@@ -390,6 +392,11 @@ export class Router {
       return;
     }
 
+    if (cmd.kind === "policy") {
+      await this.reply(msg.chatId, formatPolicy(this.policy(), store.countAdmissions("observe")));
+      return;
+    }
+
     let prompt = cmd.body;
     let baseRef: string | null = null;
     let context: string | null = null;
@@ -429,6 +436,13 @@ export class Router {
         await this.reply(msg.chatId, `用法：${cfg.trigger} continue <任务号> <新要求>`);
         return;
       }
+    }
+
+    // 准入：来源策略说了算，没过就不建任务；observe 只留痕
+    const admission = decideAdmission(this.policy(), msg);
+    if (admission.mode !== "auto") {
+      await this.recordDenial(msg, admission);
+      return;
     }
 
     const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
@@ -481,6 +495,14 @@ export class Router {
       replyRepo: msg.replyRepo ?? null,
       summary: null,
       error: null,
+      mandate: {
+        source: admission.source,
+        actor: admission.actor,
+        listed: admission.listed,
+        mentioned: admission.mentioned,
+        cell: admission.cell,
+      },
+      policyVersion: admission.version,
       createdAt: this.now(),
       startedAt: null,
       endedAt: null,
@@ -554,9 +576,27 @@ export class Router {
     }
   }
 
+  /** 当前策略：每次按配置重算，改配置后不需要重启 Router 实例就能看到新版本 */
+  private policy(): ResolvedPolicy {
+    return resolvePolicy(this.deps.cfg.policy, this.deps.cfg.whitelist.users);
+  }
+
+  /**
+   * 准入未通过：留痕，回复按 mode 区分；同一用户 24 小时内只回一次，避免刷屏。
+   * 回复里带策略版本与命中格，运维不用去翻日志就知道为什么被挡。
+   */
+  private async recordDenial(msg: IncomingMessage, d: PolicyDecision): Promise<void> {
+    this.deps.store.recordAdmission(d, msg.chatId, this.now());
+    const last = this.deniedAt.get(msg.userId) ?? 0;
+    if (this.now() - last <= 24 * 3600 * 1000) return;
+    this.deniedAt.set(msg.userId, this.now());
+    const head = d.mode === "off" ? "无权限" : "已记录，未建任务（观察模式）";
+    await this.reply(msg.chatId, `${head}：${d.reason}`);
+  }
+
+  /** 仓库层校验；谁能派活由 policy 决定，这里只管落到哪个仓库 */
   private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
     const { cfg } = this.deps;
-    if (!cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
     if (!repo) return `仓库未配置：${msg.repo ?? "(默认)"}`;
     if (!cfg.whitelist.repos.includes(repo.alias)) return `无权限：仓库 ${repo.alias} 不在白名单。`;
     if (!isGitRepo(repo.path)) return `仓库路径不是 git 仓库：${repo.path}`;
@@ -812,6 +852,32 @@ export class Router {
     await this.reply(msg.chatId, `取消中 · ${id}`);
   }
 
+  /**
+   * 恢复前按当前策略复核：旧任务用派活时的 mandate，没有 mandate 的（agent CLI、升级前的任务）
+   * 退回 channel + requester 合成一次判定。判不出来只是一句话，判断依据全在回复里。
+   */
+  private recheckAdmission(task: Task): { ok: true } | { ok: false; text: string } {
+    const d = decideAdmission(this.policy(), {
+      channel: task.mandate?.source ?? task.channel,
+      userId: task.requester,
+      actor: task.mandate?.actor ?? task.requester,
+      mentioned: task.mandate?.mentioned,
+    });
+    if (d.mode === "auto") return { ok: true };
+    const before = task.mandate
+      ? `派活时 ${describeMandate(task.mandate)} · ${task.policyVersion ?? "版本未记录"}`
+      : `派活时未记录准入凭据（${task.channel}）`;
+    return {
+      ok: false,
+      text: [
+        `恢复被拒 · ${task.id}`,
+        before,
+        `当前复核：${d.reason}`,
+        "调整 policy 与名单，或换有权限的身份；任务保持暂停。",
+      ].join("\n"),
+    };
+  }
+
   /** 恢复被进程重启中断的任务：复用原工作副本与会话再次执行 */
   private async handleResume(msg: IncomingMessage, body: string): Promise<void> {
     const { cfg, store } = this.deps;
@@ -827,6 +893,12 @@ export class Router {
     }
     if (task.status !== "paused") {
       await this.reply(msg.chatId, `任务 ${id} 不是中断状态（${task.status}），只有中断的任务可以恢复。`);
+      return;
+    }
+    // 策略变更不追溯已结束的任务，但恢复等于重新开工：按当前策略复核派活凭据
+    const verdict = this.recheckAdmission(task);
+    if (!verdict.ok) {
+      await this.reply(msg.chatId, verdict.text);
       return;
     }
     if (!existsSync(resolve(cfg.stateDir, "worktrees", id))) {
