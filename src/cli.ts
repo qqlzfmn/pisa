@@ -13,8 +13,8 @@ import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
 import { stageText } from "./stage";
 
-/** 退出码：脚本据此分支，不要在版本间随意改语义 */
-const EXIT = {
+/** 退出码：脚本据此分支，不要在版本间随意改语义；docs/deployment.md 的退出码表与此一致 */
+export const EXIT = {
   ok: 0,
   taskFailed: 1,
   usage: 2,

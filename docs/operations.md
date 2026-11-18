@@ -16,7 +16,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 - [数据保留](#数据保留)
 - [GitHub 评论（PR / Issue）](#github-评论pr--issue)
 - [自举](#自举)
-- [常驻（launchd）](#常驻launchd)
+- [常驻与部署](./deployment.md)
 - [完整配置项](#完整配置项)
 
 ## 安装与配置
@@ -108,7 +108,10 @@ curl -X POST http://127.0.0.1:8799/event \
 同一 `eventId` 的重复投递只建一个任务。要让不同入口（CI、监控、聊天）里的同一件事落到同一个任务，带同一个 `threadKey`（业务单号即可）：
 
 ```bash
--d '{"prompt":"修掉 CI 失败","eventId":"ci:12345","threadKey":"pull/1287","version":"3"}'
+curl -X POST http://127.0.0.1:8799/event \
+  -H "x-pisa-token: $PISA_WEBHOOK_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"修掉 CI 失败","eventId":"ci:12345","threadKey":"pull/1287","version":"3"}'
 ```
 
 同 `threadKey` + `eventId` 再投一次、内容不同视为编辑（任务还在排队就更新需求）；`version` 没有编辑语义时可以不传。
@@ -120,17 +123,17 @@ curl -X POST http://127.0.0.1:8799/event \
 ```bash
 bun link                 # 把 pisa 命令链到 PATH；也可直接用 bun run src/cli.ts
 pisa task "修 CI：test 失败日志见 ci.log" --repo demo --json
-pisa wait <任务号> --timeout 900 --json
+pisa wait t_20261118_ab12cd --timeout 900 --json
 pisa status --json
-pisa show <任务号>
-pisa logs <任务号> --tail 100
-pisa cancel <任务号>
-pisa continue <任务号> "按 PR 评论再改"
+pisa show t_20261118_ab12cd
+pisa logs t_20261118_ab12cd --tail 100
+pisa cancel t_20261118_ab12cd
+pisa continue t_20261118_ab12cd "按 PR 评论再改"
 ```
 
 - `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省从当前目录向上找 `pisa.config.json`
 - 相对 `stateDir` 与仓库路径以配置文件目录为基准，从子目录调用也指向同一份状态
-- 退出码：`0` 成功、`1` 任务失败、`2` 用法/配置、`3` 找不到、`4` 不可运行、`5` 等待超时
+- 退出码、排障与常驻：见 [deployment.md](./deployment.md)
 - 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
 
 给 agent 的可复用说明在 [`skills/pisa/`](../skills/pisa/)：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
@@ -293,33 +296,9 @@ pisa 可以改自己：
 
 这条链路已经实测：任务改 README → merge → 进程 PID 变化 → 新内容生效。
 
-## 常驻（launchd）
+## 常驻与部署
 
-`scripts/supervise.sh` 交给 launchd 托管：开机自启，进程退出后自动拉起。
-
-安装（重复执行等于重装）：
-
-```bash
-./scripts/install-launchd.sh
-```
-
-脚本生成 `~/Library/LaunchAgents/ai.pisa.supervisor.plist` 并加载，工作目录是仓库根目录，日志写在 `~/Library/Logs/pisa.launchd.log`（外部卷上的路径 launchd 无权限写入）。多份 worktree 同时安装会互相覆盖，只保留一份。
-
-看日志：
-
-```bash
-tail -f ~/Library/Logs/pisa.launchd.log
-launchctl print gui/$(id -u)/ai.pisa.supervisor    # 状态
-```
-
-卸载：
-
-```bash
-launchctl bootout gui/$(id -u)/ai.pisa.supervisor
-rm ~/Library/LaunchAgents/ai.pisa.supervisor.plist
-```
-
-token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.pisa/telegram_token` 与 `~/.pisa/webhook_token`。
+launchd 托管、安装升级、排障表与退出码统一在 [deployment.md](./deployment.md)。这里不再重复命令，避免同一条命令两处版本不一致。
 
 ## 完整配置项
 

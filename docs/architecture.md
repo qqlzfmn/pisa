@@ -4,6 +4,8 @@
 
 代码是唯一事实源；本文给位置和约束，不复述实现。规格细节见 `docs/specs/`（尤其 001 状态机、003 事件入口、005 恢复语义、013 撤销）。
 
+配套文档：[domain.md](./domain.md) 术语表；[deployment.md](./deployment.md) 安装、升级、常驻、排障与退出码；[extending.md](./extending.md) 加来源与加适配器的完整步骤。
+
 ## 1. 分层与职责
 
 五层，依赖只能向下：
@@ -174,6 +176,8 @@ cancelled ─┘
 四类变体：`continue`（IM 续跑原任务，分支与上下文来自父任务）、PR 评论（`taskByPr` 找到父任务，复用同一分支与 PR）、`resume`（`paused` 且工作副本在，同一 worktree + agent `-r` 会话续跑）、`rewind`（终态任务先出计划，`--yes` 再执行，成功项删账本行，失败项留着重试）。
 
 ## 4. 扩展点
+
+步骤、示例代码与测试在 [extending.md](./extending.md)；下面只给契约与装配位置。
 
 ### 4.1 WorkerAdapter：换 agent
 
