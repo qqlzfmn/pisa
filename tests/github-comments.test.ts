@@ -613,8 +613,39 @@ describe("GitHub 评论 → 任务", () => {
     expect(task.status).toBe("succeeded");
     // 只查了列表，没有发第二条
     expect(calls.some((c) => c[1] === "pr")).toBe(false);
+    // 评论已存在于讨论串，effect 与账本都要记为完成，重放不能漏掉这条副作用
+    expect(store.effectRow("comment", `pr:o/r#12:${task.id}`)!.status).toBe("done");
+    expect(store.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
     const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
     expect(log).toContain("已存在同标记回帖，跳过");
+  });
+
+  test("重启重放：未完成的回帖 effect 命中标记后完成并记账", async () => {
+    const taskId = "t_replay";
+    const calls: string[][] = [];
+    const ghRunner: Runner = (args) => {
+      calls.push(args);
+      // 上一轮已把评论发出去（带本任务标记），进程在记 done 之前被杀
+      if ((args[2] ?? "").includes("/issues/12/comments")) {
+        return threadBodies([`上一轮回帖\n\n${replyMarker(taskId, "pr")}`]);
+      }
+      return reply(1, "", "重放不应再发评论");
+    };
+    const effects = new EffectQueue(store, { now: () => 1_000 });
+    new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner, effects, now: () => 1_000 });
+    const key = `pr:o/r#12:${taskId}`;
+    store.enqueueEffect({
+      kind: "comment",
+      key,
+      taskId,
+      payload: JSON.stringify({ taskId, repo: "o/r", number: 12, purpose: "pr", body: "改好了" }),
+      at: 0,
+    });
+
+    expect(await effects.flush()).toEqual({ done: 1, failed: 0 });
+    expect(store.effectRow("comment", key)!.status).toBe("done");
+    expect(store.effectsOf(taskId).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
+    expect(calls.some((c) => c[1] === "pr")).toBe(false);
   });
 
   test("任务成功后向来源 Issue 回帖", async () => {

@@ -104,10 +104,9 @@ export class Router {
   private commentEffect(p: CommentPayload): Promise<"posted" | "skipped"> {
     const res = postReplyOnce(this.deps.ghRunner ?? defaultRunner, p.repo, p.number, p.purpose, p.taskId, p.body);
     if (!res.ok) return Promise.reject(new Error(res.error));
-    if (res.value === "posted") {
-      const kind = p.purpose === "pr" ? "PR" : "Issue";
-      this.deps.store.effect(p.taskId, "comment", `${p.repo}#${p.number}`, `${kind} 回帖`);
-    }
+    // skipped 说明同任务同用途的评论已在讨论串里（崩在上次记账前），账本同样要记
+    const kind = p.purpose === "pr" ? "PR" : "Issue";
+    this.deps.store.effect(p.taskId, "comment", `${p.repo}#${p.number}`, `${kind} 回帖`);
     return Promise.resolve(res.value);
   }
 
