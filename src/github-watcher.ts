@@ -14,26 +14,32 @@ export interface GithubWatcherDeps {
   now?: () => number;
 }
 
+/** 每个仓库的增量游标落库键：重启后从上次整轮成功的位置继续 */
+function sinceKey(repo: string): string {
+  return `github:since:${repo}`;
+}
+
 /**
  * Issue / PR 评论 → 任务：按仓库定时拉增量评论，把带触发词的投给 Router。
  * 去重靠投递时的稳定 eventId（`github:comment:<repo>:<id>`），由 Router 的 claimEvent 落库。
- * 每个仓库各自维护增量下界，一个仓库失败不影响其它仓库。
+ * 每个仓库各自维护增量下界并落库（`meta` 表的 `github:since:<repo>`），一个仓库失败不影响其它仓库。
  * 编号是 PR 时接续该 PR 的任务并回帖到 PR；是普通 Issue 时从主干开新分支、回帖到 Issue。
  */
 export class GithubWatcher {
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
-  /** 每个仓库的增量下界：只在整轮成功后推进，失败不推进以免漏评论 */
-  private readonly since = new Map<string, string>();
   private readonly now: () => number;
   private readonly runner: Runner;
 
   constructor(private deps: GithubWatcherDeps) {
     this.now = deps.now ?? Date.now;
     this.runner = deps.runner ?? defaultRunner;
-    // 启动时刻即下界：不回放历史评论
+    // 游标是进度状态：旧库没有记录才用启动时刻初始化，之后跨重启续用
     const startedAt = new Date(this.now()).toISOString();
-    for (const target of githubRepos(deps.cfg.github)) this.since.set(target.repo, startedAt);
+    for (const target of githubRepos(deps.cfg.github)) {
+      const key = sinceKey(target.repo);
+      if (deps.store.getMeta(key) === null) deps.store.setMeta(key, startedAt);
+    }
   }
 
   start(): void {
@@ -68,7 +74,7 @@ export class GithubWatcher {
   }
 
   private async pollRepo(repo: string, chatId: string, userId: string, startedAt: string): Promise<void> {
-    const since = this.since.get(repo) ?? startedAt;
+    const since = this.deps.store.getMeta(sinceKey(repo)) ?? startedAt;
     const res = listComments(this.runner, repo, since);
     if (!res.ok) {
       console.warn(`[pisa] GitHub 评论拉取失败 · ${repo}：${res.error.slice(0, 300)}`);
@@ -104,6 +110,6 @@ export class GithubWatcher {
         await this.deps.enqueue({ ...base, replyIssue: n });
       }
     }
-    if (complete) this.since.set(repo, startedAt);
+    if (complete) this.deps.store.setMeta(sinceKey(repo), startedAt);
   }
 }

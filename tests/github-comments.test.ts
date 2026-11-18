@@ -377,6 +377,47 @@ describe("GitHub 评论 → 任务", () => {
     expect(store.recentTasks().length).toBe(1);
   });
 
+  test("预置游标优先于启动时刻，成功后推进到本轮 startedAt", async () => {
+    store.setMeta("github:since:o/r", "2026-01-01T00:00:00.000Z");
+    const { runner, calls } = ghRouter([
+      { id: 1, body: "/pisa 停机期间的评论", issue_url: "https://api.github.com/repos/o/r/issues/20" },
+    ]);
+    const { w } = watcher(runner, () => Date.parse("2026-11-18T10:00:00.000Z"));
+    await w.poll();
+
+    expect(listCall(calls)[2]).toContain("since=2026-01-01T00%3A00%3A00.000Z");
+    expect(store.getMeta("github:since:o/r")).toBe("2026-11-18T10:00:00.000Z");
+    expect(store.recentTasks().length).toBe(1);
+  });
+
+  test("重启后沿用落库游标，停机期间的评论被补拉且不重复建任务", async () => {
+    const comment = { id: 1, body: "/pisa 修一下登录", issue_url: "https://api.github.com/repos/o/r/issues/20" };
+    const { runner, calls } = ghRouter([comment]);
+    let clock = Date.parse("2026-11-18T10:00:00.000Z");
+    await watcher(runner, () => clock).w.poll();
+    expect(store.getMeta("github:since:o/r")).toBe("2026-11-18T10:00:00.000Z");
+
+    // 停机三分钟后重启：新实例从落库游标继续，不回落成重启时刻
+    clock += 180_000;
+    await watcher(runner, () => clock).w.poll();
+
+    const listCalls = calls.filter((c) => (c[2] ?? "").includes("/issues/comments"));
+    expect(listCalls.length).toBe(2);
+    expect(listCalls[1]![2]).toContain("since=2026-11-18T10%3A00%3A00.000Z");
+    expect(store.getMeta("github:since:o/r")).toBe("2026-11-18T10:03:00.000Z");
+    // 补拉会再次返回同一条评论：eventId 去重，不建第二个任务
+    expect(store.recentTasks().length).toBe(1);
+  });
+
+  test("旧库没有游标时以启动时刻为界，不回放历史评论", async () => {
+    const { runner, calls } = ghRouter([]);
+    const { w } = watcher(runner, () => Date.parse("2026-11-18T10:00:00.000Z"));
+    await w.poll();
+
+    expect(listCall(calls)[2]).toContain("since=2026-11-18T10%3A00%3A00.000Z");
+    expect(store.getMeta("github:since:o/r")).toBe("2026-11-18T10:00:00.000Z");
+  });
+
   test("类型判定失败不投递，也不推进下界", async () => {
     const comment = { id: 30, body: "/pisa 修一下", issue_url: "https://api.github.com/repos/o/r/issues/20" };
     const calls: string[][] = [];
@@ -505,14 +546,19 @@ describe("GitHub 评论 → 任务", () => {
 
     await w.poll();
     expect(store.recentTasks().length).toBe(0);
+    // 失败轮不推进落库游标
+    expect(store.getMeta("github:since:o/r")).toBe("2023-11-14T22:13:20.000Z");
 
     listBroken = false;
     clock += 60_000;
     await w.poll();
     expect(store.recentTasks().length).toBe(1);
+    const listCalls = calls.filter((c) => (c[2] ?? "").includes("/issues/comments"));
     // 失败那一轮不推进：两轮的下界相同
-    expect(listCall(calls)[2]).toBe(calls[0]![2]);
-    expect(calls[0]![2]).toContain("since=2023-11-14T22%3A13%3A20.000Z");
+    expect(listCalls[1]![2]).toBe(listCalls[0]![2]);
+    expect(listCalls[0]![2]).toContain("since=2023-11-14T22%3A13%3A20.000Z");
+    // 成功后推进到本轮开始时刻
+    expect(store.getMeta("github:since:o/r")).toBe("2023-11-14T22:14:20.000Z");
   });
 
   test("任务成功后向来源 PR 回帖", async () => {
@@ -809,6 +855,9 @@ describe("GitHub 多仓库轮询", () => {
     clock += 60_000;
     await w.poll();
     expect(store.recentTasks().map((t) => t.prompt)).toEqual(["改B"]);
+    // 游标按仓库落库：失败仓库停在启动时刻，成功仓库已推进
+    expect(store.getMeta("github:since:o/a")).toBe("2023-11-14T22:13:20.000Z");
+    expect(store.getMeta("github:since:o/b")).toBe("2023-11-14T22:14:20.000Z");
 
     failing.delete("o/a");
     clock += 60_000;
@@ -822,6 +871,7 @@ describe("GitHub 多仓库轮询", () => {
     // o/b 每轮成功后推进，最后一轮的下界晚于第一轮
     const bCalls = calls.filter((c) => (c[2] ?? "").startsWith("repos/o/b/issues/comments"));
     expect(bCalls[2]![2]).not.toBe(bCalls[0]![2]);
+    expect(store.getMeta("github:since:o/a")).toBe("2023-11-14T22:15:20.000Z");
   });
 
   test("taskByPr 按仓库区分同名 PR 号", () => {

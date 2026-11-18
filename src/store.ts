@@ -187,17 +187,25 @@ export class Store {
     return rows.map((r) => ({ taskId: r.task_id, kind: r.kind, target: r.target, detail: r.detail, createdAt: r.created_at }));
   }
 
+  /** 跨重启的单值状态（心跳、轮询游标）；调用方自己约定 key */
+  setMeta(key: string, value: string): void {
+    this.db.run("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [key, value]);
+  }
+
+  getMeta(key: string): string | null {
+    const row = this.db.query("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | null;
+    return row?.value ?? null;
+  }
+
   /** 守护进程心跳：CLI 用它判断任务是否真的会被执行 */
   beat(at = Date.now()): void {
-    this.db.run("INSERT INTO meta(key, value) VALUES ('heartbeat', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [
-      String(at),
-    ]);
+    this.setMeta("heartbeat", String(at));
   }
 
   lastBeat(): number | null {
-    const row = this.db.query("SELECT value FROM meta WHERE key = 'heartbeat'").get() as { value: string } | null;
-    if (!row) return null;
-    const n = Number(row.value);
+    const value = this.getMeta("heartbeat");
+    if (value === null) return null;
+    const n = Number(value);
     return Number.isSafeInteger(n) ? n : null;
   }
 

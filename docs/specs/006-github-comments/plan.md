@@ -12,7 +12,7 @@
 | 解析 | 逐行 `JSON.parse`，取 `id`、`body`、`issue_url`、`user.login` | 一行失败即整体失败并保留错误文本，不猜字段（FR-010） |
 | 鉴权 | `tokenEnv` 指向的环境变量在启动时写入 `GH_TOKEN` | `gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`；pisa 已有「token 走环境变量」的约定（FR-001） |
 | 模块划分 | 新增 `src/github.ts`：纯函数 + 可注入 `Runner`（`(args) => {code,out,err}`），错误返回结果对象；新增 `src/github-watcher.ts`：定时器 + 增量下界 | 纯函数可直接单测，不联网；与 `Worker`/`Deliverer` 的可注入风格一致（FR-002/FR-010） |
-| 增量下界 | 构造时取当前时刻；每轮成功后才推进到「本轮开始时刻」 | 失败不推进，避免漏评论；成功推进用轮询开始时刻而非结束时刻，避免轮询期间的新评论被跳过（FR-002/FR-003/FR-010） |
+| 增量下界 | 落库在 `meta` 表的 `github:since:<repo>`：构造时读游标，缺失才用启动时刻初始化并写入；每轮成功后才推进到「本轮开始时刻」 | 游标是进度状态，只活在内存会让 supervisor 重启、部署或机器重启期间的评论永久丢失；失败不推进避免漏评论；成功推进用轮询开始时刻而非结束时刻，避免轮询期间的新评论被跳过（FR-002/FR-003/FR-010） |
 | 触发词 | `cfg.trigger + " "` 前缀，正文先 `trim` | 触发词只有一个来源（config），行为与 spec FR-004 一致 |
 | 去重 | 传给 `Router.handle` 的 `eventId` 固定为 `github:comment:<id>`，由 Router 既有的 `store.claimEvent(eventId, taskId)` 落库 | Router 是唯一的建任务入口，也在建任务前占键；watcher 再占同一键会把键消耗掉、导致 Router 丢弃该评论。故去重只保留一处（FR-005） |
 | 续跑绑定 | `IncomingMessage` 增加可选 `continueFrom`（父任务号）与 `replyPr`（回帖目标）；Router 复用 `continue` 的分支/上下文构造 | 不另开任务创建路径；`continue` 命令路径与 PR 评论路径共用同一段父任务校验与上下文格式（FR-006） |
