@@ -30,14 +30,7 @@ Worker 通过 `omp -e extensions/pisa-worker.ts` 挂载，订阅：
 
 写出的文件：`.pisa/progress/<taskId>.jsonl`，Router 每 2 秒读取并节流转发到对话。
 
-策略拦截（agent 内部）：
-
-- `git push`
-- `git reset --hard`
-- `git clean -f`
-- `rm -rf /`（`/tmp` 除外）
-- `sudo`
-- `chmod/chown /etc`
+策略拦截（agent 内部）：判定在 `extensions/guard.ts`，清单与规则见 014。
 
 ### 3.2 续跑
 
