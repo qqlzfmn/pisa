@@ -119,11 +119,11 @@ afterEach(() => {
   rmSync(stateDir, { recursive: true, force: true });
 });
 
-function build(cfg: Config, runner: Runner) {
+function build(cfg: Config, runner: Runner, worker: WorkerRunner = reviewWorker) {
   const router = new Router({
     cfg,
     store,
-    worker: reviewWorker,
+    worker,
     deliverer: noDeliver,
     channel,
     ghRunner: runner,
@@ -245,5 +245,41 @@ describe("PR 自动评审", () => {
 
     expect(sh(["git", "-C", repo, "branch", "--list", "pisa/*"]).out.trim()).toBe("");
     expect(existsSync(join(stateDir, "worktrees"))).toBe(false);
+  });
+
+  test("评审失败不回帖到 PR，只回到会话", async () => {
+    const cfg = makeCfg(repo, stateDir, true);
+    const { runner, calls } = ghRouter([
+      { number: 7, headRefName: "feat", headRefOid: "abc123", title: "加登录", baseRefName: "main", url: "u" },
+    ]);
+    const failing: WorkerRunner = {
+      async run(): Promise<WorkerResult> {
+        return { ok: false, summary: "", error: "boom", exitCode: 1 };
+      },
+    };
+    const { router, watcher } = build(cfg, runner, failing);
+    await watcher.poll();
+    await router.drainOnce();
+
+    const task = store.recentTasks()[0]!;
+    expect(task.status).toBe("failed");
+    expect(calls.some((c) => c[1] === "pr" && c[2] === "comment")).toBe(false);
+    expect(channel.sent.some((s) => s.text.includes("失败"))).toBe(true);
+  });
+
+  test("取消的评审不回帖到 PR", async () => {
+    const cfg = makeCfg(repo, stateDir, true);
+    const { runner, calls } = ghRouter([
+      { number: 7, headRefName: "feat", headRefOid: "abc123", title: "加登录", baseRefName: "main", url: "u" },
+    ]);
+    const { router, watcher } = build(cfg, runner);
+    await watcher.poll();
+
+    const task = store.recentTasks()[0]!;
+    store.requestCancel(task.id);
+    await router.drainOnce();
+
+    expect(store.get(task.id)!.status).toBe("cancelled");
+    expect(calls.some((c) => c[1] === "pr" && c[2] === "comment")).toBe(false);
   });
 });
