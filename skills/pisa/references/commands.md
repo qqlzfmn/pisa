@@ -59,9 +59,12 @@
   "total": 5,
   "running": [Task],
   "queued": [Task],
-  "finished": [Task]
+  "finished": [Task],
+  "ops": { "exitCode": 0, "problems": [] }
 }
 ```
+
+`ops` 是体检结论（见下方「退出码」的 status 一节），`problems` 每项是 `{level, source, detail}`。
 
 `list --json`、`show --json`、`repos --json` 都是数组或对象，字段与上面一致。
 
@@ -75,6 +78,8 @@
 | 3 | 任务号不存在 |
 | 4 | 任务不可运行（paused / cancelled / rewound） |
 | 5 | `wait` 超时 |
+
+`pisa status` 例外：退出码就是体检结论——`0` 正常、`1` 需重启（无心跳）、`2` 部件错误、`3` 待配置；优先级 `3 > 1 > 2`。问题列表在标准输出里，`--json` 的 `ops.problems` 是同一份。
 
 ## 配置要点
 

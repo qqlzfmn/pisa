@@ -1,4 +1,5 @@
 import { githubRepos, type Config } from "./config";
+import type { HealthRecorder } from "./health";
 import type { Store } from "./store";
 import type { IncomingMessage } from "./types";
 import { defaultRunner, isPullRequest, listComments, prNumberFromIssueUrl, type Runner } from "./github";
@@ -12,6 +13,8 @@ export interface GithubWatcherDeps {
   /** 默认走真实 gh 命令，测试注入假实现 */
   runner?: Runner;
   now?: () => number;
+  /** 部件记账：轮询失败记 `github`，整轮成功清除 */
+  health?: HealthRecorder;
 }
 
 /** 每个仓库的增量游标落库键：重启后从上次整轮成功的位置继续 */
@@ -60,26 +63,32 @@ export class GithubWatcher {
     if (!gh?.enabled || this.polling) return;
     this.polling = true;
     const startedAt = new Date(this.now()).toISOString();
+    let healthy = true;
     try {
       for (const target of githubRepos(gh)) {
         try {
-          await this.pollRepo(target.repo, target.chatId, target.userId, startedAt);
+          if (!(await this.pollRepo(target.repo, target.chatId, target.userId, startedAt))) healthy = false;
         } catch (err) {
           // 投递异常只影响本仓库：下界不推进，下一轮重试
+          healthy = false;
           console.warn(`[pisa] GitHub 评论投递失败 · ${target.repo}：${String(err).slice(0, 300)}`);
+          this.deps.health?.fail("github", err);
         }
       }
     } finally {
       this.polling = false;
     }
+    if (healthy) this.deps.health?.ok("github");
   }
 
-  private async pollRepo(repo: string, chatId: string, userId: string, startedAt: string): Promise<void> {
+  /** 返回本轮是否完整推进了下界；失败只影响本仓库，下一轮重试 */
+  private async pollRepo(repo: string, chatId: string, userId: string, startedAt: string): Promise<boolean> {
     const since = this.deps.store.getMeta(sinceKey(repo)) ?? startedAt;
     const res = listComments(this.runner, repo, since);
     if (!res.ok) {
       console.warn(`[pisa] GitHub 评论拉取失败 · ${repo}：${res.error.slice(0, 300)}`);
-      return;
+      this.deps.health?.fail("github", new Error(`拉取 ${repo} 评论失败：${res.error.slice(0, 300)}`));
+      return false;
     }
 
     const prefix = `${this.deps.cfg.trigger} `;
@@ -94,6 +103,7 @@ export class GithubWatcher {
       if (!isPr.ok) {
         console.warn(`[pisa] GitHub 评论类型判定失败 · ${repo} #${n}：${isPr.error.slice(0, 300)}`);
         complete = false;
+        this.deps.health?.fail("github", new Error(`判定 ${repo} #${n} 类型失败：${isPr.error.slice(0, 300)}`));
         continue;
       }
       const base = {
@@ -117,6 +127,8 @@ export class GithubWatcher {
         await this.deps.enqueue({ ...base, replyIssue: n });
       }
     }
-    if (complete) this.deps.store.setMeta(sinceKey(repo), startedAt);
+    if (!complete) return false;
+    this.deps.store.setMeta(sinceKey(repo), startedAt);
+    return true;
   }
 }

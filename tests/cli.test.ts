@@ -260,22 +260,29 @@ describe("pisa continue", () => {
 });
 
 describe("查询与操作", () => {
-  test("status 输出看板与守护进程状态", async () => {
+  test("status 输出看板与守护进程状态，退出码随体检结论变化", async () => {
     seed({ prompt: "排队中" });
     const text = await cli(...base("status"));
-    expect(text.code).toBe(0);
+    // 没有心跳 → 需重启（1），问题列表写进输出
+    expect(text.code).toBe(1);
     expect(text.out).toContain("排队（1）");
     expect(text.out).toContain("working/queued（等空闲槽位）");
     expect(text.out).toContain("最近 24h：无完成");
     expect(text.out).toContain("守护进程：未运行");
+    expect(text.out).toContain("需重启：daemon 没有心跳记录，守护进程未启动");
 
     const store = new Store(join(stateDir, "pisa.db"));
     store.beat();
     store.close();
-    const body = parse<{ daemon: { alive: boolean }; total: number; queued: TaskJson[]; last24h: WindowMetrics }>(
-      await cli(...base("status", "--json")),
-    );
+    const body = parse<{
+      daemon: { alive: boolean };
+      total: number;
+      queued: TaskJson[];
+      last24h: WindowMetrics;
+      ops: { exitCode: number; problems: unknown[] };
+    }>(await cli(...base("status", "--json")));
     expect(body.daemon.alive).toBe(true);
+    expect(body.ops).toEqual({ exitCode: 0, problems: [] });
     expect(body.last24h).toEqual({ finished: 0, succeeded: 0, failed: 0, successRate: null, durationSamples: 0, p50Ms: null, p95Ms: null });
     expect(body.total).toBe(1);
     expect(body.queued[0]!.prompt).toBe("排队中");

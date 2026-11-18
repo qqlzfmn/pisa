@@ -7,6 +7,7 @@ import { GitDeliverer } from "./deliver";
 import { Proactive } from "./proactive";
 import { GithubWatcher } from "./github-watcher";
 import { Scheduler } from "./scheduler";
+import { ComponentHealth, OpsWatch } from "./health";
 import { Retention } from "./retention";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
@@ -22,6 +23,9 @@ async function main(): Promise<void> {
   const web: WebConfig = { ...(cfg.web ?? DEFAULT_WEB), enabled: cfg.web?.enabled === true || process.argv.includes("--web") };
 
   const store = new Store(join(cfg.stateDir, "pisa.db"));
+  // 部件错误只描述当前进程：上一轮运行留下的记录在启动时清掉
+  const health = new ComponentHealth(store);
+  health.reset();
 
   let channel: ChannelAdapter;
   if (wantCli) {
@@ -90,7 +94,7 @@ async function main(): Promise<void> {
   }
 
   const proactive = new Proactive(cfg, (m) => router.handle(m), { store });
-  const githubWatcher = new GithubWatcher({ cfg, store, enqueue: (m) => router.handle(m) });
+  const githubWatcher = new GithubWatcher({ cfg, store, enqueue: (m) => router.handle(m), health });
   const scheduler = new Scheduler({ cfg, store, enqueue: (m) => router.handle(m) });
   const retention = new Retention({ cfg, store });
   router.start();
@@ -98,10 +102,19 @@ async function main(): Promise<void> {
   githubWatcher.start();
   scheduler.start();
   retention.start();
+  // 巡检在 router.start() 之后：它的第一次判定需要刚写入的心跳
+  const opsWatch = new OpsWatch({ cfg, store, enqueue: (m) => router.handle(m) });
+  opsWatch.start();
 
   // 定期清理已结束任务的残留分支/工作副本/PR：启动 2 分钟后一次，之后每 6 小时
   const gc = () => {
-    router.gc(7, false).catch((err) => console.error(`[pisa] gc 失败：${String(err).slice(0, 200)}`));
+    router
+      .gc(7, false)
+      .then(() => health.ok("gc"))
+      .catch((err) => {
+        console.error(`[pisa] gc 失败：${String(err).slice(0, 200)}`);
+        health.fail("gc", err);
+      });
   };
   setTimeout(gc, 120_000).unref?.();
   setInterval(gc, 6 * 3600_000).unref?.();
@@ -136,6 +149,7 @@ async function main(): Promise<void> {
   let triggers: TriggersRuntime | null = null;
   try {
     triggers = startTriggers({ cfg, handle: (m) => router.handle(m) });
+    health.ok("triggers");
     if (triggers) {
       const names = [
         cfg.triggers?.githubActions?.enabled ? "github-actions" : "",
@@ -147,6 +161,7 @@ async function main(): Promise<void> {
     }
   } catch (err) {
     console.error(`[pisa] 触发适配层启动失败：${(err as Error).message}`);
+    health.fail("triggers", err);
   }
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
@@ -166,6 +181,7 @@ async function main(): Promise<void> {
     await router.stop(3000);
     proactive.stop();
     triggers?.stop();
+    opsWatch.stop();
     githubWatcher.stop();
     scheduler.stop();
     retention.stop();

@@ -410,6 +410,17 @@ export class Store {
     return row?.value ?? null;
   }
 
+  deleteMeta(key: string): void {
+    this.db.run("DELETE FROM meta WHERE key = ?", [key]);
+  }
+
+  /** 前缀查询用于成组的单值状态，例如 `health:` 下的部件错误 */
+  metaByPrefix(prefix: string): { key: string; value: string }[] {
+    return this.db
+      .query("SELECT key, value FROM meta WHERE key LIKE ? ORDER BY key")
+      .all(`${prefix}%`) as { key: string; value: string }[];
+  }
+
   /** 守护进程心跳：CLI 用它判断任务是否真的会被执行 */
   beat(at = Date.now()): void {
     this.setMeta("heartbeat", String(at));

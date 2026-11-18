@@ -159,6 +159,14 @@
       "prompt": "自动探针失败，定位原因并修复。"
     }
   },
+  "ops": {
+    "enabled": true,
+    "chatId": "<telegram chat id>",
+    "userId": "<telegram user id>",
+    "repo": "pisa",
+    "intervalSec": 3600,
+    "prompt": "巡检发现异常，定位原因并修复。"
+  },
   "stateDir": ".pisa",
   "retentionDays": 30,
   "notifications": {

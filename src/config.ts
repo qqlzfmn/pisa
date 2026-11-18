@@ -112,6 +112,22 @@ export interface TriggersConfig {
   fileWatch?: FileWatchTriggerConfig;
 }
 
+/**
+ * 小时巡检：按 `pisa status` 的口径检查，异常才开单。
+ * 缺 chatId / userId 时不启动，`pisa status` 会把它报成待配置。
+ */
+export interface OpsConfig {
+  enabled: boolean;
+  chatId?: string;
+  userId?: string;
+  /** 修复任务的提示词开头；缺省用内置文案 */
+  prompt?: string;
+  /** 修复任务落到哪个仓库别名；缺省用第一个仓库 */
+  repo?: string;
+  /** 巡检间隔秒，默认 3600，小于 60 按 60 */
+  intervalSec?: number;
+}
+
 /** events 与 progress 的默认保留天数 */
 export const DEFAULT_RETENTION_DAYS = 30;
 
@@ -145,6 +161,8 @@ export interface Config {
   github?: GithubConfig;
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
   scheduler?: { chatId: string; userId: string };
+  /** 小时巡检；缺省不启用 */
+  ops?: OpsConfig;
   schedules?: ScheduleJob[];
   /** events 与 progress 的保留天数；≤ 0 关闭每日清理，默认 30 */
   retentionDays?: number;

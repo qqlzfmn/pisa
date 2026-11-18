@@ -133,7 +133,12 @@ export interface DaemonState {
   lastBeat: number | null;
 }
 
-export function daemonState(store: Store, now = Date.now()): DaemonState {
+/** 心跳源：Store 或只需 lastBeat 的只读视图（健康检查不依赖完整存储） */
+export interface HeartbeatSource {
+  lastBeat(): number | null;
+}
+
+export function daemonState(store: HeartbeatSource, now = Date.now()): DaemonState {
   const lastBeat = store.lastBeat();
   const ageMs = lastBeat === null ? null : Math.max(0, now - lastBeat);
   return { alive: ageMs !== null && ageMs <= HEARTBEAT_STALE_MS, ageMs, lastBeat };

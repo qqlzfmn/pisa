@@ -69,6 +69,7 @@ core 内部模块关系：
 | `reconcile.ts` | 资源对账：任务记录与分支/工作副本/PR 的差异（纯计划 + 执行） | `planReconcile`、`applyReconcile`、`formatReconcile` |
 | `stage.ts` / `status.ts` | 任务阶段规则表与对外投影：阶段、JSON 字段、看板文本 | `taskStage()`、`taskJson()`、`formatStatusBoard()` |
 | `metrics.ts` | 24h 指标聚合：成功率、耗时分位；看板、CLI 与 `/health` 共用 | `computeWindowMetrics()`、`windowMetrics()`、`percentile()` |
+| `health.ts` | 系统体检与小时巡检：退出码、配置缺项、部件错误记账、问题签名去重 | `checkOps()`、`configProblems()`、`ComponentHealth`、`OpsWatch` |
 | `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机 | `createWebApp()`、`startWebServer()`、`ReplyBus` |
 | `log.ts` / `config.ts` / `types.ts` | 日志脱敏、配置加载与默认值、共享类型与状态机表 | — |
 

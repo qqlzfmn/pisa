@@ -10,6 +10,7 @@ import { newTaskId } from "./ids";
 import { makeTrigger } from "./trigger";
 import { continuationContext } from "./task-context";
 import { readTail, tailLines } from "./log";
+import { checkOps, formatOpsProblems } from "./health";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
 import { windowMetrics } from "./metrics";
 import { stageText } from "./stage";
@@ -263,6 +264,10 @@ export function helpText(): string {
 退出码：
   0 成功    1 任务失败或命令被拒    2 用法/配置错误
   3 找不到任务    4 任务不可运行（暂停/取消/撤销）    5 等待超时
+
+status 的退出码（体检结论；问题列表随输出给出）：
+  0 正常    1 需重启（守护进程无心跳）    2 部件错误（GitHub 轮询、gc 等）
+  3 待配置（仓库路径、token、白名单等缺项）
 `;
 }
 
@@ -326,6 +331,7 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
 
       case "status": {
         const daemon = daemonState(store);
+        const ops = checkOps(cfg, store);
         if (args.flags.get("json")) {
           const snapshot = statusSnapshot(store);
           json(io, {
@@ -336,13 +342,15 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
             queued: snapshot.queued.map(taskJson),
             finished: snapshot.finished.map(taskJson),
             last24h: windowMetrics(store),
+            ops,
           });
-          return EXIT.ok;
+          return ops.exitCode;
         }
         io.out(formatStatusBoard(store));
         const beat = daemon.ageMs === null ? "无心跳记录" : `最后心跳 ${formatDuration(daemon.ageMs)} 前`;
         io.out(`守护进程：${daemon.alive ? "运行中" : "未运行"}（${beat}）`);
-        return EXIT.ok;
+        if (ops.problems.length > 0) io.out(formatOpsProblems(ops));
+        return ops.exitCode;
       }
 
       case "list": {
