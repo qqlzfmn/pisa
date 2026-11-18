@@ -13,6 +13,7 @@ import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
 import { windowMetrics } from "./metrics";
 import { stageText } from "./stage";
+import { formatAudit } from "./capabilities";
 
 /** 退出码：脚本据此分支，不要在版本间随意改语义 */
 const EXIT = {
@@ -238,6 +239,7 @@ function taskHuman(io: Io, task: Task, logPath: string): void {
     ["耗时", task.startedAt ? formatDuration((task.endedAt ?? Date.now()) - task.startedAt) : "-"],
     ["日志", logPath],
   ];
+  if (task.audit) rows.push(["能力", formatAudit(task.audit)]);
   if (task.summary) rows.push(["摘要", task.summary]);
   if (task.error) rows.push(["错误", task.error]);
   for (const [k, v] of rows) io.out(`${k}：${v}`);

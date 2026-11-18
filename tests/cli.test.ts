@@ -8,6 +8,7 @@ import { Store } from "../src/store";
 import type { WindowMetrics } from "../src/metrics";
 import { sh } from "../src/git";
 import { newTaskId } from "../src/ids";
+import { capabilityManifest, resolveCapabilities } from "../src/capabilities";
 import type { Task } from "../src/types";
 
 let root: string;
@@ -282,6 +283,26 @@ describe("查询与操作", () => {
     expect(body.queued[0]!.status).toBe("queued");
     expect(body.queued[0]!.stage).toBe("working/queued");
     expect(body.queued[0]!.stageLabel).toBe("等空闲槽位");
+  });
+
+  test("show 输出能力审计", async () => {
+    const task = seed({ status: "succeeded" });
+    const store = new Store(join(stateDir, "pisa.db"));
+    store.setAudit(task.id, {
+      capabilities: capabilityManifest({
+        repo: "demo",
+        workdir: repo,
+        envAllow: ["PATH"],
+        caps: resolveCapabilities(undefined, "demo"),
+      }),
+      violations: [{ tool: "bash", detail: "open .", reason: "未开启 GUI 能力：open" }],
+    });
+    store.close();
+
+    const human = await cli(...base("show", task.id));
+    expect(human.out).toContain("能力：");
+    expect(human.out).toContain("拦截 1 次");
+    expect(human.out).toContain("未开启 GUI 能力");
   });
 
   test("show 与 logs", async () => {

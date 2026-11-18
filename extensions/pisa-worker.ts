@@ -3,10 +3,21 @@
 // 由 Router 通过 `omp -e extensions/pisa-worker.ts` 挂载。
 
 import { appendFileSync } from "node:fs";
-import { blockBash, outsideWorkdir } from "./guard";
+import {
+  blockBash,
+  isGuiTool,
+  isWriteTool,
+  outsideAllowed,
+  parseCapabilities,
+  type GuardCapabilities,
+} from "./guard";
 
 const FILE = process.env.PISA_PROGRESS_FILE;
 const WORKDIR = process.env.PISA_WORKDIR ?? "";
+
+/** 清单缺失或损坏时按默认拒绝：无读目录、无写目录、无域名、无 GUI */
+const DEFAULT_CAPS: GuardCapabilities = { read: [], write: [], domains: [], gui: false, blocked: [] };
+const CAPS = parseCapabilities(process.env.PISA_CAPABILITIES) ?? DEFAULT_CAPS;
 
 /** 文件工具的路径参数名，四者同等对待 */
 const PATH_KEYS = ["path", "file_path", "filePath", "target"];
@@ -44,7 +55,7 @@ function bashDetail(cmd: string): string {
 }
 
 function denied(tool: string, detail: string, reason: string): Block {
-  emit({ type: "blocked", tool, detail: detail.slice(0, 200) });
+  emit({ type: "blocked", tool, detail: detail.slice(0, 200), reason: reason.slice(0, 300) });
   return { block: true, reason: `pisa guard：${reason}` };
 }
 
@@ -65,21 +76,24 @@ export default async function (pi: Pi) {
 
     if (name === "bash") {
       const cmd = String(input.command ?? "");
-      const reason = blockBash(cmd, WORKDIR);
+      const reason = blockBash(cmd, WORKDIR, CAPS);
       if (reason) return denied(name, bashDetail(cmd), reason);
       emit({ type: "tool", tool: "bash", detail: bashDetail(cmd) });
       return;
     }
 
-    for (const key of PATH_KEYS) {
-      const value = input[key];
-      if (typeof value !== "string") continue;
-      const reason = outsideWorkdir(value, WORKDIR);
+    const paths = PATH_KEYS.map((k) => input[k]).filter((v): v is string => typeof v === "string");
+    const detail = (paths[0] ?? "").slice(0, 160);
+
+    if (isGuiTool(name) && !CAPS.gui) return denied(name, detail, "未开启 GUI 能力");
+
+    const roots = isWriteTool(name) ? CAPS.write : CAPS.read;
+    for (const value of paths) {
+      const reason = outsideAllowed(value, WORKDIR, roots);
       if (reason) return denied(name, value, reason);
     }
 
-    const p = input.path ?? input.file_path ?? input.filePath ?? input.target;
-    emit({ type: "tool", tool: name, detail: typeof p === "string" ? p.slice(0, 160) : "" });
+    emit({ type: "tool", tool: name, detail });
   });
 
   pi.on("tool_result", (event) => {

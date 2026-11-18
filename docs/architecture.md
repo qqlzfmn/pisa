@@ -309,7 +309,7 @@ interface ChannelAdapter {
 
 ### 5.2 已知限制
 
-1. **无沙箱**。agent 进程以当前用户身份运行，能读写工作副本之外的文件；环境变量只继承 `worker.envAllow` 白名单里的键（默认 `PATH`、`HOME`、`LANG`、`LC_ALL`、`TERM`、`TMPDIR`、`SHELL`、`USER`），其余不进子进程。`extensions/pisa-worker.ts` 的拦截是按 bash 命令文本首段匹配的正则 denylist（`git push`、`git reset --hard`、带 `f` 的 `git clean`、`rm -rf /`（`/tmp` 除外）、`sudo`、改 `/etc` 的 `chmod/chown`），`/usr/bin/git push`、`git -c … push`、脚本包装、非 bash 工具写文件都不在覆盖范围。worktree 只隔离同一仓库的分支，不是文件系统隔离。
+1. **无沙箱**。agent 进程以当前用户身份运行，不是文件系统或内核隔离。限制来自能力清单与工具层判定：子进程环境只取 `worker.envAllow` 与 `capabilities.env` 的并集；`extensions/guard.ts` 检查每次工具调用——文件工具的目标路径必须落在 `capabilities.read` / `write` 声明的根目录内（缺省只有工作目录），`gui: false` 时拒绝 GUI 工具与 `open` / `osascript` 等命令，`curl` / `wget` 的目标域名必须在 `capabilities.domains` 内，bash 叠加内置 denylist（`git push`、`git reset --hard`、带 `f` 的 `git clean`、`rm -rf /`、`sudo`、改 `/etc` 的 `chmod/chown`）与 `capabilities.blocked`。命令解析覆盖 `/usr/bin/git push`、`git -c … push`、`bash -c` 等写法，但 agent 自己派生的进程、非 bash 工具的间接写入仍不受约束。worktree 只隔离同一仓库的分支。每轮清单与拦截记录在 `tasks.audit`，`pisa show` 可见。
 2. **单机**。SQLite、worktree、日志、agent 会话都在本机 `.pisa` 与 agent 自己的存储里。`supervise.sh` 在本机按 1→30s 退避重启，机器下线即系统下线；没有跨机器接管。
 3. **并发**。上限是 `worker.concurrency`（默认 2），以进程内活跃 Promise 计；多任务共享同一 `.git` 对象库，交付只 `git add -A` 自己的工作副本；同一分支不能有两个 worktree，续跑同一分支的第二个任务会直接失败；`merge` 要求主工作区停在 base 分支，并先 rebase 到最新主干（否则历史前进后快进必然失败）。
 4. **信号只到直接子进程**：超时与取消对 agent 进程 `SIGTERM`→`SIGKILL`，它派生的孙进程可能残留。

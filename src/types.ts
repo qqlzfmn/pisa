@@ -1,3 +1,5 @@
+import type { TaskAudit } from "./capabilities";
+
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
 /** 任务对外产生的副作用种类：rewind 的依据 */
@@ -87,6 +89,8 @@ export interface Task {
   startedAt: number | null;
   endedAt: number | null;
   cancelRequested: boolean;
+  /** 本轮能力清单与守卫拦截记录；由 Worker 结束时汇总 */
+  audit?: TaskAudit | null;
 }
 
 export interface WorkerResult {
@@ -94,6 +98,8 @@ export interface WorkerResult {
   summary: string;
   error?: string;
   exitCode: number;
+  /** 本轮能力清单与拦截；真实 Worker 总有，测试替身可省 */
+  audit?: TaskAudit;
 }
 
 /** 发送回执：拿到消息 id 才能把「回复」绑定回任务 */

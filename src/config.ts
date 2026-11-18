@@ -1,11 +1,28 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
+/** 任务运行能力声明：未声明的目录、密钥、域名、GUI 一律拒绝 */
+export interface CapabilityConfig {
+  /** 可读目录，相对任务工作目录解析；工作目录恒可读 */
+  read?: string[];
+  /** 可写目录，同上；工作目录恒可写 */
+  write?: string[];
+  /** 额外放行的环境变量名（密钥）；与 worker.envAllow 取并集 */
+  env?: string[];
+  /** 允许 curl/wget 访问的域名，精确或子域匹配；空表示禁止出网 */
+  domains?: string[];
+  /** 是否允许 GUI 工具与命令；缺省 false */
+  gui?: boolean;
+  /** 追加禁止的命令名（bash 首段精确匹配） */
+  blocked?: string[];
+}
+
 export interface RepoConfig {
   alias: string;
   path: string;
   remote?: string;
   baseBranch?: string;
+  capabilities?: CapabilityConfig;
 }
 
 /** 一条定时任务：cron 到点后用 prompt 开单 */
@@ -131,6 +148,8 @@ export interface Config {
   dmWithoutTrigger: boolean;
   whitelist: { users: string[]; repos: string[] };
   repos: RepoConfig[];
+  /** 所有仓库共享的能力基线；repos[].capabilities 在其上追加、覆盖 gui */
+  capabilities?: CapabilityConfig;
   worker: {
     adapter: string;
     command: string;

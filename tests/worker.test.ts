@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, DEFAULT_ENV_ALLOW, loadConfig } from "../src/config";
+import { capabilitySource } from "../src/capabilities";
 import { Worker, workerEnv } from "../src/worker";
 import type { Task } from "../src/types";
 
@@ -75,6 +76,23 @@ describe("workerEnv", () => {
   });
 });
 
+/** 用包装脚本代替 omp：打印快照，并按需追加一条 guard 拦截事件 */
+function fakeAgent(dir: string, marker = ""): string {
+  const path = join(dir, "agent.sh");
+  writeFileSync(path, `#!/bin/sh\n${marker}\nexec env\n`);
+  chmodSync(path, 0o755);
+  return path;
+}
+
+function withSecret(name: string, value: string, fn: () => Promise<void>): Promise<void> {
+  const saved = process.env[name];
+  process.env[name] = value;
+  return fn().finally(() => {
+    if (saved === undefined) delete process.env[name];
+    else process.env[name] = saved;
+  });
+}
+
 describe("Worker.run", () => {
   test("子进程拿不到未放行的凭据，但保留白名单变量与适配器注入的 PISA_*", async () => {
     const dir = tempDir();
@@ -106,11 +124,68 @@ describe("Worker.run", () => {
       expect(out).toMatch(/^HOME=/m);
       expect(out).toMatch(/^PISA_WORKDIR=/m);
       expect(out).toMatch(/^PISA_PROGRESS_FILE=/m);
+      expect(out).toMatch(/^PISA_CAPABILITIES=.*"gui":false/m);
     } finally {
       if (saved.token === undefined) delete process.env.PISA_TELEGRAM_TOKEN;
       else process.env.PISA_TELEGRAM_TOKEN = saved.token;
       if (saved.gh === undefined) delete process.env.GH_TOKEN;
       else process.env.GH_TOKEN = saved.gh;
     }
+  });
+
+  test("默认能力清单不含密钥，审计随结果返回", async () => {
+    const dir = tempDir();
+    const lines: string[] = [];
+    const worker = new Worker(
+      { adapter: "omp", command: fakeAgent(dir), timeoutSec: 30, extraArgs: [], concurrency: 1 },
+      join(dir, "state"),
+    );
+    await withSecret("GH_TOKEN", "SECRET", async () => {
+      const result = await worker.run(task, dir, (line) => lines.push(line), () => false);
+      const out = lines.join("\n");
+      expect(out).not.toMatch(/^GH_TOKEN=/m);
+      expect(out).toMatch(/"env":\["PATH"/);
+      expect(out).not.toContain('"GH_TOKEN"');
+      expect(result.audit?.capabilities.repo).toBe("demo");
+      expect(result.audit?.capabilities.gui).toBe(false);
+      expect(result.audit?.violations).toEqual([]);
+    });
+  });
+
+  test("仓库声明的密钥进入子进程，并写进清单", async () => {
+    const dir = tempDir();
+    const lines: string[] = [];
+    const capSource = capabilitySource({
+      repos: [{ alias: "demo", path: dir, capabilities: { env: ["GH_TOKEN"], domains: ["api.github.com"] } }],
+    });
+    const worker = new Worker(
+      { adapter: "omp", command: fakeAgent(dir), timeoutSec: 30, extraArgs: [], concurrency: 1 },
+      join(dir, "state"),
+      capSource,
+    );
+    await withSecret("GH_TOKEN", "SECRET", async () => {
+      const result = await worker.run(task, dir, (line) => lines.push(line), () => false);
+      const out = lines.join("\n");
+      expect(out).toMatch(/^GH_TOKEN=SECRET$/m);
+      expect(result.audit?.capabilities.env).toContain("GH_TOKEN");
+      expect(result.audit?.capabilities.domains).toEqual(["api.github.com"]);
+    });
+  });
+
+  test("守卫拦截进入审计", async () => {
+    const dir = tempDir();
+    const event = JSON.stringify({ type: "blocked", tool: "bash", detail: "git push", reason: "禁止 git push" });
+    const worker = new Worker(
+      {
+        adapter: "omp",
+        command: fakeAgent(dir, `printf '%s\\n' '${event}' >> "$PISA_PROGRESS_FILE"`),
+        timeoutSec: 30,
+        extraArgs: [],
+        concurrency: 1,
+      },
+      join(dir, "state"),
+    );
+    const result = await worker.run(task, dir, () => {}, () => false);
+    expect(result.audit?.violations).toEqual([{ tool: "bash", detail: "git push", reason: "禁止 git push" }]);
   });
 });

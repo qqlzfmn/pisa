@@ -18,6 +18,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 - [GitHub 评论（PR / Issue）](#github-评论pr--issue)
 - [自举](#自举)
 - [常驻（launchd）](#常驻launchd)
+- [Worker 能力清单](#worker-能力清单)
 - [完整配置项](#完整配置项)
 
 ## 安装与配置
@@ -406,8 +407,46 @@ rm ~/Library/LaunchAgents/ai.pisa.supervisor.plist
 
 token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.pisa/telegram_token` 与 `~/.pisa/webhook_token`。
 
+## Worker 能力清单
+
+任务启动前按仓库把能力声明解析成清单，经 `PISA_CAPABILITIES` 交给 `extensions/guard.ts`；未声明的一律拒绝。
+
+| 字段 | 含义 | 缺省 |
+| --- | --- | --- |
+| `read` | 文件工具可读的目录，相对任务工作目录 | 只有工作目录 |
+| `write` | 文件工具可写的目录 | 只有工作目录 |
+| `env` | 额外放行的环境变量名（密钥），与 `worker.envAllow` 取并集 | 无 |
+| `domains` | `curl` / `wget` 允许访问的域名，精确或子域匹配 | 空，禁止出网 |
+| `gui` | 是否允许 GUI 工具与 `open`、`osascript` 等命令 | `false` |
+| `blocked` | 追加禁止的命令名（bash 首段精确匹配） | 只有内置规则 |
+
+声明写在 `capabilities`（全局基线）与 `repos[].capabilities`（按仓库）；数组取并集，`gui` 由仓库覆盖全局：
+
+```json
+{
+  "capabilities": { "domains": ["api.github.com"], "blocked": ["docker"] },
+  "repos": [
+    {
+      "alias": "pisa",
+      "path": "/srv/pisa",
+      "capabilities": { "env": ["GH_TOKEN"], "write": ["node_modules"], "gui": true }
+    }
+  ]
+}
+```
+
+bash 侧只能按命令文本判断：`blocked`、GUI 命令与出网域名受清单约束，工作目录边界与内置 denylist 与之前一致；这不是文件系统隔离。
+
+启动时每个仓库打印一行：
+
+```
+[pisa] 能力清单 · pisa · env=PATH,HOME,… · read=. · write=.,node_modules · domains=api.github.com · gui=off · blocked=git push, …
+```
+
+任务结束后清单与守卫拦截写入任务的 `audit`（最多 100 条违规），`pisa show <任务号>` 多出「能力」一行。
+
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `capabilities`、`worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
 
 解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。

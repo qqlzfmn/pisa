@@ -9,6 +9,7 @@ import { parseCommand, taskGuard, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh, changedFiles, createWorktree } from "../src/git";
+import { capabilityManifest, resolveCapabilities } from "../src/capabilities";
 
 class FakeChannel implements ChannelAdapter {
   name = "fake";
@@ -359,6 +360,36 @@ describe("Router", () => {
     expect(existsSync(join(stateDir, "worktrees", task.id))).toBe(false);
     // 回执
     expect(channel.sent.some((s) => s.text.includes("完成"))).toBe(true);
+  });
+
+  test("Worker 返回的审计写入任务记录", async () => {
+    const auditWorker: WorkerRunner = {
+      async run(_task, workdir): Promise<WorkerResult> {
+        writeFileSync(join(workdir, "a.txt"), "x\n");
+        return {
+          ok: true,
+          summary: "改了 a.txt",
+          exitCode: 0,
+          audit: {
+            capabilities: capabilityManifest({
+              repo: "demo",
+              workdir,
+              envAllow: ["PATH"],
+              caps: resolveCapabilities(undefined, "demo"),
+            }),
+            violations: [{ tool: "bash", detail: "open .", reason: "未开启 GUI 能力：open" }],
+          },
+        };
+      },
+    };
+    const router = build(auditWorker);
+    await router.handle(msg("/pisa 新增 a.txt"));
+    await router.drainOnce();
+
+    const task = store.recentTasks()[0]!;
+    expect(task.status).toBe("succeeded");
+    expect(task.audit?.capabilities.repo).toBe("demo");
+    expect(task.audit?.violations[0]?.reason).toBe("未开启 GUI 能力：open");
   });
 
   test("续跑任务失败不删除共享分支", async () => {

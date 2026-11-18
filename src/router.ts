@@ -1176,6 +1176,7 @@ export class Router {
     } catch (err) {
       result = { ok: false, summary: "", error: (err as Error).message, exitCode: -1 };
     }
+    if (result.audit) store.setAudit(task.id, result.audit);
 
     // 关停中：不写终态、不清理临时目录，任务留在 running 等下次启动分流
     if (this.stopping) {
@@ -1268,6 +1269,7 @@ export class Router {
     } finally {
       stopWatch();
     }
+    if (result.audit) store.setAudit(task.id, result.audit);
 
     // 关停中：不写终态、不删工作副本与分支，任务留在 running 等下次启动分流为 paused
     if (this.stopping) {

@@ -3,6 +3,7 @@ import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, DEFAULT_WEB, githubRepos, loadConfig, 
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker, workerEnv } from "./worker";
+import { capabilitySource, formatCapability, resolveCapabilities } from "./capabilities";
 import { GitDeliverer } from "./deliver";
 import { Proactive } from "./proactive";
 import { GithubWatcher } from "./github-watcher";
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
   const web: WebConfig = { ...(cfg.web ?? DEFAULT_WEB), enabled: cfg.web?.enabled === true || process.argv.includes("--web") };
 
   const store = new Store(join(cfg.stateDir, "pisa.db"));
+  const capabilitySources = capabilitySource(cfg);
 
   let channel: ChannelAdapter;
   if (wantCli) {
@@ -64,7 +66,7 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, capabilitySources),
       deliverer: new GitDeliverer(cfg),
       channel: bus,
     });
@@ -76,7 +78,7 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, capabilitySources),
       deliverer: new GitDeliverer(cfg),
       channel,
     });
@@ -131,6 +133,10 @@ async function main(): Promise<void> {
   }
   const allowedEnv = Object.keys(workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env));
   console.log(`[pisa] Worker 环境白名单 · ${allowedEnv.join(",") || "(空)"}`);
+  for (const repo of cfg.repos) {
+    const caps = resolveCapabilities(capabilitySources, repo.alias);
+    console.log(`[pisa] 能力清单 · ${repo.alias} · ${formatCapability(caps, cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW)}`);
+  }
 
   // 通用触发适配层：GitHub Actions、飞书、企业微信、文件监听，全部归一成同一条消息流
   let triggers: TriggersRuntime | null = null;

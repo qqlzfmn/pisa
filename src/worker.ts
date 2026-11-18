@@ -1,6 +1,14 @@
 import { join, resolve } from "node:path";
 import { mkdirSync, statSync } from "node:fs";
 import { DEFAULT_ENV_ALLOW, type Config } from "./config";
+import {
+  MAX_VIOLATIONS,
+  capabilityManifest,
+  readViolations,
+  resolveCapabilities,
+  type CapabilitySource,
+  type TaskAudit,
+} from "./capabilities";
 import type { Task, WorkerResult } from "./types";
 import { redact } from "./log";
 import { getAdapter, type WorkerAdapter } from "./adapters";
@@ -38,6 +46,8 @@ export class Worker implements WorkerRunner {
   constructor(
     private cfg: Config["worker"],
     private stateDir = ".pisa",
+    /** 能力声明来源；缺省时全部走默认拒绝 */
+    private caps?: CapabilitySource,
   ) {
     this.adapter = getAdapter(cfg.adapter ?? "omp");
   }
@@ -53,12 +63,19 @@ export class Worker implements WorkerRunner {
     const progressDir = resolve(this.stateDir, "progress");
     mkdirSync(progressDir, { recursive: true });
 
+    const capabilities = capabilityManifest({
+      repo: task.repo,
+      workdir,
+      envAllow: this.cfg.envAllow ?? DEFAULT_ENV_ALLOW,
+      caps: resolveCapabilities(this.caps, task.repo),
+    });
     const input = {
       task,
       workdir,
       extensionPath,
       progressFile: join(progressDir, `${task.id}.jsonl`),
       cfg: this.cfg,
+      capabilities,
       resume,
       resumeSessionId: resume ? task.sessionId : null,
     };
@@ -68,7 +85,7 @@ export class Worker implements WorkerRunner {
       stderr: "pipe",
       // 只继承白名单里的变量；适配器注入的 PISA_* 始终放行
       env: {
-        ...workerEnv(this.cfg.envAllow ?? DEFAULT_ENV_ALLOW, process.env),
+        ...workerEnv(capabilities.env, process.env),
         ...this.adapter.buildEnv(input),
       },
     });
@@ -149,18 +166,22 @@ export class Worker implements WorkerRunner {
     clearInterval(idleTimer);
     clearInterval(cancelPoll);
 
-    if (cancelled) return { ok: false, summary: "", error: "任务已取消", exitCode };
+    const audit: TaskAudit = {
+      capabilities,
+      violations: readViolations(input.progressFile).slice(0, MAX_VIOLATIONS),
+    };
+    if (cancelled) return { ok: false, summary: "", error: "任务已取消", exitCode, audit };
     if (idleTimedOut) {
-      return { ok: false, summary: "", error: `卡死：超过 ${Math.round(idleMs / 1000)} 秒没有任何输出或进度`, exitCode };
+      return { ok: false, summary: "", error: `卡死：超过 ${Math.round(idleMs / 1000)} 秒没有任何输出或进度`, exitCode, audit };
     }
-    if (timedOut) return { ok: false, summary: "", error: `执行超时（${this.cfg.timeoutSec}s）`, exitCode };
+    if (timedOut) return { ok: false, summary: "", error: `执行超时（${this.cfg.timeoutSec}s）`, exitCode, audit };
 
     const summary = redact((texts.join("\n\n") || rawTail.slice(-40).join("\n")).trim()).slice(0, 4000);
     if (exitCode !== 0) {
       const err = rawTail.slice(-20).join("\n") || `Worker 退出码 ${exitCode}`;
-      return { ok: false, summary, error: redact(err).slice(0, 2000), exitCode };
+      return { ok: false, summary, error: redact(err).slice(0, 2000), exitCode, audit };
     }
-    return { ok: true, summary: summary || "（Worker 未返回文字摘要）", exitCode };
+    return { ok: true, summary: summary || "（Worker 未返回文字摘要）", exitCode, audit };
   }
 }
 

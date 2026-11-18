@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
+import type { TaskAudit } from "./capabilities";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
@@ -33,7 +34,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at       INTEGER NOT NULL,
   started_at       INTEGER,
   ended_at         INTEGER,
-  cancel_requested INTEGER NOT NULL DEFAULT 0
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  audit            TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 
@@ -169,6 +171,7 @@ interface Row {
   started_at: number | null;
   ended_at: number | null;
   cancel_requested: number;
+  audit: string | null;
 }
 
 /** 一次触发落库的结果 */
@@ -209,6 +212,16 @@ function toTrigger(r: TriggerRow): TriggerRecord {
   };
 }
 
+/** 审计是展示用快照：损坏时当作没有，不影响任务本身 */
+function parseAudit(raw: string | null): TaskAudit | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as TaskAudit;
+  } catch {
+    return null;
+  }
+}
+
 function toTask(r: Row): Task {
   return {
     id: r.id,
@@ -234,6 +247,7 @@ function toTask(r: Row): Task {
     startedAt: r.started_at,
     endedAt: r.ended_at,
     cancelRequested: r.cancel_requested === 1,
+    audit: parseAudit(r.audit),
   };
 }
 
@@ -272,6 +286,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "mode")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'work'");
+    }
+    if (!cols.some((c) => c.name === "audit")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN audit TEXT");
     }
     this.backfillTriggers();
   }
@@ -667,6 +684,11 @@ export class Store {
     vals.push(id, cur.status);
     const res = this.db.run(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ? AND status = ?`, vals);
     return res.changes > 0;
+  }
+
+  /** 记录本轮能力清单与拦截记录；重跑覆盖上一轮 */
+  setAudit(id: string, audit: TaskAudit): void {
+    this.db.run("UPDATE tasks SET audit = ? WHERE id = ?", [JSON.stringify(audit), id]);
   }
 
   requestCancel(id: string): boolean {

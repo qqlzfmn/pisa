@@ -79,6 +79,7 @@ export class OmpAdapter implements WorkerAdapter {
     return {
       PISA_WORKDIR: input.workdir,
       PISA_PROGRESS_FILE: input.progressFile,
+      ...(input.capabilities ? { PISA_CAPABILITIES: JSON.stringify(input.capabilities) } : {}),
     };
   }
 
