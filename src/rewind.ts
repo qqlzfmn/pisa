@@ -53,6 +53,10 @@ const MERGE_LABEL: Record<MergeState, string> = {
   unknown: "无法确认（gh 查询失败，为避免误删已合并分支，跳过撤销）",
 };
 
+export function mergeStateLabel(state: MergeState): string {
+  return MERGE_LABEL[state];
+}
+
 interface MergeMeta {
   base?: string;
   from?: string;

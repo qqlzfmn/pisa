@@ -162,6 +162,8 @@ export interface Config {
     };
   };
   stateDir: string;
+  /** 实际加载的配置文件绝对路径；由 loadConfig 填充，不写进 JSON */
+  configPath?: string;
 }
 
 /**
@@ -233,6 +235,7 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
   if (!isAbsolute(cfg.stateDir)) cfg.stateDir = resolve(baseDir, cfg.stateDir);
   cfg = {
     ...cfg,
+    configPath: abs,
     repos: cfg.repos.map((r) => ({
       ...r,
       path: typeof r.path === "string" && !isAbsolute(r.path) ? resolve(baseDir, r.path) : r.path,

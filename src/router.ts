@@ -20,7 +20,7 @@ import {
   prStatus,
   type Runner,
 } from "./github";
-import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindPlan, type RewindProbes } from "./rewind";
 import {
   applyReconcile,
   formatReconcile,
@@ -37,6 +37,11 @@ import { continuationContext } from "./task-context";
 import { formatStatusBoard } from "./status";
 
 export { formatDuration } from "./status";
+
+/** 撤销预览的统一结果：Web 与 IM 走同一套校验，页面据此决定按钮是否可用 */
+export type RewindLookup =
+  | { ok: true; plan: RewindPlan }
+  | { ok: false; code: "not-found" | "conflict"; message: string };
 
 export interface RouterDeps {
   cfg: Config;
@@ -844,6 +849,32 @@ export class Router {
     }
   }
 
+  /**
+   * 预览撤销：Web 与 IM 共用同一套校验与探测，避免两条入口给出不同计划。
+   * 只读任务、副作用账本与 gh/git 探测，不改状态。
+   */
+  previewRewind(id: string): RewindLookup {
+    const { cfg, store } = this.deps;
+    const task = store.get(id);
+    if (!task) return { ok: false, code: "not-found", message: `找不到任务 ${id}` };
+    if (task.status === "rewound") return { ok: false, code: "conflict", message: `任务 ${id} 已撤销。` };
+    if (task.status === "queued" || task.status === "running" || task.status === "paused") {
+      return {
+        ok: false,
+        code: "conflict",
+        message: `任务 ${id} 还没结束（${task.status}），先 ${cfg.trigger} cancel ${id}。`,
+      };
+    }
+    const repo = repoByAlias(cfg, task.repo);
+    if (!repo) return { ok: false, code: "conflict", message: `仓库未配置：${task.repo}` };
+    const plan = planRewind(task, store.effectsOf(id), {
+      repoPath: repo.path,
+      baseBranch: repo.baseBranch ?? "main",
+      probes: this.rewindProbes(this.deps.ghRunner ?? defaultRunner),
+    });
+    return { ok: true, plan };
+  }
+
   /** 探测点：预览与执行都只读这些状态 */
   private rewindProbes(runner: Runner): RewindProbes {
     return {
@@ -876,30 +907,18 @@ export class Router {
       await this.reply(msg.chatId, "只有原请求者可以撤销。");
       return;
     }
-    if (task.status === "rewound") {
-      await this.reply(msg.chatId, `任务 ${id} 已撤销。`);
+    const preview = this.previewRewind(id);
+    if (!preview.ok) {
+      await this.reply(msg.chatId, preview.message);
       return;
     }
-    if (task.status === "queued" || task.status === "running" || task.status === "paused") {
-      await this.reply(msg.chatId, `任务 ${id} 还没结束（${task.status}），先 ${cfg.trigger} cancel ${id}。`);
-      return;
-    }
-    const repo = repoByAlias(cfg, task.repo);
-    if (!repo) {
-      await this.reply(msg.chatId, `仓库未配置：${task.repo}`);
-      return;
-    }
-
-    const runner = this.deps.ghRunner ?? defaultRunner;
-    const plan = planRewind(task, store.effectsOf(id), {
-      repoPath: repo.path,
-      baseBranch: repo.baseBranch ?? "main",
-      probes: this.rewindProbes(runner),
-    });
+    const plan = preview.plan;
     if (!yes) {
       await this.reply(msg.chatId, formatRewindPlan(plan, cfg.trigger));
       return;
     }
+
+    const runner = this.deps.ghRunner ?? defaultRunner;
 
     if (plan.actions.length === 0) {
       if (plan.merge !== "unknown") store.transition(id, "rewound");

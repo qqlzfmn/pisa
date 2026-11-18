@@ -56,3 +56,73 @@ export function computeWindowMetrics(tasks: readonly Task[]): WindowMetrics {
 export function windowMetrics(store: Store, now = Date.now()): WindowMetrics {
   return computeWindowMetrics(store.finishedBetween(now - METRICS_WINDOW_MS, now));
 }
+
+export const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** 图表的一个时间桶：窗口指标 + 桶起点与本地日期标签 */
+export interface StatsBucket extends WindowMetrics {
+  start: number;
+  label: string;
+}
+
+export interface QueuePoint {
+  at: number;
+  depth: number;
+}
+
+/** 控制台趋势图的数据：按桶聚合的完成/成功/耗时，加上按步长采样的队列深度 */
+export interface StatsSeries {
+  from: number;
+  to: number;
+  bucketMs: number;
+  queueStepMs: number;
+  buckets: StatsBucket[];
+  queue: QueuePoint[];
+}
+
+function dayLabel(ms: number): string {
+  const date = new Date(ms);
+  return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+/** 某时刻还没开始也没结束的任务 = 排队中；paused/running 已开始，不算队列 */
+function queueDepthAt(tasks: readonly Task[], at: number): number {
+  let depth = 0;
+  for (const task of tasks) {
+    if (task.createdAt > at) break;
+    if ((task.startedAt === null || task.startedAt > at) && (task.endedAt === null || task.endedAt > at)) depth++;
+  }
+  return depth;
+}
+
+/**
+ * 生成趋势序列。任务需覆盖整个窗口（见 Store.tasksInWindow）：
+ * 窗口前创建、窗口内仍在排队的任务不能漏，否则队列深度从 0 开始。
+ */
+export function buildStatsSeries(
+  tasks: readonly Task[],
+  from: number,
+  to: number,
+  bucketMs: number,
+  queueStepMs: number,
+): StatsSeries {
+  const span = Math.max(0, to - from);
+  const width = Math.max(1, bucketMs);
+  const step = Math.max(1, queueStepMs);
+  const sorted = [...tasks].sort((a, b) => a.createdAt - b.createdAt);
+  const count = Math.max(1, Math.ceil(span / width));
+
+  const buckets: StatsBucket[] = [];
+  for (let index = 0; index < count; index++) {
+    const start = from + index * width;
+    const end = index === count - 1 ? to + 1 : start + width;
+    const closed = sorted.filter((t) => t.endedAt !== null && t.endedAt >= start && t.endedAt < end);
+    buckets.push({ start, label: dayLabel(start), ...computeWindowMetrics(closed) });
+  }
+
+  const queue: QueuePoint[] = [];
+  for (let at = from; at <= to; at += step) queue.push({ at, depth: queueDepthAt(sorted, at) });
+  if (queue.length === 0 || queue[queue.length - 1]!.at !== to) queue.push({ at: to, depth: queueDepthAt(sorted, to) });
+
+  return { from, to, bucketMs: width, queueStepMs: step, buckets, queue };
+}

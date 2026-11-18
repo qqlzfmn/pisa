@@ -185,9 +185,29 @@ PISA_WEB_TOKEN=<自定义 token> bun run web
 - 用带 token 的 `/ui` 打开后下发 `HttpOnly` cookie，页面随即把地址栏里的 token 抹掉
 - 看板三段：运行中 / 排队 / 最近完成（最多 20 条），可按仓库筛选，5 秒自动刷新
 - 任务详情：prompt、状态、耗时、分支、PR、副作用与最后 200 行日志
-- 支持派活、取消、合并（浏览器二次确认）与复制任务号
+- 支持派活、取消、合并、撤销（浏览器二次确认）与复制任务号
+- 撤销先预览：合并状态、将删的分支/引用/PR/记录、不可撤销项；确认后才执行，等价于聊天里的 `rewind <id> --yes`
+- 配置区可编辑 `repos`、`worker`、`schedules`：保存前一次列出全部校验错误；保存后提示「重启守护进程后生效」。只覆盖这三块，`delivery`、`notifications` 等未暴露的键原样保留
+- 图表区选 7/14/30 天，看每日完成量、成功率、P50/P95 耗时与排队深度
+- 审计区展示最近写操作（时间、操作者、动作、目标、结果），数据追加在 `.pisa/audit.log`
 - 没配 `${web.tokenEnv}` 时启动生成一次性 token，只打印到日志，不落盘
 - 写操作走同一个 `Router`：白名单、状态机、合并前的验证与快进逻辑与 IM 完全一致
+
+所有写接口都要求 JSON 体带 `confirm: true`，缺失返回 400；接口一览：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/tasks` | 看板数据，`?repo=` 过滤列表 |
+| GET | `/api/tasks/<id>` | 任务详情与日志尾部 |
+| POST | `/api/tasks` | 派活，体 `{prompt, repo?, confirm:true}` |
+| POST | `/api/tasks/<id>/cancel` | 取消，体 `{confirm:true}` |
+| POST | `/api/tasks/<id>/merge` | 合并，体 `{confirm:true}` |
+| GET | `/api/tasks/<id>/rewind` | 撤销计划（只读） |
+| POST | `/api/tasks/<id>/rewind` | 执行撤销，体 `{confirm:true}` |
+| GET | `/api/config` | 可编辑配置、文件路径、可用 adapter |
+| POST | `/api/config` | 保存，体 `{config, confirm:true}` |
+| GET | `/api/stats?days=N` | N 取 1–30，缺省 7 |
+| GET | `/api/audit?limit=N` | 最近写操作，N 取 1–200 |
 
 ### 健康采集
 

@@ -5,6 +5,10 @@ const REGISTRY: Record<string, () => WorkerAdapter> = {
   omp: () => new OmpAdapter(),
 };
 
+export function adapterNames(): string[] {
+  return Object.keys(REGISTRY);
+}
+
 export function getAdapter(name = "omp"): WorkerAdapter {
   const make = REGISTRY[name];
   if (!make) throw new Error(`未知的 Worker 适配器：${name}（可用：${Object.keys(REGISTRY).join(", ")}）`);

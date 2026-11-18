@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Store } from "../src/store";
 import type { Task, TaskStatus } from "../src/types";
-import { computeWindowMetrics, METRICS_WINDOW_MS, percentile, windowMetrics } from "../src/metrics";
+import { buildStatsSeries, computeWindowMetrics, DAY_MS, METRICS_WINDOW_MS, percentile, windowMetrics } from "../src/metrics";
 
 function task(id: string, status: TaskStatus, startedAt: number | null, endedAt: number | null): Task {
   return {
@@ -105,6 +105,47 @@ describe("metrics 聚合", () => {
       percentile(input, 50);
       expect(input).toEqual([3, 1, 2]);
     });
+  });
+});
+
+describe("metrics 趋势序列", () => {
+  test("按桶统计完成与耗时，末桶包含右端点", () => {
+    const from = 0;
+    const to = 2 * DAY_MS;
+    const series = buildStatsSeries(
+      [
+        task("early", "succeeded", 0, DAY_MS - 1),
+        task("edge", "failed", DAY_MS + 10, to),
+      ],
+      from,
+      to,
+      DAY_MS,
+      60 * 60 * 1000,
+    );
+    expect(series.buckets).toHaveLength(2);
+    expect(series.buckets[0]!.finished).toBe(1);
+    expect(series.buckets[0]!.successRate).toBe(1);
+    expect(series.buckets[0]!.p50Ms).toBe(DAY_MS - 1);
+    expect(series.buckets[1]!.finished).toBe(1);
+    expect(series.buckets[1]!.successRate).toBe(0);
+    expect(series.buckets[1]!.p50Ms).toBe(to - DAY_MS - 10);
+  });
+
+  test("队列深度按创建、开始、结束时间采样", () => {
+    const hour = 60 * 60 * 1000;
+    const series = buildStatsSeries(
+      [
+        task("waiting", "queued", null, null),
+        task("started", "running", hour, null),
+        { ...task("late", "queued", null, null), createdAt: 2 * hour },
+      ],
+      0,
+      3 * hour,
+      24 * hour,
+      hour,
+    );
+    expect(series.queue.map((point) => point.at)).toEqual([0, hour, 2 * hour, 3 * hour]);
+    expect(series.queue.map((point) => point.depth)).toEqual([1, 1, 2, 2]);
   });
 });
 

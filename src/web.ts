@@ -1,21 +1,26 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Server } from "bun";
 import { DEFAULT_WEB, type Config, type WebConfig } from "./config";
 import type { Store } from "./store";
 import type { ChannelAdapter, DeliveryReceipt, IncomingMessage, Task } from "./types";
 import { daemonState, taskJson, type TaskJson } from "./status";
-import { computeWindowMetrics, METRICS_WINDOW_MS } from "./metrics";
+import { buildStatsSeries, computeWindowMetrics, DAY_MS, METRICS_WINDOW_MS } from "./metrics";
 import { readTail, tailLines } from "./log";
 import { WEB_UI } from "./web-ui";
 import { HttpError, readJson, safeEqual } from "./http";
+import { adapterNames } from "./adapters";
+import { AuditLog } from "./audit";
+import { editableConfig, saveEditableConfig, validateEditable } from "./config-edit";
+import { mergeStateLabel, type RewindPlan } from "./rewind";
+import type { RewindLookup } from "./router";
 
 /** cookie 名；页面用 `?token=` 打开后由服务端下发，之后每次请求自动带上 */
 export const WEB_COOKIE = "pisa_web";
 /** 详情面板展示的日志行数 */
 const LOG_TAIL_LINES = 200;
-const TASK_ROUTE = /^\/api\/tasks\/([\w-]+)(?:\/(cancel|merge))?$/;
+const TASK_ROUTE = /^\/api\/tasks\/([\w-]+)(?:\/(cancel|merge|rewind))?$/;
 
 /**
  * Router 的回执总线：本机 Web 的 chatId 由它收集，其它 chatId 原样转发给真实通道。
@@ -61,11 +66,15 @@ export interface WebDeps {
   now?: () => number;
   /** 进程启动时间（毫秒）；缺省取创建 Web 应用的时刻，作为 /health 的 uptime 起点 */
   startedAt?: number;
+  /** 审计日志；缺省写到 stateDir/audit.log */
+  audit?: AuditLog;
 }
 
-/** Web 只依赖 Router 的一个能力；Router 结构化满足它 */
+/** Web 只依赖 Router 的能力；Router 结构化满足它 */
 export interface WebRouter {
   handle(msg: IncomingMessage): Promise<void>;
+  /** 撤销预览：与 IM 的 rewind 共用校验与探测 */
+  previewRewind(id: string): RewindLookup;
 }
 
 function json(value: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -115,17 +124,19 @@ function tailLog(cfg: Config, id: string): string[] {
 function webMessage(
   cfg: Config,
   web: WebConfig,
-  kind: "task" | "cancel" | "merge",
+  kind: "task" | "cancel" | "merge" | "rewind",
   body: string,
   repo?: string,
 ): IncomingMessage & { threadKey: string } {
   const eventId = `web:${randomUUID()}`;
+  // 页面已展示预览并二次确认；rewind 的 --yes 代表用户看过计划后才提交
+  const args = kind === "task" ? body : kind === "rewind" ? `${kind} ${body} --yes` : `${kind} ${body}`;
   return {
     eventId,
     channel: "web",
     chatId: web.chatId,
     userId: web.userId,
-    text: `${cfg.trigger} ${kind === "task" ? body : `${kind} ${body}`}`,
+    text: `${cfg.trigger} ${args}`,
     repo,
     isDirect: true,
     admin: true,
@@ -154,6 +165,34 @@ function boardTask(task: Task, now: number): BoardTask {
   return { ...taskJson(task, now), statusLabel: STATUS_LABEL[task.status] ?? task.status };
 }
 
+/** 写操作的统一二次确认：页面必须显式带 confirm: true */
+async function confirmedBody(req: Request): Promise<Record<string, unknown>> {
+  const body = await readJson(req);
+  if (body.confirm !== true) throw new HttpError(400, "写操作需要二次确认（confirm: true）");
+  return body;
+}
+
+/** rewind 预览的页面投影：动作只给种类与说明，执行仍由 Router 负责 */
+function rewindJson(plan: RewindPlan): Record<string, unknown> {
+  return {
+    taskId: plan.task.id,
+    status: plan.task.status,
+    merge: plan.merge,
+    mergeLabel: mergeStateLabel(plan.merge),
+    actions: plan.actions.map((action) => ({ kind: action.kind, label: action.label })),
+    irreversible: plan.irreversible,
+    notes: plan.notes,
+    executable: plan.actions.length > 0 || plan.merge !== "unknown",
+  };
+}
+
+/** 趋势图从本地当天 0 点往前数，避免 UTC 偏移把桶切在半天 */
+function localDayStart(ms: number): number {
+  const date = new Date(ms);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
 /**
  * 本机 Web 控制台：所有写操作都转交给 Router，Web 只做 HTTP 外壳与鉴权。
  * 返回纯函数，测试用 `new Request(...)` 直接喂，不需要真实端口。
@@ -163,6 +202,12 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
   const web: WebConfig = cfg.web ?? { ...DEFAULT_WEB, enabled: true, userId: "web" };
   const now = deps.now ?? Date.now;
   const startedAt = deps.startedAt ?? now();
+  const audit = deps.audit ?? new AuditLog(join(cfg.stateDir, "audit.log"));
+  const configPath = cfg.configPath ?? resolve("pisa.config.json");
+  /** 写操作统一留痕：actor 取控制台身份，不是终端用户 */
+  const recordAudit = (action: string, target: string, ok: boolean, detail: string): void => {
+    audit.record({ at: now(), actor: web.userId, action, target, ok, detail });
+  };
   // 写操作串行：回执总线按 chatId 收集，并发派活会互相偷走回复；合并也需要独占仓库
   let lock: Promise<unknown> = Promise.resolve();
   const serialize = <T,>(fn: () => Promise<T>): Promise<T> => {
@@ -253,6 +298,63 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
       return new Response(null, { status: 302, headers: { location: `/ui${credential.fromQuery ? `?token=${encodeURIComponent(credential.token)}` : ""}` } });
     }
 
+    if (url.pathname === "/api/stats") {
+      if (req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
+      const rawDays = Number(url.searchParams.get("days") ?? "7");
+      const days = Number.isFinite(rawDays) ? Math.min(30, Math.max(1, Math.trunc(rawDays))) : 7;
+      const at = now();
+      const from = localDayStart(at) - (days - 1) * DAY_MS;
+      const queueStepMs = Math.max(60 * 60 * 1000, Math.floor(DAY_MS / 8));
+      const series = buildStatsSeries(store.tasksInWindow(from, at), from, at, DAY_MS, queueStepMs);
+      return json({ ok: true, days, ...series }, 200, setCookie);
+    }
+
+    if (url.pathname === "/api/config") {
+      if (req.method === "GET") {
+        return json(
+          { ok: true, config: editableConfig(cfg), configPath, adapters: adapterNames() },
+          200,
+          setCookie,
+        );
+      }
+      if (req.method === "POST") {
+        const body = await confirmedBody(req);
+        const result = validateEditable(body.config, dirname(configPath), adapterNames());
+        if (!result.ok) {
+          const message = result.errors.join("；");
+          recordAudit("config.save", configPath, false, message);
+          return json({ ok: false, message, errors: result.errors }, 400, setCookie);
+        }
+        try {
+          saveEditableConfig(configPath, result.value);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          recordAudit("config.save", configPath, false, message);
+          return json({ ok: false, message }, 500, setCookie);
+        }
+        const worker = result.value.worker;
+        recordAudit(
+          "config.save",
+          configPath,
+          true,
+          `repos=${result.value.repos.length} schedules=${result.value.schedules.length} adapter=${worker.adapter} concurrency=${worker.concurrency}`,
+        );
+        return json(
+          { ok: true, message: "已保存，重启守护进程后生效", restartRequired: true, config: result.value },
+          200,
+          setCookie,
+        );
+      }
+      return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET, POST" });
+    }
+
+    if (url.pathname === "/api/audit") {
+      if (req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
+      const rawLimit = Number(url.searchParams.get("limit") ?? "50");
+      const limit = Number.isFinite(rawLimit) ? Math.min(200, Math.max(1, Math.trunc(rawLimit))) : 50;
+      return json({ ok: true, entries: audit.tail(limit) }, 200, setCookie);
+    }
+
     if (url.pathname === "/api/tasks") {
       if (req.method === "GET") {
         const repo = url.searchParams.get("repo") || undefined;
@@ -274,11 +376,13 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
         );
       }
       if (req.method === "POST") {
-        const body = await readJson(req);
+        const body = await confirmedBody(req);
         const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
         if (!prompt) throw new HttpError(400, "任务内容不能为空");
         const repo = typeof body.repo === "string" && body.repo.trim() ? body.repo.trim() : undefined;
         const result = await dispatchTask(repo, prompt);
+        const detail = result.ok ? prompt.slice(0, 120) : `${prompt.slice(0, 80)} · ${result.message.slice(0, 200)}`;
+        recordAudit("dispatch", result.taskId || "-", result.ok, detail);
         return json({ ...result, taskId: result.taskId || null }, result.ok ? 200 : 400, setCookie);
       }
       return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET, POST" });
@@ -287,11 +391,21 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
     const match = TASK_ROUTE.exec(url.pathname);
     if (match) {
       const [, id, action] = match;
-      if (action && req.method !== "POST") return json({ ok: false, error: "方法不支持" }, 405, { allow: "POST" });
+      const taskId = id as string;
+      if (action === "rewind" && req.method === "GET") {
+        const preview = router.previewRewind(taskId);
+        if (!preview.ok) {
+          return json({ ok: false, message: preview.message }, preview.code === "not-found" ? 404 : 409, setCookie);
+        }
+        return json({ ok: true, preview: rewindJson(preview.plan) }, 200, setCookie);
+      }
+      if (action && req.method !== "POST") {
+        return json({ ok: false, error: "方法不支持" }, 405, { allow: action === "rewind" ? "GET, POST" : "POST" });
+      }
       if (!action && req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
 
       if (!action) {
-        const task = store.get(id as string);
+        const task = store.get(taskId);
         if (!task) return json({ ok: false, error: "找不到任务" }, 404, setCookie);
         const at = now();
         return json(
@@ -306,16 +420,17 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
         );
       }
 
-      if (action === "merge") {
-        const body = await readJson(req);
-        if (body.confirm !== true) throw new HttpError(400, "合并需要二次确认（confirm: true）");
-      }
-      const result = await run(webMessage(cfg, web, action as "cancel" | "merge", id as string));
-      const task = store.get(id as string);
+      await confirmedBody(req);
+      const kind = action as "cancel" | "merge" | "rewind";
+      const result = await run(webMessage(cfg, web, kind, taskId));
+      const task = store.get(taskId);
       const done =
-        action === "cancel"
+        kind === "cancel"
           ? Boolean(task && (task.status === "cancelled" || store.isCancelRequested(task.id)))
-          : store.effectsOf(id as string).some((e) => e.kind === "merge");
+          : kind === "merge"
+            ? store.effectsOf(taskId).some((e) => e.kind === "merge")
+            : task?.status === "rewound";
+      recordAudit(kind, taskId, result.ok && done, result.message || (task?.status ?? ""));
       return json({ ok: result.ok && done, status: task?.status ?? null, message: result.message }, result.ok && done ? 200 : 409, setCookie);
     }
 
