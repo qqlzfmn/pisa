@@ -44,7 +44,7 @@ export const EXAMPLES: readonly ExampleScenario[] = [
   },
   {
     title: "CI 失败投递",
-    trigger: 'curl -X POST http://127.0.0.1:8799/event -H "x-pisa-token: $PISA_WEBHOOK_TOKEN" -H "Content-Type: application/json" -d \'{"prompt":"跑测试并修掉失败","eventId":"ci:12345"}\'',
+    trigger: 'curl -X POST http://127.0.0.1:8799/event -H "x-pisa-token: $PISA_WEBHOOK_TOKEN" -H "Content-Type: application/json" -d \'{"prompt":"跑测试并修掉失败","eventId":"webhook:ci:12345"}\'',
     outcome: "与 IM 相同的排队、执行、回执链路；同一 eventId 只建一个任务",
   },
   {

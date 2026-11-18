@@ -160,16 +160,16 @@ CI 里加一步，把失败丢给 webhook（`webhook.enabled: true`，token 由 
 curl -X POST http://127.0.0.1:8799/event \
   -H "x-pisa-token: $PISA_WEBHOOK_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"prompt":"跑测试并修掉失败","eventId":"ci:12345"}'
+  -d '{"prompt":"跑测试并修掉失败","eventId":"webhook:ci:12345"}'
 ```
 
 预期输出（实跑）：
 
 ```json
-{"ok":true,"eventId":"ci:12345"}
+{"ok":true,"eventId":"webhook:ci:12345"}
 ```
 
-同一 `eventId` 重投只建一个任务；带同一个 `threadKey`（业务单号）的投递跨入口命中同一个任务，编辑后的新版本按 `version` 归到原任务。回执发给 `webhook.chatId`：配了 Telegram 就推到那个会话，跑本地 CLI 通道时直接打到终端。
+`eventId` 必须以 `webhook:` 开头：`events` 表跨通道共享，`cron:`、`github:comment:`、`telegram:` 这些键归各自入口，带别的前缀返回 400；省略时自动生成 `webhook:<ts>:<rand>`。同一 `eventId` 重投只建一个任务；带同一个 `threadKey`（业务单号）的投递跨入口命中同一个任务，编辑后的新版本按 `version` 归到原任务。回执发给 `webhook.chatId`：配了 Telegram 就推到那个会话，跑本地 CLI 通道时直接打到终端。
 
 ### 3. PR 评论里继续改
 

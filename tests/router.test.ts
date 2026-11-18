@@ -314,6 +314,23 @@ describe("Router", () => {
     expect(channel.sent[0]?.text).toContain("无权限");
   });
 
+  test("被拒的投递不占 eventId，合法投递仍能建任务且重投只建一个", async () => {
+    const router = build(okWorker);
+    const eventId = "webhook:denied-first";
+    const events = () => store.db.query("SELECT event_id FROM events").all() as Array<{ event_id: string }>;
+
+    await router.handle(msg("/pisa 做点事", { userId: "stranger", eventId }));
+    expect(store.recentTasks().length).toBe(0);
+    expect(events()).toHaveLength(0);
+
+    await router.handle(msg("/pisa 做点事", { eventId }));
+    expect(store.recentTasks().length).toBe(1);
+    expect(channel.sent.at(-1)?.text).toContain("已接单");
+
+    await router.handle(msg("/pisa 做点事", { eventId }));
+    expect(store.recentTasks().length).toBe(1);
+  });
+
   test("同一事件重复投递只建一个任务", async () => {
     const router = build(okWorker);
     const m = msg("/pisa 做点事");

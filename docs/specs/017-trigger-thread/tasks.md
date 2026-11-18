@@ -28,3 +28,12 @@
 
 - [x] T012 复现场景实跑：同一消息编辑后再投递，任务正文为新版本且任务数不变（spec §5）
 - [x] T013 `bun test` 与 `bunx tsc --noEmit` 通过
+
+## security-5：事件号归属
+
+- [x] T014 `src/webhook.ts`：webhook 入口独立成模块，顺序为 token 常量时间比较（403）→ `Content-Length` / 正文 64 KiB（413）→ `prompt`（400）→ `eventId` 前缀（400）→ `router.handle`；省略 `eventId` 自动生成 `webhook:<ts>:<rand>`（FR-011/FR-013）
+- [x] T015 `src/http.ts`：`MAX_BODY_BYTES`、`HttpError`、`safeEqual`、`readJson` 抽出共用，`src/web.ts` 删掉重复实现（FR-013）
+- [x] T016 `src/router.ts`：`claimEvent` 移到鉴权与正文校验之后、`createTaskFromTrigger` 之前，返回值不拦截建任务（FR-012）
+- [x] T017 `tests/webhook.test.ts`：token 缺失/等长错值/短值 403、`cron:`/`github:comment:`/`telegram:`/无前缀 400 且 `events` 无键、合法事件号建任务并回执、重投只建一个、省略事件号自动生成、伪造 `Content-Length` 与超限正文 413、非 POST 405
+- [x] T018 `tests/router.test.ts`：非白名单投递 `eventId` 被拒后，白名单同 `eventId` 建任务且 `events` 只一行
+- [x] T019 `README.md`、`docs/operations.md`、`docs/architecture.md` 补命名空间与错误码说明；`CHANGELOG.md` 记录

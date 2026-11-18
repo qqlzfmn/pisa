@@ -100,15 +100,17 @@ CI、监控、脚本都可以把任务推进来：
 curl -X POST http://127.0.0.1:8799/event \
   -H "x-pisa-token: $PISA_WEBHOOK_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"prompt":"跑测试并修掉失败","eventId":"ci:12345"}'
+  -d '{"prompt":"跑测试并修掉失败","eventId":"webhook:ci:12345"}'
 ```
 
 执行链路：消息 → 鉴权 → 建任务 → 独立工作副本 → `omp` 执行 → 提交到 `pisa/<任务号>` → 回执。
 
+`eventId` 必须带 `webhook:` 前缀：`events` 表按 `event_id` 共享给 `cron:`、`github:comment:`、`telegram:` 等入口，命名空间就是权限边界，别的前缀返回 400；省略时自动生成 `webhook:<ts>:<rand>`。token 常量时间比较（缺失或长度不等 403），正文上限 64 KiB（超限 413），鉴权与正文校验都在占事件号之前，被拒的投递不会占住 `eventId`。
+
 同一 `eventId` 的重复投递只建一个任务。要让不同入口（CI、监控、聊天）里的同一件事落到同一个任务，带同一个 `threadKey`（业务单号即可）：
 
 ```bash
--d '{"prompt":"修掉 CI 失败","eventId":"ci:12345","threadKey":"pull/1287","version":"3"}'
+-d '{"prompt":"修掉 CI 失败","eventId":"webhook:ci:12345","threadKey":"pull/1287","version":"3"}'
 ```
 
 同 `threadKey` + `eventId` 再投一次、内容不同视为编辑（任务还在排队就更新需求）；`version` 没有编辑语义时可以不传。

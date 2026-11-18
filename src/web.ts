@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Server } from "bun";
@@ -9,13 +9,12 @@ import { daemonState, taskJson, type TaskJson } from "./status";
 import { computeWindowMetrics, METRICS_WINDOW_MS } from "./metrics";
 import { readTail, tailLines } from "./log";
 import { WEB_UI } from "./web-ui";
+import { HttpError, readJson, safeEqual } from "./http";
 
 /** cookie 名；页面用 `?token=` 打开后由服务端下发，之后每次请求自动带上 */
 export const WEB_COOKIE = "pisa_web";
 /** 详情面板展示的日志行数 */
 const LOG_TAIL_LINES = 200;
-/** 请求体上限：派活正文与确认标志都很小 */
-const MAX_BODY_BYTES = 64 * 1024;
 const TASK_ROUTE = /^\/api\/tasks\/([\w-]+)(?:\/(cancel|merge))?$/;
 
 /**
@@ -69,26 +68,11 @@ export interface WebRouter {
   handle(msg: IncomingMessage): Promise<void>;
 }
 
-class HttpError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
 function json(value: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(value), {
     status,
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers },
   });
-}
-
-function safeEqual(a: string, b: string): boolean {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 function cookieValue(header: string | null, name: string): string | null {
@@ -125,20 +109,6 @@ function tailLog(cfg: Config, id: string): string[] {
       return line;
     }
   });
-}
-
-async function readJson(req: Request): Promise<Record<string, unknown>> {
-  const text = await req.text();
-  if (text.length > MAX_BODY_BYTES) throw new HttpError(413, "请求体过大");
-  if (text.trim() === "") return {};
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new HttpError(400, "请求体不是合法 JSON");
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "请求体必须是 JSON 对象");
-  return value as Record<string, unknown>;
 }
 
 /** 把 Web 表单动作翻译成一条 IM 消息，交给 Router；不复制白名单、状态机与合并校验 */
