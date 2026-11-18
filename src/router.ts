@@ -517,6 +517,25 @@ export class Router {
       const after = sh(["git", "-C", repo.path, "rev-parse", base]).out;
       store.effect(task.id, "merge", base, JSON.stringify({ base, from: before, to: after }));
 
+      // 本地合并必须回到远端，否则 GitHub 上看不到任何进展
+      if (repo.remote) {
+        const push = sh(["git", "-C", repo.path, "push", "origin", base]);
+        if (push.code !== 0) {
+          await this.reply(msg.chatId, `已本地合并，但推送 ${base} 失败：${(push.err || push.out).slice(0, 400)}`);
+        }
+      }
+
+      // PR 不再承担合并入口：代码已在主干，关闭对应 PR 并说明
+      if (task.prUrl) {
+        const pr = prNumberFromIssueUrl(task.prUrl);
+        if (pr) {
+          sh(
+            ["gh", "pr", "close", String(pr), "--comment", `已合并到 ${base}（pisa 本地 rebase 合并，分支保留备查）`],
+            repo.path,
+          );
+        }
+      }
+
       await this.reply(msg.chatId, `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}`);
     } finally {
       removeWorktree(repo.path, verifyDir);
