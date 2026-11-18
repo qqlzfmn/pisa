@@ -67,6 +67,12 @@ export function pushBranch(workdir: string, branch: string): ExecResult {
   return sh(["git", "-C", workdir, "push", "-u", "origin", branch]);
 }
 
+/** 工作副本当前 HEAD 的完整提交号；读不到返回 null */
+export function headCommit(workdir: string): string | null {
+  const res = sh(["git", "-C", workdir, "rev-parse", "HEAD"]);
+  return res.code === 0 ? res.out.trim() || null : null;
+}
+
 /** 分支是否已推到 origin：只看本地远端跟踪引用，不联网 */
 export function pushedBranch(workdir: string, branch: string): boolean {
   return sh(["git", "-C", workdir, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`]).code === 0;

@@ -47,7 +47,7 @@
 | FR-005 | `attempts` 达到 10 次转 `failed`（终止），不再重试，错误信息保留 |
 | FR-006 | `start` 启动时立即 `flush` 一次，之后按间隔（默认 1s）执行所有到期的未完成行 |
 | FR-007 | 推送、建 PR、PR/Issue 回帖三条路径改为经 `EffectQueue` 执行 |
-| FR-008 | effect 完成时由 Router 写 `task_effects` 账本；PR effect 同时回填 `tasks.pr_url`。重启后的重放走同一路径 |
+| FR-008 | effect 完成时由 Router 写 `task_effects` 账本（回帖返回 `skipped` 说明上一轮已发出、只是没来得及记账，同样补记）；PR effect 同时回填 `tasks.pr_url`。重启后的重放走同一路径 |
 | FR-009 | 建 PR effect 保留认领逻辑：先 `gh pr list --head <branch>`，命中即视为完成；回帖 effect 保留隐藏标记去重 |
 | FR-010 | 任务失败或取消时丢弃它未完成的 effect，避免对已删除工作副本重试 |
 | FR-011 | 回帖失败不改变任务终态：任务按现状成功，effect 留在队列，日志注明入队重试 |

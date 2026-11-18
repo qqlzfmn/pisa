@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS effects (
 CREATE INDEX IF NOT EXISTS idx_effects_due ON effects(status, next_at);
 ```
 
-`key` 由调用方按语义给：推送 `push:<taskId>:<branch>`、PR `pr:<taskId>:<branch>`、回帖 `comment:<purpose>:<repo>#<n>:<taskId>`。同一逻辑动作在不同任务/分支下互不干扰。
+`key` 由调用方按语义给：推送 `<taskId>:<branch>:<head>`、PR `<taskId>:<branch>`、回帖 `<purpose>:<repo>#<n>:<taskId>`（`kind` 已单独成列，键内不再重复）。推送带上提交号：同一提交重试仍幂等，而 resume 复用任务号与分支时，新提交是一次新的推送，不会被去重键吞掉。
 
 ## D2 `EffectQueue` 持有 Store，不进 Store 内部
 

@@ -613,6 +613,8 @@ describe("GitHub 评论 → 任务", () => {
     expect(task.status).toBe("succeeded");
     // 只查了列表，没有发第二条
     expect(calls.some((c) => c[1] === "pr")).toBe(false);
+    // 标记已在 = 上一轮确实发过：补记账本，rewind 才能提示这条评论无法撤回
+    expect(store.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
     const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
     expect(log).toContain("已存在同标记回帖，跳过");
   });
@@ -1081,6 +1083,32 @@ describe("GitDeliverer 更新既有 PR", () => {
 
     expect(calls).toEqual(["pisa/parent"]);
     expect(res.prUrl).toBe("https://github.com/o/r/pull/99");
+  });
+
+  test("resume 后再次交付会把新提交推上去", async () => {
+    const workdir = setup();
+    const deliverer = new GitDeliverer(cfg, {
+      hasGh: () => true,
+      findPr: () => reply(0, "https://github.com/o/r/pull/9\n"),
+      createPr: () => reply(0, "https://github.com/o/r/pull/99"),
+    });
+    const queue = outbox(deliverer);
+    const task = { ...baseTask, id: "t_resume", branch: "pisa/parent" };
+
+    const first = await deliverer.deliver(task, workdir, cfg.repos[0]!, queue);
+    const pushed = sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out.trim();
+    expect(first.pushed).toBe(true);
+    expect(pushed).toBe(sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out.trim());
+
+    // resume 复用同一任务号与分支：新提交不能被 push 的去重键吞掉
+    writeFileSync(join(workdir, "out.txt"), "hi again\n");
+    const second = await deliverer.deliver(task, workdir, cfg.repos[0]!, queue);
+
+    expect(second.pushed).toBe(true);
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out.trim()).not.toBe(pushed);
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out.trim()).toBe(
+      sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out.trim(),
+    );
   });
 
   test("Issue 来源的任务在 PR 正文追加 Closes", async () => {

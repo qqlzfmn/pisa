@@ -3,16 +3,14 @@ import { existsSync, readFileSync } from "node:fs";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
-import type { EffectRow, Store } from "./store";
+import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
-import { EffectQueue, type CommentPayload, type PrPayload, type PushPayload } from "./effects";
+import { EffectQueue, type CommentPayload } from "./effects";
 import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
 import {
   defaultRunner,
   formatReply,
-  postComment,
-  postIssueComment,
   postReplyOnce,
   prNumberFromIssueUrl,
   prStatus,
@@ -100,14 +98,15 @@ export class Router {
     this.deps.store.setPrUrl(taskId, url);
   }
 
-  /** 回帖 effect：线程里已有同标记就是发过了，重试不会重复 */
+  /**
+   * 回帖 effect：线程里已有同标记就是发过了，重试不会重复。
+   * 两种结果都记账本：skipped 说明上一轮发出后没来得及记账就崩溃，补记后 rewind 才不会漏报。
+   */
   private commentEffect(p: CommentPayload): Promise<"posted" | "skipped"> {
     const res = postReplyOnce(this.deps.ghRunner ?? defaultRunner, p.repo, p.number, p.purpose, p.taskId, p.body);
     if (!res.ok) return Promise.reject(new Error(res.error));
-    if (res.value === "posted") {
-      const kind = p.purpose === "pr" ? "PR" : "Issue";
-      this.deps.store.effect(p.taskId, "comment", `${p.repo}#${p.number}`, `${kind} 回帖`);
-    }
+    const kind = p.purpose === "pr" ? "PR" : "Issue";
+    this.deps.store.effect(p.taskId, "comment", `${p.repo}#${p.number}`, `${kind} 回帖`);
     return Promise.resolve(res.value);
   }
 

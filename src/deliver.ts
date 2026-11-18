@@ -8,6 +8,7 @@ import {
   createPr,
   findPr,
   hasGh,
+  headCommit,
   pushedBranch,
   pushBranch,
   remoteUrl,
@@ -84,7 +85,10 @@ export class GitDeliverer implements Deliverer {
 
     let pushed = false;
     if (this.cfg.delivery.push && remote) {
-      await effects.exec("push", `${task.id}:${branch}`, task.id, { taskId: task.id, repoPath: repo.path, branch });
+      // 键带本次提交号：同一提交重试仍幂等，resume 后又提交的新内容则是一次新的推送
+      const head = headCommit(workdir);
+      if (!head) throw new Error("读取 HEAD 失败，无法推送");
+      await effects.exec("push", `${task.id}:${branch}:${head}`, task.id, { taskId: task.id, repoPath: repo.path, branch });
       pushed = true;
     }
 
