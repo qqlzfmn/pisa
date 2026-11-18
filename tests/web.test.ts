@@ -135,6 +135,7 @@ describe("web 控制台", () => {
       replyRepo: null,
       summary: null,
       error: null,
+      mandate: null,
       createdAt: 0,
       startedAt: null,
       endedAt: null,

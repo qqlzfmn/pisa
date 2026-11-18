@@ -55,11 +55,35 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 
 ### 鉴权面
 
-- **IM**：`whitelist.users` 与 `whitelist.repos` 双重白名单，未授权用户不建任务（24 小时内只提示一次）。群里仍需要触发词；私聊可直接说需求。
-- **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，所以它也必须进白名单。要从外网调用，自己加反向代理与 TLS。
-- **Web 控制台**：只监听 `127.0.0.1`，`/ui` 与 `/api/*` 全部要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、`HttpOnly` cookie 任一），否则 401。页面派出的任务归 `web.userId`，同样要进白名单；取消与合并不再校验原请求者，因为浏览器里的操作由 token 直接认证。
-- **GitHub**：只处理正文以 `/pisa ` 开头的评论；评论作者不参与鉴权，任务归属由各仓库条目配置的 `chatId` / `userId` 决定。`gh` token 从 `tokenEnv` 指定的环境变量读取。
-- **定时、探针、关键词**：都用配置里的身份开单，同样走白名单；触发不了的根因通常是身份不在白名单或缺少 `scheduler` 配置。
+派活前先过**来源准入**（`src/policy.ts`）：不同来源的权限本来不同，所以每个来源独立配置。判断顺序固定：来源开关 → accept 模式 → `名单内外 × 是否点名` 四格准入表。
+
+```json
+"policy": {
+  "sources": {
+    "webhook": { "allowed": false },
+    "github": {
+      "accept": "observe",
+      "admission": { "outsider": { "addressed": "allow", "unaddressed": "allow" } }
+    },
+    "cron": { "accept": "auto", "admission": { "member": { "unaddressed": "allow" } } }
+  }
+}
+```
+
+- `allowed`：`false` 时该来源一律不开单。
+- `accept`：`off` 全拒；`observe` 放行但在日志与任务 mandate 里留下准入表的裁决；`auto`（默认）按准入表执行。
+- `admission`：`member` 是 `whitelist.users` 内，`outsider` 是名单外；`addressed` 指点名（私聊、回复某条消息、触发词开头、`/` 开头、`admin` 操作），`unaddressed` 指关键词派活这类没人点名的来源。没写的格子取默认：名单内两格放行，名单外两格拒绝——与旧白名单行为一致。
+- 策略变更不追溯已落库任务；`resume` 前按当前策略重校验，失败会回复「恢复被拒」并列出任务准入版本与当前策略版本。
+- `/pisa policy`（私聊 `/policy` 或 `准入`）查看当前版本与每个来源的四格。
+- CLI 直接建单（`pisa enqueue`）不经过准入，`mandate` 为空。
+
+各来源的具体约束：
+
+- **IM**：`whitelist.users` 与 `whitelist.repos` 双重白名单（默认准入规则），未授权用户不建任务（24 小时内只提示一次）。群里仍需要触发词；私聊可直接说需求。
+- **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，所以它也要通过来源准入。要从外网调用，自己加反向代理与 TLS。
+- **Web 控制台**：只监听 `127.0.0.1`，`/ui` 与 `/api/*` 全部要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、`HttpOnly` cookie 任一），否则 401。页面派出的任务是 `admin` 且带 `web.userId`，按该身份的准入格判断；取消与合并不再校验原请求者，因为浏览器里的操作由 token 直接认证。
+- **GitHub**：只处理正文以 `/pisa ` 开头的评论；评论作者不参与鉴权，任务归属由各仓库条目配置的 `chatId` / `userId` 决定，准入按该身份计算。`gh` token 从 `tokenEnv` 指定的环境变量读取。
+- **定时、探针、关键词**：都用配置里的身份开单，走该身份的准入格；关键词派活按「未点名」计算。触发不了的根因通常是身份不在名单、来源被 `off` 或缺少 `scheduler` 配置。
 - **密钥**：Telegram bot token、webhook token 只从环境变量或 `~/.pisa/` 下的文件读取，不写入配置文件与 launchd plist。
 
 ## 消息太多怎么办

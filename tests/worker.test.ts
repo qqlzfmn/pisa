@@ -25,6 +25,7 @@ const task: Task = {
   replyRepo: null,
   summary: null,
   error: null,
+  mandate: null,
   createdAt: 0,
   startedAt: null,
   endedAt: null,

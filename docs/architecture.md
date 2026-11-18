@@ -2,7 +2,7 @@
 
 面向两类读者：要改内核的贡献者，和半年后回来读代码的自己。内容只回答五个问题——层怎么分、任务怎么流转、数据怎么走、哪里能插东西、哪里会坏。
 
-代码是唯一事实源；本文给位置和约束，不复述实现。规格细节见 `docs/specs/`（尤其 001 状态机、003 事件入口、005 恢复语义、013 撤销）。
+代码是唯一事实源；本文给位置和约束，不复述实现。规格细节见 `docs/specs/`（尤其 001 状态机、003 事件入口、005 恢复语义、013 撤销、017 来源准入）。
 
 ## 1. 分层与职责
 
@@ -54,6 +54,7 @@ core 内部模块关系：
 | 模块 | 职责 | 主要对外接口 |
 | --- | --- | --- |
 | `router.ts` | 全局唯一编排者：事件入口、命令、状态跃迁、进度转发、回帖 | `handle()`、`start()/stop()`、`recoverInterrupted()` |
+| `policy.ts` | 来源准入的唯一裁决点：四格准入表、accept 模式、策略版本、任务 mandate | `admit`、`policyVersion`、`mandateOf`、`formatPolicy` |
 | `store.ts` | SQLite 持久化：任务、消息映射、事件去重、副作用账本 | `insertTask`、`claimQueued`、`transition`、`taskByPr`、`effectsOf` |
 | `worker.ts` | 拉起 agent 进程、解析输出、超时与取消 | `class Worker implements WorkerRunner` |
 | `adapters/` | 把 pisa 的任务翻译成某个 agent 的命令行与输出格式 | `getAdapter(name)` |
@@ -120,7 +121,7 @@ cancelled ─┘
 | 重启后 `paused` | — | 保持，等 `resume` 或 `cancel`（`rewind` 要求先取消） | 人工决定，避免自动重跑产生第二个 PR |
 | 停机期间到达的事件 | — | 丢失（内存队列为空，事件不落盘等待） | 只有已 `insertTask` 的任务会恢复 |
 
-`resume` 的字段语义：`baseRef` 指上一轮分支（worktree 从这里拉出）；`context` 是注入提示词的上一轮摘要；`branch`/`prUrl` 在 PR 评论续跑时指向父任务的同一分支与同一 PR，避免同一需求出现两个 PR。
+`resume` 的字段语义：`baseRef` 指上一轮分支（worktree 从这里拉出）；`context` 是注入提示词的上一轮摘要；`branch`/`prUrl` 在 PR 评论续跑时指向父任务的同一分支与同一 PR，避免同一需求出现两个 PR。策略变更不追溯已落库任务，但 `resume` 前会用任务 mandate 按当前策略重校验，失败则保持 `paused`。
 
 ## 3. 一次任务的完整数据流
 
@@ -141,7 +142,7 @@ cancelled ─┘
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由 `eventId` 去重）。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
-3. **去重与鉴权**（`claimEvent` 与 `checkAccess`，`src/router.ts`）。`newId()` 先出任务号，`store.claimEvent(eventId, taskId)` 用主键抢占事件，抢不到直接丢弃；随后 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库。被拒事件同样占用 `eventId`。
+3. **去重与准入**（`claimEvent`、`admit`、`checkRepo`，`src/router.ts`）。`newId()` 先出任务号，`store.claimEvent(eventId, taskId)` 用主键抢占事件，抢不到直接丢弃；随后 `admit`（`src/policy.ts`）按来源开关、accept 模式与「名单内外 × 是否点名」裁决，`checkRepo` 校验白名单仓库与目录是 git 仓库。准入结果连同策略版本写进任务的 `mandate`；被拒事件同样占用 `eventId`。
 4. **落库与回执**（`Router.handle`，`src/router.ts`）。`insertTask`（`status=queued`）后立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
 5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
@@ -236,7 +237,7 @@ interface ChannelAdapter {
 
 | 失败点 | 检测方式 | 任务归宿 | 副作用处理 | 恢复路径 |
 | --- | --- | --- | --- | --- |
-| 非白名单 / 非 git 仓库 | `checkAccess` | 不建任务 | 事件键已占用 | 改配置后换 eventId 重投 |
+| 准入拒绝 / 非 git 仓库 | `admit`、`checkRepo` | 不建任务 | 事件键已占用 | 改配置后换 eventId 重投；`/pisa policy` 查原因 |
 | 工作副本创建失败（分支被占用） | `createWorktree` 报 `already checked out` | `failed` | 无 | 先 `cancel` 占用它的任务 |
 | Worker 非零退出 | 退出码 + 最后 20 行 | `failed` | 删 worktree 与 `pisa/<id>` 分支 | 重新投递 |
 | 执行超时 | `worker.timeoutSec` | `failed`（`执行超时`） | 同上 | 拆小任务 |

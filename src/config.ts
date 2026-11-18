@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import type { PolicyConfig } from "./policy";
 
 export interface RepoConfig {
   alias: string;
@@ -56,6 +57,8 @@ export interface Config {
   /** 私聊里不带触发词也当成任务 */
   dmWithoutTrigger: boolean;
   whitelist: { users: string[]; repos: string[] };
+  /** 来源准入覆盖；缺省时所有来源按默认策略（名单内放行、名单外拒绝） */
+  policy?: PolicyConfig;
   repos: RepoConfig[];
   worker: {
     adapter: string;
@@ -228,6 +231,7 @@ export type CommandKind =
   | "help"
   | "status"
   | "schedules"
+  | "policy"
   | "examples"
   | "continue"
   | "merge"
@@ -259,6 +263,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "confirm", alias: "确认", description: "确认被拦下的单英文词任务", group: "派活", menu: false },
   { command: "status", alias: "状态", description: "查看任务看板", group: "查询", menu: true },
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
+  { command: "policy", alias: "准入", description: "查看来源准入策略与版本", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
   { command: "verbose", alias: "进度", description: "过程消息开关（on/off）", args: "[on|off]", group: "查询", menu: true },
   { command: "help", alias: "帮助", description: "查看命令帮助", group: "查询", menu: true },

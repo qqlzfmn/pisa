@@ -9,6 +9,7 @@ import { parseCommand, taskGuard, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh, changedFiles, createWorktree } from "../src/git";
+import { policyVersion } from "../src/policy";
 
 class FakeChannel implements ChannelAdapter {
   name = "fake";
@@ -169,6 +170,7 @@ describe("Router", () => {
       replyRepo: null,
       summary: null,
       error: null,
+      mandate: null,
       createdAt: 0,
       startedAt: null,
       endedAt: null,
@@ -311,6 +313,123 @@ describe("Router", () => {
     await router.handle(msg("/pisa 做点事", { userId: "stranger" }));
     expect(store.recentTasks().length).toBe(0);
     expect(channel.sent[0]?.text).toContain("无权限");
+  });
+
+  test("准入：任务记录 mandate 与策略版本", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 做点事"));
+    const task = store.recentTasks()[0]!;
+    expect(task.mandate).toMatchObject({
+      source: "fake",
+      requester: "u1",
+      audience: "member",
+      addressing: "addressed",
+      verdict: "allow",
+      mode: "auto",
+      version: policyVersion(cfg),
+    });
+  });
+
+  test("准入：名单外用户被拒，原因带当前策略版本", async () => {
+    cfg.policy = { sources: { fake: { allowed: true } } };
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 做点事", { userId: "stranger" }));
+    expect(store.recentTasks()).toHaveLength(0);
+    const text = channel.sent[0]!.text;
+    expect(text).toContain("无权限");
+    expect(text).toContain("名单外用户");
+    expect(text).toContain(`策略版本 ${policyVersion(cfg)}`);
+  });
+
+  test("准入：名单外未点名可按来源策略放行", async () => {
+    cfg.policy = { sources: { webhook: { admission: { outsider: { unaddressed: "allow" } } } } };
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 收个 webhook", { channel: "webhook", userId: "ci", addressed: false }));
+    const task = store.recentTasks()[0]!;
+    expect(task.mandate).toMatchObject({ audience: "outsider", addressing: "unaddressed", verdict: "allow" });
+  });
+
+  test("准入：off 模式全拒", async () => {
+    cfg.policy = { sources: { fake: { accept: "off" } } };
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 做点事"));
+    expect(store.recentTasks()).toHaveLength(0);
+    expect(channel.sent[0]!.text).toContain("off");
+  });
+
+  test("准入：observe 模式放行但 mandate 留下拒绝裁决", async () => {
+    cfg.policy = { sources: { fake: { accept: "observe" } } };
+    const warns: string[] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.join(" "));
+    };
+    try {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 做点事", { userId: "stranger" }));
+    } finally {
+      console.warn = orig;
+    }
+    const task = store.recentTasks()[0]!;
+    expect(task.mandate).toMatchObject({ audience: "outsider", verdict: "deny", mode: "observe" });
+    expect(warns.some((w) => w.includes("[policy] observe"))).toBe(true);
+  });
+
+  test("准入：策略变更不追溯已排队任务", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 新建 out.txt"));
+    const id = store.recentTasks()[0]!.id;
+    cfg.policy = { sources: { fake: { accept: "off" } } };
+    expect(await router.drainOnce()).toBe(true);
+    expect(store.get(id)!.status).toBe("succeeded");
+  });
+
+  test("准入：降权后恢复被拒，任务保持暂停并说明版本差", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 做点事"));
+    const id = store.recentTasks()[0]!.id;
+    const oldVersion = store.get(id)!.mandate!.version;
+    store.claimQueued(id, 0, `pisa/${id}`);
+    store.transition(id, "paused");
+
+    cfg.whitelist.users = ["u2"];
+    await router.handle(msg(`/pisa resume ${id}`));
+
+    expect(store.get(id)!.status).toBe("paused");
+    const text = channel.sent.at(-1)!.text;
+    expect(text).toContain("恢复被拒");
+    expect(text).toContain("名单外用户");
+    expect(text).toContain(`任务准入版本 ${oldVersion}，当前策略版本 ${policyVersion(cfg)}`);
+  });
+
+  test("准入：仓库被移出白名单后恢复被拒", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa 做点事"));
+    const id = store.recentTasks()[0]!.id;
+    store.claimQueued(id, 0, `pisa/${id}`);
+    store.transition(id, "paused");
+
+    cfg.whitelist.repos = [];
+    await router.handle(msg(`/pisa resume ${id}`));
+
+    expect(store.get(id)!.status).toBe("paused");
+    const text = channel.sent.at(-1)!.text;
+    expect(text).toContain("恢复被拒");
+    expect(text).toContain("仓库 demo 不在白名单");
+  });
+
+  test("准入：/pisa policy 显示规则与版本，且不建任务", async () => {
+    cfg.policy = { sources: { fake: { admission: { outsider: { addressed: "allow" } } } } };
+    const router = build(okWorker);
+    await router.handle(msg("/pisa policy"));
+    const text = channel.sent.at(-1)!.text;
+    expect(text).toContain(`准入策略 · 版本 ${policyVersion(cfg)}`);
+    expect(text).toContain("fake · 开放 · auto（按准入表执行）");
+    expect(text).toContain("名单外·点名：放行");
+    expect(store.recentTasks()).toHaveLength(0);
+
+    await router.handle(msg("/policy", { isDirect: true }));
+    expect(channel.sent.at(-1)!.text).toContain("准入策略 · 版本");
   });
 
   test("同一事件重复投递只建一个任务", async () => {
@@ -850,6 +969,7 @@ describe("状态机", () => {
     replyRepo: null,
     summary: null,
     error: null,
+    mandate: null,
     createdAt: 0,
     startedAt: null,
     endedAt: null,
@@ -908,6 +1028,7 @@ describe("执行器丢失与合并门禁", () => {
     replyRepo: null,
     summary: null,
     error: null,
+    mandate: null,
     createdAt: 0,
     startedAt: null,
     endedAt: null,

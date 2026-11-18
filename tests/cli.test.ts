@@ -94,6 +94,7 @@ function seed(over: Partial<Task> = {}): Task {
     replyRepo: null,
     summary: null,
     error: null,
+    mandate: null,
     createdAt: Date.now(),
     startedAt: null,
     endedAt: null,

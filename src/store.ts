@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
+import type { Mandate } from "./policy";
 import { canTransition } from "./types";
 
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_repo       TEXT,
   summary          TEXT,
   error            TEXT,
+  mandate          TEXT,
   created_at       INTEGER NOT NULL,
   started_at       INTEGER,
   ended_at         INTEGER,
@@ -83,10 +85,21 @@ interface Row {
   reply_repo: string | null;
   summary: string | null;
   error: string | null;
+  mandate: string | null;
   created_at: number;
   started_at: number | null;
   ended_at: number | null;
   cancel_requested: number;
+}
+
+/** 准入快照只写一次；解析失败按没有快照处理，不让单行脏数据拖垮整个看板 */
+function parseMandate(raw: string | null): Mandate | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Mandate;
+  } catch {
+    return null;
+  }
 }
 
 function toTask(r: Row): Task {
@@ -109,6 +122,7 @@ function toTask(r: Row): Task {
     replyRepo: r.reply_repo,
     summary: r.summary,
     error: r.error,
+    mandate: parseMandate(r.mandate),
     createdAt: r.created_at,
     startedAt: r.started_at,
     endedAt: r.ended_at,
@@ -143,6 +157,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "mandate")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN mandate TEXT");
     }
   }
 
@@ -261,8 +278,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mandate)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -280,6 +297,7 @@ export class Store {
         t.replyPr,
         t.replyIssue,
         t.replyRepo,
+        t.mandate ? JSON.stringify(t.mandate) : null,
       ],
     );
   }

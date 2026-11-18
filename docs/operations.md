@@ -51,6 +51,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
 /pisa status                     任务看板（私聊可用 /status）
+/pisa policy                     来源准入规则与策略版本（私聊可用 /policy）
 ```
 
 场景说明、最佳实践与能力边界（无沙箱、回滚范围、单机、并发、鉴权面）见 [usage.md](./usage.md)。

@@ -138,6 +138,7 @@ function newCliTask(init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "b
     replyRepo: null,
     summary: null,
     error: null,
+    mandate: null,
     createdAt: Date.now(),
     startedAt: null,
     endedAt: null,

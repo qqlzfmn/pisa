@@ -23,6 +23,7 @@ import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { continuationContext } from "./task-context";
 import { formatStatusBoard } from "./status";
+import { admit, formatPolicy, mandateOf, policyVersion } from "./policy";
 
 export { formatDuration } from "./status";
 
@@ -202,6 +203,7 @@ export class Router {
       if (t === "/start" || t === "/help" || t === "帮助") cmd = { kind: "help", body: "" };
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
+      else if (t === "/policy" || t === "准入") cmd = { kind: "policy", body: "" };
       else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
@@ -314,6 +316,11 @@ export class Router {
       return;
     }
 
+    if (cmd.kind === "policy") {
+      await this.reply(msg.chatId, formatPolicy(cfg));
+      return;
+    }
+
     if (cmd.kind === "status") {
       await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now()));
       return;
@@ -365,7 +372,27 @@ export class Router {
     // 去重：同一事件只登记一次；重复投递直接丢弃
     if (!store.claimEvent(msg.eventId, taskId)) return;
 
-    const denied = this.checkAccess(msg, repo);
+    // 来源准入：谁能派活由来源、名单内外与是否点名决定；策略在任务里留快照
+    const admission = admit(cfg, {
+      source: msg.channel,
+      requester: msg.userId,
+      addressed: this.isAddressed(msg),
+    });
+    if (admission.reason) {
+      const last = this.deniedAt.get(msg.userId) ?? 0;
+      if (this.now() - last > 24 * 3600 * 1000) {
+        this.deniedAt.set(msg.userId, this.now());
+        await this.reply(msg.chatId, admission.reason);
+      }
+      return;
+    }
+    if (admission.mode === "observe" && admission.verdict === "deny") {
+      console.warn(
+        `[policy] observe 放行 ${msg.channel}/${msg.userId}（${admission.audience}·${admission.addressing}），策略版本 ${admission.version}`,
+      );
+    }
+
+    const denied = this.checkRepo(msg, repo);
     if (denied) {
       const last = this.deniedAt.get(msg.userId) ?? 0;
       if (this.now() - last > 24 * 3600 * 1000) {
@@ -402,6 +429,7 @@ export class Router {
       replyRepo: msg.replyRepo ?? null,
       summary: null,
       error: null,
+      mandate: mandateOf(admission, msg.userId, this.now()),
       createdAt: this.now(),
       startedAt: null,
       endedAt: null,
@@ -454,9 +482,21 @@ export class Router {
     }
   }
 
-  private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
+  /** 是否显式点名 pisa：私聊、命令、触发词与回复都算；关键词派活由来源显式标 false */
+  private isAddressed(msg: IncomingMessage): boolean {
+    if (msg.addressed !== undefined) return msg.addressed;
+    const text = msg.text.trim();
+    return Boolean(
+      msg.isDirect ||
+        msg.admin ||
+        msg.replyToMessageId ||
+        text.startsWith(this.deps.cfg.trigger) ||
+        text.startsWith("/"),
+    );
+  }
+
+  private checkRepo(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
     const { cfg } = this.deps;
-    if (!cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
     if (!repo) return `仓库未配置：${msg.repo ?? "(默认)"}`;
     if (!cfg.whitelist.repos.includes(repo.alias)) return `无权限：仓库 ${repo.alias} 不在白名单。`;
     if (!isGitRepo(repo.path)) return `仓库路径不是 git 仓库：${repo.path}`;
@@ -715,6 +755,28 @@ export class Router {
       await this.reply(msg.chatId, `任务 ${id} 不是中断状态（${task.status}），只有中断的任务可以恢复。`);
       return;
     }
+
+    // 策略变更不追溯已有任务，但恢复前按当前策略重校验；旧任务没有快照时按「点名派活」重算
+    const admission = admit(cfg, {
+      source: task.mandate?.source ?? task.channel,
+      requester: task.requester,
+      addressed: task.mandate ? task.mandate.addressing === "addressed" : true,
+    });
+    if (admission.reason) {
+      await this.reply(
+        msg.chatId,
+        `恢复被拒 · ${id}\n${admission.reason}\n任务准入版本 ${task.mandate?.version ?? "无"}，当前策略版本 ${policyVersion(cfg)}`,
+      );
+      return;
+    }
+    if (!cfg.whitelist.repos.includes(task.repo)) {
+      await this.reply(
+        msg.chatId,
+        `恢复被拒 · ${id}\n无权限：仓库 ${task.repo} 不在白名单。\n任务准入版本 ${task.mandate?.version ?? "无"}，当前策略版本 ${policyVersion(cfg)}`,
+      );
+      return;
+    }
+
     if (!existsSync(resolve(cfg.stateDir, "worktrees", id))) {
       await this.reply(msg.chatId, `任务 ${id} 的工作副本已不存在，无法恢复。`);
       return;

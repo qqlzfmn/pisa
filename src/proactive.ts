@@ -76,6 +76,8 @@ export class Proactive {
           userId: p.userId,
           repo: p.repo,
           isDirect: true,
+          // 定时任务按关键词自行派活，不来自用户点名；准入按「名单内/外 × 未点名」判断
+          addressed: false,
           text: [
             p.prompt ?? "自动探针失败，请定位原因并修复。",
             "",
