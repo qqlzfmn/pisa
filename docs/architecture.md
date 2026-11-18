@@ -207,6 +207,8 @@ interface WorkerAdapter {
 
 策略拦截没有做成适配器的一部分：它依赖 agent 的事件钩子（omp 的 pi 扩展）。换成不提供钩子的 agent 时，拦截会一起消失，`delivery` 与 `git.ts` 里的命令仍然是最后一道限制。
 
+提示词不进代码：`src/prompts.ts` 加载 `prompts/<id>/` 的 `prompt.json` 与段落文件，`render(id, vars)` 得到正文。适配器只声明变量（如 worker 的 `taskId`/`prompt`/`context`/`resume`），文案归数据。团队层由 `prompts.dir` 覆盖同名段落或追加新段落，启动时一次加载、非法即拒绝启动；`/pisa prompts` 查看版本与 diff。详见 [spec 022](./specs/022-prompt-layers/spec.md)。
+
 ### 4.2 Trigger：加事件源
 
 契约两条：产出 `IncomingMessage` 并调用 `router.handle`；同一件事在重复投递、跨入口转发、编辑后重新投递时都落到同一个任务。身份由 `src/trigger.ts` 算出：
@@ -354,6 +356,7 @@ interface ChannelAdapter {
 | 任务状态与恢复 | `src/types.ts`、`src/store.ts`、`docs/specs/005-crash-resume/` |
 | 事件入口 | `src/router.ts` 的 `handle`、`src/index.ts`、`docs/specs/003-super-agent-loop/` |
 | 换 agent | `src/adapters/`、`src/worker.ts` |
+| 改提示词文案或加团队覆盖 | `src/prompts.ts`、`prompts/`、`docs/specs/022-prompt-layers/` |
 | 交付与 PR | `src/deliver.ts`、`src/git.ts`、`src/github.ts` |
 | 撤销 | `src/rewind.ts`、`docs/specs/013-rewind/` |
 | 资源对账 | `src/reconcile.ts`、`docs/specs/019-reconcile/` |

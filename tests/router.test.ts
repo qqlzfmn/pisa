@@ -147,6 +147,23 @@ describe("Router", () => {
     return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel, now });
   }
 
+  test("prompts 命令：列出版本、段落与未知 id", async () => {
+    const router = build(okWorker);
+    await router.handle(msg("/pisa prompts"));
+    expect(channel.sent.at(-1)!.text).toContain("worker · 内置 v1");
+    expect(channel.sent.at(-1)!.text).toContain("团队目录：未配置（只用内置提示词）");
+
+    await router.handle(msg("/pisa prompts review"));
+    expect(channel.sent.at(-1)!.text).toContain("review · 内置 v1");
+    expect(channel.sent.at(-1)!.text).toContain(" 1. role · 内置");
+
+    await router.handle(msg("/pisa prompts review diff"));
+    expect(channel.sent.at(-1)!.text).toContain("没有团队覆盖，当前即内置提示词");
+
+    await router.handle(msg("/pisa prompts nope"));
+    expect(channel.sent.at(-1)!.text).toContain("未知提示词：nope（可用：review、worker）");
+  });
+
   /** 直接落一条任务，用于构造续跑/占用场景 */
   function seedTask(over: Partial<Task> & { id: string }): Task {
     const { id, ...rest } = over;

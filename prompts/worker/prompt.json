@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "sections": [
+    { "key": "role" },
+    { "key": "resume", "when": "resume" },
+    { "key": "context", "when": "context" },
+    { "key": "task" },
+    { "key": "guard" }
+  ]
+}

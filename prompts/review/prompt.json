@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "sections": [
+    { "key": "role" },
+    { "key": "rules" },
+    { "key": "diff" }
+  ]
+}

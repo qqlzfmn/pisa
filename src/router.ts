@@ -48,6 +48,7 @@ import {
   type WorktreeReality,
 } from "./reconcile";
 import { formatExamples, formatHelp } from "./usage";
+import { defaultPromptSet, formatPromptsCommand, type PromptSet } from "./prompts";
 import { redact, TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
@@ -68,6 +69,8 @@ export interface RouterDeps {
   effects?: EffectQueue;
   /** 注入以便测试 */
   now?: () => number;
+  /** 提示词分层；缺省用内置 */
+  prompts?: PromptSet;
 }
 
 /** 单英文词任务的待确认正文，10 分钟过期 */
@@ -95,11 +98,14 @@ export class Router {
   private pending = new Map<string, PendingTask>();
   /** 外部动作的 outbox：推送、建 PR、回帖都先落库再执行 */
   private readonly effects: EffectQueue;
+  /** 提示词分层：`/pisa prompts` 与启动注入共用 */
+  private readonly prompts: PromptSet;
 
   constructor(private deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
     this.progressOn = deps.cfg.notifications?.progress ?? false;
     this.effects = deps.effects ?? new EffectQueue(deps.store, { now: this.now });
+    this.prompts = deps.prompts ?? defaultPromptSet();
     this.registerEffects(deps.deliverer);
   }
 
@@ -361,6 +367,11 @@ export class Router {
 
     if (cmd.kind === "examples") {
       await this.reply(msg.chatId, formatExamples(cfg.trigger));
+      return;
+    }
+
+    if (cmd.kind === "prompts") {
+      await this.reply(msg.chatId, formatPromptsCommand(this.prompts, cmd.body, cfg.trigger));
       return;
     }
 

@@ -16,6 +16,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 - [定时任务](#定时任务)
 - [数据保留](#数据保留)
 - [GitHub 评论（PR / Issue）](#github-评论pr--issue)
+- [提示词分层与覆盖](#提示词分层与覆盖)
 - [自举](#自举)
 - [常驻（launchd）](#常驻launchd)
 - [完整配置项](#完整配置项)
@@ -42,6 +43,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 ```
 /pisa <需求>            接一个任务
 /pisa examples          可直接照抄的场景（触发方式 + 预期产出）
+/pisa prompts [<提示词> [diff]]  提示词版本、段落来源与团队覆盖差异
 /pisa cancel [任务号]   取消
 /pisa help              按用途分组的命令帮助
 
@@ -372,6 +374,50 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 - 评审任务沿用对应仓库条目的 `chatId` / `userId`，开始、完成、失败都会回到该会话
 - 开关关闭（缺省）时完全不调用 `gh pr list`，评论派活不受影响
 
+## 提示词分层与覆盖
+
+Worker 与 PR 评审的提示词是数据，放在仓库的 [`prompts/`](../prompts)：每个提示词一个目录，`prompt.json` 给版本与段落清单，同名 `<key>.md` 是段落正文。
+
+```
+prompts/
+  worker/prompt.json    { "version": 1, "sections": [{ "key": "role" }, { "key": "resume", "when": "resume" }, …] }
+  worker/role.md
+  worker/resume.md
+  worker/context.md
+  worker/task.md
+  worker/guard.md
+  review/prompt.json
+  review/role.md
+  review/rules.md
+  review/diff.md
+```
+
+- 正文里的 `{{变量}}` 由代码按提示词填入：worker 是 `taskId`、`prompt`、`context`、`resume`，review 是 `repo`、`number`、`title`、`baseRefName`、`head`、`headSha`、`url`、`diff`
+- `when` 指向本提示词的变量，变量为空时整段不渲染：worker 的 `resume` 只在恢复中断任务时出现，`context` 只在续跑时出现
+- 段落顺序完全由 `sections` 决定；改文案、调顺序都只改这些文件，重启进程生效（启动时加载一次）
+
+团队覆盖：配置 `prompts.dir` 指向自己的目录，结构与 `prompts/` 相同：
+
+```json
+{ "prompts": { "dir": "prompts.local" } }
+```
+
+- 同名 `<key>.md` 替换内置段落的正文，其余段落仍用内置
+- 新段落先在 `prompt.json` 的 `sections` 里声明 `{ "key": "team-rules" }`，再放 `team-rules.md`；渲染时追加在内置段落之后
+- `prompt.json` 的 `version` 是团队版本号，与内置版本并列展示；`sections` 里不要重复写内置的段落键
+- 目录不存在时按内置提示词运行；存在但内容非法时拒绝启动，错误会指出文件与键：未知提示词、未知文件、未知键、未知 `when`/`{{变量}}`、缺段落文件、未声明的段落、非正整数 `version`
+- 相对路径以配置文件所在目录为基准
+
+查看线上生效的版本与差异：
+
+```
+/pisa prompts              每个提示词的内置版本与团队版本
+/pisa prompts worker       段落顺序与每段来源（内置 / 团队覆盖 / 团队新增）
+/pisa prompts worker diff  团队覆盖段落的逐行 -/+ 对比，新增段落全部标 +
+```
+
+启动日志也会打一行生效版本：`[pisa] 提示词 · review v1 · worker v1`，有团队层时形如 `worker v1→2`。
+
 ## 自举
 
 pisa 可以改自己：
@@ -412,6 +458,6 @@ token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.
 
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive`、`prompts` 与 `retentionDays`。
 
 解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。
