@@ -104,10 +104,9 @@ export class Router {
   private commentEffect(p: CommentPayload): Promise<"posted" | "skipped"> {
     const res = postReplyOnce(this.deps.ghRunner ?? defaultRunner, p.repo, p.number, p.purpose, p.taskId, p.body);
     if (!res.ok) return Promise.reject(new Error(res.error));
-    if (res.value === "posted") {
-      const kind = p.purpose === "pr" ? "PR" : "Issue";
-      this.deps.store.effect(p.taskId, "comment", `${p.repo}#${p.number}`, `${kind} 回帖`);
-    }
+    // 跳过说明上一轮已经发出（进程死在记账前），评论同样存在，账本要记
+    const kind = p.purpose === "pr" ? "PR" : "Issue";
+    this.deps.store.effect(p.taskId, "comment", `${p.repo}#${p.number}`, `${kind} 回帖`);
     return Promise.resolve(res.value);
   }
 
@@ -742,7 +741,10 @@ export class Router {
     }
 
     if (plan.actions.length === 0) {
-      if (plan.merge !== "unknown") store.transition(id, "rewound");
+      if (plan.merge !== "unknown") {
+        this.effects.cancelTask(id);
+        store.transition(id, "rewound");
+      }
       const lines = [plan.merge === "unknown" ? `未完成撤销 · ${id}` : `已标记撤销 · ${id}`, "没有需要执行的撤销动作。"];
       if (plan.irreversible.length > 0) lines.push("", "不可撤销", ...plan.irreversible.map((s) => `- ${s}`));
       if (plan.notes.length > 0) lines.push("", "保留", ...plan.notes.map((s) => `- ${s}`));
@@ -760,7 +762,10 @@ export class Router {
     for (const r of results) {
       if (r.ok && r.effect) store.removeEffect(id, r.effect.kind, r.effect.target);
     }
-    if (plan.merge !== "unknown" && results.every((r) => r.ok)) store.transition(id, "rewound");
+    if (plan.merge !== "unknown" && results.every((r) => r.ok)) {
+      this.effects.cancelTask(id);
+      store.transition(id, "rewound");
+    }
     await this.reply(msg.chatId, formatRewindResult(plan, results));
   }
 
@@ -939,9 +944,10 @@ export class Router {
     log: TaskLogger,
   ): Promise<void> {
     const kind = purpose === "pr" ? "PR" : "Issue";
+    const key = `${purpose}:${repo}#${n}:${task.id}`;
     let detail: string;
     try {
-      const value = await this.effects.exec("comment", `${purpose}:${repo}#${n}:${task.id}`, task.id, {
+      const value = await this.effects.exec("comment", key, task.id, {
         taskId: task.id,
         repo,
         number: n,
@@ -950,7 +956,8 @@ export class Router {
       });
       detail = value === "skipped" ? "已存在同标记回帖，跳过" : "已回帖";
     } catch (err) {
-      detail = `回帖失败（已入队重试）：${(err as Error).message.slice(0, 500)}`;
+      const retrying = this.deps.store.effectRow("comment", key)?.status !== "failed";
+      detail = `回帖失败（${retrying ? "已入队重试" : "已达重试上限"}）：${(err as Error).message.slice(0, 500)}`;
     }
     log.write(`reply-${purpose}`, `${kind} #${n} ${detail}`);
   }

@@ -21,6 +21,11 @@ export function currentBranch(path: string): string {
   return sh(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"]).out;
 }
 
+/** 当前提交 sha：outbox 用它给推送去重，同一提交不重复推、新提交要重推 */
+export function headCommit(path: string): string {
+  return sh(["git", "-C", path, "rev-parse", "HEAD"]).out;
+}
+
 export function createWorktree(repoPath: string, workdir: string, branch: string, base = "HEAD"): ExecResult {
   const add = sh(["git", "-C", repoPath, "worktree", "add", "-b", branch, workdir, base]);
   if (add.code === 0) return add;

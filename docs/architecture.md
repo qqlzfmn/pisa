@@ -165,7 +165,7 @@ cancelled ─┘
 | `pisa.db` `triggers` | 触发身份（线程 / 消息 / 版本 / 载荷）与归属任务 | 永不 |
 | `pisa.db` `events` | 定时与保留任务的占位键 | 超出保留期的终态任务对应行 |
 | `pisa.db` `task_effects` | 仍在生效的分支/推送/PR/回帖/合并 | 撤销或清理时逐条删 |
-| `pisa.db` `effects` | 外部动作队列：推送、建 PR、回帖的待执行/已完成/已终止行 | 不自动清理；任务失败或取消时删该任务的未完成行 |
+| `pisa.db` `effects` | 外部动作队列：推送、建 PR、回帖的待执行/已完成/已终止行 | 不自动清理；任务失败、取消或撤销时删该任务的未完成行 |
 | `.pisa/logs/<taskId>.log` | 阶段日志（脱敏） | 不自动清理 |
 | `.pisa/progress/<taskId>.jsonl` | 工具级进度 | 不自动清理 |
 | `.pisa/worktrees/<taskId>` | 工作副本 | 成功、失败、运行中取消后删除；`paused`、重启时按取消请求置 `cancelled` 的任务及其后续取消保留 |

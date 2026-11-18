@@ -399,7 +399,9 @@ describe("Router", () => {
 
   test("Worker 失败时任务 failed，不产生分支提交", async () => {
     const failWorker: WorkerRunner = {
-      async run(): Promise<WorkerResult> {
+      async run(task): Promise<WorkerResult> {
+        // 执行中留下的待重试动作：任务失败后不该再执行
+        store.enqueueEffect({ kind: "comment", key: "k-fail", taskId: task.id, payload: "{}", at: 0 });
         return { ok: false, summary: "", error: "编译失败", exitCode: 1 };
       },
     };
@@ -410,6 +412,7 @@ describe("Router", () => {
     const task = store.recentTasks()[0]!;
     expect(task.status).toBe("failed");
     expect(task.error).toContain("编译失败");
+    expect(store.effectRow("comment", "k-fail")).toBeNull();
     expect(sh(["git", "-C", repo, "rev-parse", "--verify", task.branch!]).code).not.toBe(0);
   });
 
@@ -774,9 +777,11 @@ describe("Router", () => {
     const task = store.recentTasks()[0]!;
     expect(store.claimQueued(task.id, Date.now(), `pisa/${task.id}`)).toBe(true);
     expect(store.transition(task.id, "paused")).toBe(true);
+    store.enqueueEffect({ kind: "comment", key: "k-cancel", taskId: task.id, payload: "{}", at: 0 });
 
     await router.handle(msg(`/pisa cancel ${task.id}`));
     expect(store.get(task.id)?.status).toBe("cancelled");
+    expect(store.effectRow("comment", "k-cancel")).toBeNull();
   });
 
   test("关停中 Worker 完成后任务保持 running，工作副本与分支保留", async () => {

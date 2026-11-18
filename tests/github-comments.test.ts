@@ -611,8 +611,9 @@ describe("GitHub 评论 → 任务", () => {
 
     const task = store.recentTasks()[0]!;
     expect(task.status).toBe("succeeded");
-    // 只查了列表，没有发第二条
+    // 只查了列表，没有发第二条；跳过也说明评论存在，账本要记（崩溃窗口重放）
     expect(calls.some((c) => c[1] === "pr")).toBe(false);
+    expect(store.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
     const log = readFileSync(join(stateDir, "logs", `${task.id}.log`), "utf8");
     expect(log).toContain("已存在同标记回帖，跳过");
   });
@@ -1064,6 +1065,26 @@ describe("GitDeliverer 更新既有 PR", () => {
     expect(res.prUrl).toBe("https://github.com/o/r/pull/12");
     expect(res.pushed).toBe(true);
     expect(sh(["git", "--git-dir", bare, "rev-parse", "--verify", "pisa/parent"]).code).toBe(0);
+  });
+
+  test("续跑产生新提交时重新推送，不被上次的 done 行挡掉", async () => {
+    const workdir = setup();
+    const deliverer = new GitDeliverer(cfg, { hasGh: () => true, findPr: () => reply(0, "") });
+    const queue = outbox(deliverer);
+    const task = { ...baseTask, id: "t_again", branch: "pisa/parent", prUrl: "https://github.com/o/r/pull/12" };
+
+    await deliverer.deliver(task, workdir, cfg.repos[0]!, queue);
+    const firstHead = sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out;
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out).toBe(firstHead);
+
+    // 恢复任务后 worker 又改出新的提交
+    writeFileSync(join(workdir, "more.txt"), "more\n");
+    const second = await deliverer.deliver(task, workdir, cfg.repos[0]!, queue);
+    const secondHead = sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out;
+
+    expect(secondHead).not.toBe(firstHead);
+    expect(second.pushed).toBe(true);
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out).toBe(secondHead);
   });
 
   test("没有 prUrl 时按原有逻辑创建 PR", async () => {

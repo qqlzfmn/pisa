@@ -247,6 +247,36 @@ describe("Router.rewind", () => {
     rmSync(bare, { recursive: true, force: true });
   });
 
+  test("--yes 撤销后丢弃该任务未完成的外部动作", async () => {
+    const { workdir } = seedDelivered();
+    const bare = makeBare();
+    git(repo, "remote", "add", "origin", bare);
+    git(repo, "push", "-q", "-u", "origin", "pisa/t_1");
+    // 建 PR 失败留下的待重试行：撤销后不该再对着删掉的分支重试
+    store.enqueueEffect({ kind: "pr", key: "t_1:pisa/t_1", taskId: "t_1", payload: "{}", at: 0 });
+    const router = build(ghRunner("OPEN"));
+
+    await router.handle(msg("/pisa rewind t_1 --yes"));
+
+    expect(channel.last).toContain("已撤销 · t_1");
+    expect(existsSync(workdir)).toBe(false);
+    expect(store.get("t_1")!.status).toBe("rewound");
+    expect(store.effectRow("pr", "t_1:pisa/t_1")).toBeNull();
+    rmSync(bare, { recursive: true, force: true });
+  });
+
+  test("没有可执行动作时撤销也丢弃未完成的外部动作", async () => {
+    seedTask({ id: "t_2", status: "succeeded" });
+    store.enqueueEffect({ kind: "comment", key: "c", taskId: "t_2", payload: "{}", at: 0 });
+    const router = build(ghRunner("OPEN"));
+
+    await router.handle(msg("/pisa rewind t_2 --yes"));
+
+    expect(channel.last).toContain("已标记撤销 · t_2");
+    expect(store.get("t_2")!.status).toBe("rewound");
+    expect(store.effectRow("comment", "c")).toBeNull();
+  });
+
   test("已合并的任务用 revert 提交回退", async () => {
     // 造出 pisa 合并过的历史：分支提交后被 ff 合入 main
     git(repo, "branch", "pisa/t_2");

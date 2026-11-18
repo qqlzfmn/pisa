@@ -42,14 +42,14 @@
 | --- | --- |
 | FR-001 | 新增 `effects` 表：`(kind, key)` 主键，字段含 `task_id`、`payload`、`status`、`result`、`attempts`、`next_at`、`last_error`、`created_at`、`updated_at` |
 | FR-002 | `EffectQueue` 提供 `exec`、`flush`、`start`、`stop`、`cancelTask`；处理器按 kind 注册 |
-| FR-003 | `exec` 先写行（`INSERT OR IGNORE`）再执行；同键已有 `done` 行时只返回上次结果，不再执行 |
+| FR-003 | `exec` 先写行（`INSERT OR IGNORE`）再执行；同键已有 `done` 行时只返回上次结果，不再执行。推送的键含提交 sha：同一提交只推一次，续跑出的新提交重新入队 |
 | FR-004 | 处理器抛错时 `attempts+1`，`next_at = now + min(2s × 2^(attempts-1), 60s)`，`last_error` 保留错误摘要 |
 | FR-005 | `attempts` 达到 10 次转 `failed`（终止），不再重试，错误信息保留 |
 | FR-006 | `start` 启动时立即 `flush` 一次，之后按间隔（默认 1s）执行所有到期的未完成行 |
 | FR-007 | 推送、建 PR、PR/Issue 回帖三条路径改为经 `EffectQueue` 执行 |
 | FR-008 | effect 完成时由 Router 写 `task_effects` 账本；PR effect 同时回填 `tasks.pr_url`。重启后的重放走同一路径 |
 | FR-009 | 建 PR effect 保留认领逻辑：先 `gh pr list --head <branch>`，命中即视为完成；回帖 effect 保留隐藏标记去重 |
-| FR-010 | 任务失败或取消时丢弃它未完成的 effect，避免对已删除工作副本重试 |
+| FR-010 | 任务失败、取消或撤销（`rewound`）时丢弃它未完成的 effect，避免对已删除工作副本重试 |
 | FR-011 | 回帖失败不改变任务终态：任务按现状成功，effect 留在队列，日志注明入队重试 |
 | FR-012 | 建 PR 失败回退 `compare` 链接的既有行为不变：任务成功，effect 继续重试；成功后回填 `pr_url` |
 
@@ -65,5 +65,5 @@
 2. 处理器失败后行仍在，`attempts=1`、`next_at = now+2000`；后续退避为 2/4/8/16/32/60/60…
 3. 新建 `EffectQueue`（模拟重启）、同一数据库，`flush` 能继续执行 pending 行
 4. gh 故障时任务仍然 `succeeded`，effect 留在队列；恢复后 `flush` 补发回帖并写账本
-5. 任务失败或取消后，它的未完成 effect 不再被执行
+5. 任务失败、取消或撤销后，它的未完成 effect 不再被执行
 6. `bun test` 与 `bunx tsc --noEmit` 通过
