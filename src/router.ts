@@ -858,10 +858,24 @@ export class Router {
     return started;
   }
 
-  /** 轮询 pi 扩展写出的进度文件，节流后转发到对话 */
-  private watchProgress(task: Task): () => void {
+  /**
+   * 恢复任务时进度文件已转发到的位置：停在最后一个换行之后。
+   * 上一轮写了一半的行留给下一轮补全后整行解析，避免半行被当成完整行丢弃。
+   */
+  private progressSeen(id: string): number {
+    let buf = "";
+    try {
+      buf = readFileSync(join(resolve(this.deps.cfg.stateDir), "progress", `${id}.jsonl`), "utf8");
+    } catch {
+      return 0;
+    }
+    return buf.lastIndexOf("\n") + 1;
+  }
+
+  /** 轮询 pi 扩展写出的进度文件，节流后转发到对话；start 为已转发过的位置 */
+  private watchProgress(task: Task, start: number): () => void {
     const file = join(resolve(this.deps.cfg.stateDir), "progress", `${task.id}.jsonl`);
-    let size = 0;
+    let size = start;
     let lastSentAt = 0;
     let lastMsg = "";
 
@@ -996,7 +1010,9 @@ export class Router {
 
     await this.reply(task.chatId, `开始执行 · ${task.id}\n分支 ${branch}`, task.id);
 
-    const stopWatch = this.progressOn ? this.watchProgress(task) : () => {};
+    const stopWatch = this.progressOn
+      ? this.watchProgress(task, resuming ? this.progressSeen(task.id) : 0)
+      : () => {};
     let result: WorkerResult;
     try {
       result = await worker.run(
