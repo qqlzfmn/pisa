@@ -755,6 +755,34 @@ describe("GitHub 评论 → 任务", () => {
     expect(store.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
   });
 
+  test("回帖已发出但未记账时重放：标记命中、不重复发、账本补记", async () => {
+    const clock = 1_700_000_000_000;
+    const key = "pr:o/r#12:t_crash";
+    const marker = replyMarker("t_crash", "pr");
+    const calls: string[][] = [];
+    const ghRunner: Runner = (args) => {
+      calls.push(args);
+      if ((args[2] ?? "").includes("/comments")) return threadBodies([`${HEADER}改好了\n\n${marker}`]);
+      return reply(0);
+    };
+    const effects = new EffectQueue(store, { now: () => clock });
+    new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner, effects, now: () => clock });
+    // 崩溃现场：上一轮评论已发出，effect 仍是 pending
+    store.enqueueEffect({
+      kind: "comment",
+      key,
+      taskId: "t_crash",
+      payload: JSON.stringify({ taskId: "t_crash", repo: "o/r", number: 12, purpose: "pr", body: `${HEADER}改好了` }),
+      at: clock,
+    });
+
+    expect(await effects.flush()).toEqual({ done: 1, failed: 0 });
+    // 标记命中，不再发第二条；但账本要补记，rewind 才看得到这条无法撤回的回帖
+    expect(calls.filter((c) => c[1] === "pr").length).toBe(0);
+    expect(store.effectRow("comment", key)!.status).toBe("done");
+    expect(store.effectsOf("t_crash").map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
+  });
+
   test("未启用 github 时不回帖", async () => {
     cfg = makeCfg(repo, stateDir);
     const { runner: ghRunner, calls } = scripted(reply(0));

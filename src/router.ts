@@ -100,14 +100,15 @@ export class Router {
     this.deps.store.setPrUrl(taskId, url);
   }
 
-  /** 回帖 effect：线程里已有同标记就是发过了，重试不会重复 */
+  /**
+   * 回帖 effect：线程里已有同标记就是发过了，重试不会重复。
+   * 两种结果都写账本：上次「发出后、记账前」崩溃时，重放命中的是已存在的评论。
+   */
   private commentEffect(p: CommentPayload): Promise<"posted" | "skipped"> {
     const res = postReplyOnce(this.deps.ghRunner ?? defaultRunner, p.repo, p.number, p.purpose, p.taskId, p.body);
     if (!res.ok) return Promise.reject(new Error(res.error));
-    if (res.value === "posted") {
-      const kind = p.purpose === "pr" ? "PR" : "Issue";
-      this.deps.store.effect(p.taskId, "comment", `${p.repo}#${p.number}`, `${kind} 回帖`);
-    }
+    const kind = p.purpose === "pr" ? "PR" : "Issue";
+    this.deps.store.effect(p.taskId, "comment", `${p.repo}#${p.number}`, `${kind} 回帖`);
     return Promise.resolve(res.value);
   }
 
