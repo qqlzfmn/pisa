@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, vi, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -753,6 +753,38 @@ describe("GitHub 评论 → 任务", () => {
     expect(store.effectRow("comment", key)!.status).toBe("done");
     expect(calls.filter((c) => c[1] === "pr").length).toBe(2);
     expect(store.effectsOf(task.id).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
+  });
+
+  test("重启后未完成的回帖由新的 Router 补发", async () => {
+    const taskId = "t_restart";
+    const key = `pr:o/r#12:${taskId}`;
+    // 上次进程崩在「动作成功、标记完成」之前留下的 pending 行
+    store.enqueueEffect({
+      kind: "comment",
+      key,
+      taskId,
+      payload: JSON.stringify({ taskId, repo: "o/r", number: 12, purpose: "pr", body: "改好了" }),
+      at: 0,
+    });
+
+    const { runner: ghRunner, calls } = scripted(threadBodies([]), reply(0));
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, ghRunner });
+    // 完成落库就是重放跑完的信号，不用轮询
+    const completed = Promise.withResolvers<void>();
+    const complete = store.completeEffect.bind(store);
+    const spy = vi.spyOn(store, "completeEffect").mockImplementation((kind, k, result, at) => {
+      const row = complete(kind, k, result, at);
+      completed.resolve();
+      return row;
+    });
+
+    router.start();
+    await completed.promise;
+    await router.stop();
+    spy.mockRestore();
+
+    expect(calls.filter((c) => c[1] === "pr").length).toBe(1);
+    expect(store.effectsOf(taskId).map((e) => [e.kind, e.target])).toContainEqual(["comment", "o/r#12"]);
   });
 
   test("未启用 github 时不回帖", async () => {
