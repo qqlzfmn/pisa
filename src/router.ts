@@ -486,7 +486,7 @@ export class Router {
       endedAt: null,
       cancelRequested: false,
     };
-    const claim = store.createTaskFromTrigger(trigger, task);
+    const claim = store.createTaskFromTrigger(trigger, task, msg.eventId);
     if (!claim.created) {
       // 幂等投递也要登记事件，外部调用方（auto-improve）靠 event_id → task_id 对应任务
       store.claimEvent(msg.eventId, claim.taskId);

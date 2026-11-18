@@ -255,6 +255,35 @@ describe("Trigger 身份与线程归属", () => {
     expect(store.recentTasks()).toHaveLength(1);
   });
 
+  test("旧库按真实入口身份重放：同正文仍 1 个任务，新版本挂回原任务", async () => {
+    const file = join(stateDir, "legacy-events.sqlite");
+    const old = new Store(file);
+    old.insertTask({
+      ...seedTaskFixture(),
+      id: "t_old",
+      source: "telegram:c9:77",
+      chatId: "c9",
+      prompt: "修登录",
+      createdAt: 111,
+    });
+    old.claimEvent("telegram:c9:77", "t_old");
+    old.close();
+
+    store.close();
+    store = new Store(file);
+    const r = router();
+    // 真实 Telegram 形状：messageKey 是平台消息 id，与补齐触发器时记下的 eventId 拼法不同
+    const replay = { eventId: "telegram:c9:77", chatId: "c9", messageKey: "77", isDirect: false };
+    await r.handle(msg("/pisa 修登录", { ...replay, version: "1700000000" }));
+    expect(store.recentTasks()).toHaveLength(1);
+    expect(triggers(store)).toHaveLength(1);
+
+    await r.handle(msg("/pisa 修登录并补测试", { ...replay, version: "1700000005" }));
+    expect(store.recentTasks()).toHaveLength(1);
+    expect(store.get("t_old")?.prompt).toBe("修登录并补测试");
+    expect(triggers(store).filter((t) => t.kind === "context").map((t) => t.task_id)).toEqual(["t_old"]);
+  });
+
   test("GitHub 评论编辑：同一评论的新 updated_at 不新建任务", async () => {
     const comments: Array<Record<string, unknown>> = [];
     const runner: Runner = (args) => {

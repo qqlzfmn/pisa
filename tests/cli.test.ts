@@ -173,6 +173,21 @@ describe("pisa task", () => {
     store.close();
   });
 
+  test("旧库只有 events 账本时，--event-id 重放返回原任务", async () => {
+    const legacy = seed({ prompt: "旧需求" });
+    const withEvents = new Store(join(stateDir, "pisa.db"));
+    withEvents.claimEvent("e9", legacy.id);
+    withEvents.close();
+
+    const replay = parse<TaskJson>(await cli(...base("task", "旧需求", "--event-id", "e9", "--json")));
+    expect(replay.id).toBe(legacy.id);
+    expect(replay.message).toContain("事件已存在");
+
+    const store = new Store(join(stateDir, "pisa.db"));
+    expect(store.listTasks()).toHaveLength(1);
+    store.close();
+  });
+
   test("未知仓库别名与未授权仓库都以用法错误退出", async () => {
     expect((await cli(...base("task", "x", "--repo", "nope"))).code).toBe(2);
     writeConfig({ whitelist: { users: [], repos: ["other"] } });

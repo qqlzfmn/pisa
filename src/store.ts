@@ -268,6 +268,7 @@ export class Store {
   /**
    * 旧库的任务没有触发器记录：按任务自身的入口信息补一条，重放旧事件才不会新建任务。
    * 只写 triggers，不动 tasks；线程键与 core 的缺省成线程规则一致。
+   * 补完后记下当时最大的任务 rowid，createTaskFromTrigger 靠它认出升级前的任务。
    */
   private backfillTriggers(): void {
     const rows = this.db
@@ -289,6 +290,10 @@ export class Store {
           "task",
           task.id,
         );
+      }
+      if (this.getMeta("triggers.backfill_rowid") === null) {
+        const { n } = this.db.query("SELECT COALESCE(MAX(rowid), 0) AS n FROM tasks").get() as { n: number };
+        this.setMeta("triggers.backfill_rowid", String(n));
       }
     })();
   }
@@ -429,8 +434,10 @@ export class Store {
    * 触发器的唯一落库口：新触发建任务；同一条消息的新版本挂到原任务上。
    *
    * 整个判断在一个事务里，所以重复投递和并发投递都只会有一个任务。
+   * `eventId` 是升级前的去重键：旧任务只有 `events` 账本，入口身份与补写的
+   * 触发器键拼法不同（Telegram 记的是平台消息 id），重放时按账本认回原任务。
    */
-  createTaskFromTrigger(trigger: Trigger, task: Task): TriggerClaim {
+  createTaskFromTrigger(trigger: Trigger, task: Task, eventId?: string): TriggerClaim {
     const claim: TriggerClaim = { taskId: task.id, created: false, edited: false, promptUpdated: false };
     this.db.transaction(() => {
       const prior = this.triggerByMessage(trigger.threadKey, trigger.messageKey);
@@ -442,12 +449,34 @@ export class Store {
         claim.promptUpdated = this.updatePrompt(claim.taskId, task.prompt);
         return;
       }
+      const legacy = eventId
+        ? (this.db.query("SELECT task_id FROM events WHERE event_id = ?").get(eventId) as { task_id: string } | null)
+        : null;
+      // 只回落到账本里升级前的任务：升级后同一事件声明另一个线程仍按新身份建任务
+      if (legacy && this.isLegacyTask(legacy.task_id)) {
+        claim.taskId = legacy.task_id;
+        // 正文没变就是重放；正文变了按编辑处理，排队任务换成最新版本
+        const seen = this.db
+          .query("SELECT 1 AS hit FROM triggers WHERE task_id = ? AND payload_hash = ? LIMIT 1")
+          .get(legacy.task_id, trigger.payloadHash);
+        if (seen) return;
+        claim.edited = true;
+        this.insertTrigger(trigger, "context", legacy.task_id);
+        claim.promptUpdated = this.updatePrompt(legacy.task_id, task.prompt);
+        return;
+      }
       this.insertTrigger(trigger, "task", task.id);
       this.insertTask(task);
       claim.created = true;
       claim.taskId = task.id;
     })();
     return claim;
+  }
+
+  /** 任务的 rowid 不超过补写触发器时记下的边界，才属于升级前的任务 */
+  private isLegacyTask(taskId: string): boolean {
+    const marker = Number(this.getMeta("triggers.backfill_rowid") ?? 0);
+    return this.db.query("SELECT 1 AS hit FROM tasks WHERE id = ? AND rowid <= ?").get(taskId, marker) !== null;
   }
 
   private insertTrigger(trigger: Trigger, kind: "task" | "context", taskId: string | null) {

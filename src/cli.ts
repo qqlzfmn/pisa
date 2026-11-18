@@ -158,7 +158,7 @@ function enqueue(io: Io, store: Store, args: ParsedArgs, task: Task): number {
     at: task.createdAt,
     text: task.prompt,
   });
-  const claim = store.createTaskFromTrigger(trigger, task);
+  const claim = store.createTaskFromTrigger(trigger, task, eventId);
   if (!claim.created) {
     const existing = store.get(claim.taskId);
     if (existing) {
