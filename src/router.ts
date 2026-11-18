@@ -18,6 +18,7 @@ import {
   type Runner,
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import { autoMerge, type ReviewRequest } from "./auto-merge";
 import { formatExamples, formatHelp } from "./usage";
 import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
@@ -34,6 +35,8 @@ export interface RouterDeps {
   channel: ChannelAdapter;
   /** 回帖用的 gh 执行器；默认走真实命令，测试注入假实现 */
   ghRunner?: Runner;
+  /** 评审用 worker；应使用独立实例/独立上下文，缺省复用主 worker 的新会话 */
+  reviewer?: WorkerRunner;
   /** 注入以便测试 */
   now?: () => number;
 }
@@ -49,6 +52,8 @@ interface PendingTask {
 
 export class Router {
   private active = new Map<string, Promise<void>>();
+  /** 后台自动合并（等 CI → 评审 → 合并）；不计入并发名额，但关停时要等 */
+  private autoMerging = new Map<string, Promise<void>>();
   /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
   private stopping = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -91,7 +96,8 @@ export class Router {
     this.timer = null;
     const cap = Promise.withResolvers<void>();
     const capTimer = setTimeout(cap.resolve, timeoutMs);
-    await Promise.race([Promise.all([...this.active.values()]), cap.promise]);
+    const pending = [...this.active.values(), ...this.autoMerging.values()];
+    await Promise.race([Promise.all(pending), cap.promise]);
     clearTimeout(capTimer);
   }
 
@@ -489,8 +495,10 @@ export class Router {
       await this.reply(msg.chatId, "只有原请求者可以合并。");
       return;
     }
+    // autoMerge 走远端 PR 合并，不改本地主干、不重启服务，因此不受执行中任务限制
+    const auto = cfg.github?.autoMerge === true;
     // 合并会重启服务；有任务在跑时先拒绝，避免把 worker 打断成 paused
-    if (!force && this.active.size > 0) {
+    if (!auto && !force && this.active.size > 0) {
       await this.reply(
         msg.chatId,
         `还有 ${this.active.size} 个任务在执行，合并会重启服务并打断它们。等结束后再合并，或加 --force。`,
@@ -504,6 +512,10 @@ export class Router {
     const repo = repoByAlias(cfg, task.repo);
     if (!repo) {
       await this.reply(msg.chatId, `仓库未配置：${task.repo}`);
+      return;
+    }
+    if (auto) {
+      await this.mergeViaPr(msg, task, repo);
       return;
     }
 
@@ -597,6 +609,107 @@ export class Router {
       setTimeout(() => process.exit(1), 800);
     } else {
       await this.reply(msg.chatId, "当前不是看护模式，改动在重启后生效。");
+    }
+  }
+
+  /** autoMerge 开启时，/pisa merge 复用同一条 PR 流水线，不在本地 rebase */
+  private async mergeViaPr(msg: IncomingMessage, task: Task, repo: RepoConfig): Promise<void> {
+    const { store } = this.deps;
+    if (store.effectsOf(task.id).some((e) => e.kind === "merge")) {
+      await this.reply(msg.chatId, `任务 ${task.id} 已合并。`);
+      return;
+    }
+    if (!task.prUrl) {
+      await this.reply(
+        msg.chatId,
+        `任务 ${task.id} 没有 PR：github.autoMerge 需要 delivery.pr=true；关掉 autoMerge 才走本地合并。`,
+      );
+      return;
+    }
+    if (this.autoMerging.has(task.id)) {
+      await this.reply(msg.chatId, `任务 ${task.id} 正在等 CI 或评审，稍后自动出结果。`);
+      return;
+    }
+    await this.reply(msg.chatId, `github.autoMerge 已开启：按 PR 流程处理 ${task.prUrl}`);
+    this.launchAutoMerge(task, repo, new TaskLogger(this.deps.cfg.stateDir, task.id));
+  }
+
+  /** 后台自动合并不占 worker 并发名额，但关停时要等到结束或超时 */
+  private launchAutoMerge(task: Task, repo: RepoConfig, log: TaskLogger): void {
+    const p = this.autoMergeTask(task, repo, log)
+      .catch((err) => {
+        log.write("auto-merge", `error: ${String(err)}`);
+        return this.reply(task.chatId, `未合并 · ${task.id}\n自动合并异常：${String(err).slice(0, 300)}`);
+      })
+      .finally(() => this.autoMerging.delete(task.id));
+    this.autoMerging.set(task.id, p);
+  }
+
+  /** 等 CI → 独立评审 → head 未变 → squash 合并；全程只动远端 PR，不碰本地主干 */
+  private async autoMergeTask(task: Task, repo: RepoConfig, log: TaskLogger): Promise<void> {
+    const result = await autoMerge(task, {
+      runner: this.deps.ghRunner ?? defaultRunner,
+      standards: this.repoStandards(repo.path),
+      review: (req) => this.runReview(task, repo, req, log),
+    });
+    log.write("auto-merge", result.status === "blocked" ? `${result.status}: ${result.reason}` : result.status);
+
+    if (result.status === "merged") {
+      const base = repo.baseBranch ?? "main";
+      // squash 提交不在任务分支上，detail 只记目标分支；rewind 用 PR 的 mergeCommit 回退
+      this.deps.store.effect(task.id, "merge", base, JSON.stringify({ base }));
+      this.cleanupMerged(repo, task);
+      const sha = result.mergeCommit ? `\n合并提交：${result.mergeCommit.slice(0, 8)}` : "";
+      await this.reply(task.chatId, `已合并 · ${task.id}\nPR：${result.pr.url}${sha}\n分支与工作副本已清理`);
+      return;
+    }
+    if (result.status === "skipped") {
+      await this.reply(task.chatId, `未合并 · ${task.id}\n${result.reason}`);
+      return;
+    }
+    const lines = [`未合并 · ${task.id}`, result.reason];
+    if (result.blockers.length > 0) lines.push(`阻塞项：\n${result.blockers.map((b) => `- ${b}`).join("\n")}`);
+    await this.reply(task.chatId, lines.join("\n\n"));
+  }
+
+  /**
+   * 评审：在 head 的独立工作副本里跑新会话 worker，只给它 diff 与仓库规范。
+   * 不复用主任务会话，避免实现者给自己盖章。
+   */
+  private async runReview(task: Task, repo: RepoConfig, req: ReviewRequest, log: TaskLogger): Promise<string> {
+    const dir = resolve(this.deps.cfg.stateDir, "review", task.id);
+    if (existsSync(dir)) removeWorktree(repo.path, dir);
+    const wt = sh(["git", "-C", repo.path, "worktree", "add", "--detach", dir, req.headSha]);
+    if (wt.code !== 0) throw new Error(`创建评审副本失败：${(wt.err || wt.out).slice(0, 300)}`);
+    try {
+      const reviewTask: Task = {
+        ...task,
+        id: `${task.id}-review`,
+        prompt: req.prompt,
+        sessionId: null,
+        context: null,
+        prUrl: null,
+        branch: null,
+        baseRef: null,
+      };
+      const worker = this.deps.reviewer ?? this.deps.worker;
+      const res = await worker.run(reviewTask, dir, (line) => log.write("review", line), () => false, false);
+      if (!res.ok) throw new Error(`评审 worker 失败：${res.error ?? "未知错误"}`);
+      log.write("review-output", res.summary.slice(0, 2000));
+      return res.summary;
+    } finally {
+      removeWorktree(repo.path, dir);
+    }
+  }
+
+  /** 仓库规范作为评审标准；没有 AGENTS.md 就让评审按现有代码风格判断 */
+  private repoStandards(repoPath: string): string {
+    const path = join(repoPath, "AGENTS.md");
+    if (!existsSync(path)) return "";
+    try {
+      return readFileSync(path, "utf8").slice(0, 20_000);
+    } catch {
+      return "";
     }
   }
 
@@ -980,5 +1093,11 @@ export class Router {
     if (delivery.prUrl) lines.push(`链接：${delivery.prUrl}`);
     if (fresh?.sessionId) lines.push(`会话：${fresh.sessionId.slice(0, 8)}`);
     await this.reply(task.chatId, lines.join("\n\n"), task.id);
+
+    // PR 已就绪：等 CI 与评审都通过才合并，结果再单独回报
+    if (!this.stopping && cfg.github?.autoMerge === true && fresh?.prUrl) {
+      log.write("auto-merge", `start ${fresh.prUrl}`);
+      this.launchAutoMerge(fresh, repo, log);
+    }
   }
 }

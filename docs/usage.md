@@ -19,7 +19,7 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 | 看进度 | `/pisa status` | 运行中 / 排队 / 最近完成 三段 |
 | 停掉任务 | `/pisa cancel t_xxx` | 2 秒内收口为「取消」，运行中的任务清理工作副本与自建分支 |
 | 撤销副作用 | `/pisa rewind t_xxx` → 加 `--yes` | 关 PR、删分支；已合并用 revert |
-| 合入主干 | `/pisa merge t_xxx` | 临时副本跑测试，通过后 `--ff-only` 合并 |
+| 合入主干 | `/pisa merge t_xxx` | 默认在临时副本跑测试、`--ff-only` 合并；`github.autoMerge` 打开时改走 PR：CI 全绿 + 独立评审 pass 才 squash 合并 |
 | CI 失败 | `POST /event` 带 `x-pisa-token` | 与 IM 相同的执行链路 |
 | PR 内派活 | PR 评论 `/pisa 把错误处理补上` | 接续原分支并更新原 PR |
 | 到点自动开单 | `schedules` 里的 cron | 队列与执行链路同 IM |
@@ -29,7 +29,7 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 - **写清验收标准**：`修复登录超时` 不如 `登录超时改成 30 分钟，补一条超时回归测试`。Agent 按验收标准决定做到哪一步。
 - **一个任务一个目标**：同时要改三处，就发三条或先做一条再 `continue`；混在一条需求里，失败时整条回退。
 - **优先 `continue`，不要重开**：续跑复用原分支与上一轮摘要，比新任务多一份上下文；回复那条任务消息等同于续跑。
-- **合并前看 diff**：`delivery.push` / `delivery.pr` 关闭时改动只留在本地分支；开启后才有远程分支与 PR。自举合并前先看 `rewind <任务号>` 的预览确认影响面。
+- **合并前看 diff**：`delivery.push` / `delivery.pr` 关闭时改动只留在本地分支；开启后才有远程分支与 PR。自举合并前先看 `rewind <任务号>` 的预览确认影响面。打开 `github.autoMerge` 后合并由门禁决定：CI 全绿、独立评审 pass、评审后 head 未变，三者缺一不合。
 - **长任务看 `status`**：排队不是失败；`worker.concurrency` 满了就等。不要因为没秒回就重复派单，重复派单会并行改同一仓库。
 - **单英文词先确认**：`/pisa refactor` 会被拦下要求 `confirm`，这是防误触；需求写成一句完整的话。
 - **给足超时预算**：`worker.timeoutSec` 默认 3600 秒，超时任务按失败收口，分支保留供排查。
@@ -44,6 +44,16 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 ### 回滚不完整
 
 `rewind` 只能撤销账本内的副作用：PR、本地与远程分支、工作副本、合并提交。任务执行期间的外部调用（API、消息、数据库、部署）不在账本内，撤销不了。`rewind` 只对终态任务可用，运行中的任务先 `cancel`。PR 状态查不到时保守处理：不删分支、不标记已撤销。
+
+### 自动合并的边界
+
+`github.autoMerge` 打开后，合并不再是本地快进，而是远端 PR 的 squash 合并，门禁是三步：
+
+1. **CI**：`statusCheckRollup` 全部成功/中性/跳过；没有检查或 30 分钟没绿都不合并
+2. **评审**：独立 worker 会话只读评审 diff，输出 `pass|fail`；fail 的阻塞项会评论到 PR；输出解析不了按 fail 处理
+3. **SHA**：评审后重新读 head，和评审时的 SHA 不一致就不合并（有人在评审期间推了新提交）
+
+代价与限制：评审不能替代人看设计；评审 worker 同样是你的账号权限，不是沙箱；流水线在内存里，进程重启要重新发 `/pisa merge`；只改远端 PR，不重启服务，新代码下次启动才生效。
 
 ### 单机
 
@@ -76,7 +86,7 @@ pisa 自己兜底，不需要手工改数据库：
 1. **卡死检测**：worker 超过 `worker.idleTimeoutSec`（默认 900 秒）没有任何 stdout 或进度事件，进程被 SIGTERM→SIGKILL，任务转 `failed`，原因写进回执。
 2. **孤儿对账**：每 5 秒比对数据库里的 `running` 行与进程内执行器。进程被 kill 但服务没重启时，有会话与工作副本的转 `paused`，其余转 `failed`，不会永久挂着。
 3. **取消兜底**：`/pisa cancel <id>` 对没有执行器的 `running` 行直接结束，不会停在“取消中”。
-4. **合并门禁**：有任务在跑时 `/pisa merge` 会拒绝并说明原因；确实要打断就加 `--force`。
+4. **合并门禁**：有任务在跑时 `/pisa merge` 会拒绝并说明原因；确实要打断就加 `--force`。`github.autoMerge` 打开时合并不重启服务，不受这条限制。
 
 排查顺序：`/pisa status` 看 `error` → `ps` 看 agent 进程是否还在 → `paused` 用 `/pisa resume <id>`，`failed` 重新投递。日志在 `stateDir/logs/<taskId>.log`。
 

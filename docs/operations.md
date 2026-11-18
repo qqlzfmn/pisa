@@ -275,6 +275,22 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 
 `gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
 
+### PR 自动评审与合并（`github.autoMerge`）
+
+`autoMerge` 默认 `false`。打开后任务成功且产出 PR 时，pisa 自己在后台走完 GitHub Flow：
+
+1. 轮询 `statusCheckRollup`，全部成功/中性/跳过才算绿；有失败立即放弃，30 分钟没绿也放弃
+2. 拉 `gh pr diff`，用独立 worker 会话（`--detach` 工作副本，cwd 在评审的 head SHA）只读评审，标准是仓库 `AGENTS.md`
+3. 评审输出 `{"verdict":"pass|fail","blockers":[],"summary":""}`；解析失败按未通过处理
+4. fail 时把阻塞项评论到 PR；pass 时再读一次 head，和评审时的 SHA 不同就不合并
+5. 一致才执行 `gh pr merge <n> --repo <repo> --squash --delete-branch`，记 `merge` 账本，清理本地分支与工作副本
+
+前提：`delivery.push` 与 `delivery.pr` 都要打开，否则任务没有 PR，回执会提示缺少 `delivery.pr`。自动合并只动远端 PR，不碰本地主干，也不重启进程。
+
+`autoMerge` 打开时 `/pisa merge <任务号>` 不再本地 rebase，而是重跑同一条流水线（已合并的任务直接回报，不会重复合并）。
+
+限制：进行中的流水线是内存态，进程重启会丢；重启后再发一次 `/pisa merge` 即可，PR 已合并不会重复合并。CI 检查为空（仓库没配 Actions）时不合并。
+
 ## 自举
 
 pisa 可以改自己：
@@ -284,6 +300,8 @@ pisa 可以改自己：
 3. 看护模式（`PISA_SUPERVISED=1`）下进程退出，`scripts/supervise.sh` 拉起新代码
 
 这条链路已经实测：任务改 README → merge → 进程 PID 变化 → 新内容生效。
+
+打开 `github.autoMerge` 后改成 PR 路径：任务产出 PR → CI 全绿 → 独立评审 pass → squash 合并。这条路只动远端，进程不退出，新代码在下次重启后生效。
 
 ## 常驻（launchd）
 

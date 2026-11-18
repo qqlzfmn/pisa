@@ -15,6 +15,8 @@
 
 ### 新增
 
+- `github.autoMerge`（默认关闭）：开启后任务产出 PR 即走 GitHub Flow——等 `statusCheckRollup` 全绿、独立会话只读评审 diff、评审 pass 且 head 未变才 `gh pr merge --squash --delete-branch`；评审 fail 把阻塞项评论到 PR。开关关闭时 `/pisa merge` 仍是本地测试后快进合并
+- `tests/auto-merge.test.ts`：覆盖开关关闭、CI 未绿、评审 fail、head 变化与全绿通过五条路径
 - `LICENSE`（MIT），徽章与 GitHub 仓库许可字段据此生效
 - `tests/docs-links.test.ts`：所有 Markdown 的相对链接必须有落点，README 的页内锚点必须落在真实标题上
 

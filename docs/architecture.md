@@ -148,7 +148,8 @@ cancelled ─┘
 7. **执行**（`Worker.run`，`src/worker.ts`）。`adapter.buildArgs` 生成命令行（omp：`-e <extension> [-r <sessionId>] --mode=json -p <prompt> --cwd <workdir>`），`Bun.spawn` 的 cwd 就是工作副本，环境变量附带 `PISA_WORKDIR`、`PISA_PROGRESS_FILE`。超时按 `worker.timeoutSec`（默认 3600s）`SIGTERM`，10s 后 `SIGKILL`；取消每 2s 轮询一次，同样先礼后兵。stdout 按行交给 `adapter.parseLine`，最终 `summary` 与 `error` 都过 `redact`。
 8. **进度回传**。skill 把 `session`/`tool`/`blocked`/`done` 追加进 `.pisa/progress/<taskId>.jsonl`；`watchProgress`（`src/router.ts`）每 2s 读增量，节流 6s，转成 `🛠`/`✏️`/`⛔` 消息发到原对话。progress 只是旁路，丢了不影响任务结果。
 9. **交付**（`GitDeliverer.deliver`，`src/deliver.ts`）。`git status --porcelain` 无改动直接返回；有改动则 `commitAll`（`pisa: <首行>`，正文带任务号）→ 若 `delivery.push` 且配置了远程则 `push -u origin <branch>`（失败即抛错，任务落 `failed`）→ 若 `delivery.pr`、远程在 github.com、`gh` 可用则先 `gh pr list --head <branch>` 认领该分支上已有的开放 PR（上次建好却没来得及记账），没查到才 `gh pr create`（PR 正文带 `Closes #<issue>`），否则退回 `compare` 链接。无改动且任务无 `prUrl` 时，若分支已在 origin 上同样先认领一次。成功后记 `push`/`pr` 副作用。
-10. **收尾**。`transition(succeeded)` 写入 `summary/branch/prUrl/endedAt` → 删工作副本（保留分支与副作用账本）→ `replyToSource` 回 PR/Issue（正文带隐藏标记 `<!-- pisa:reply task=… -->`，重启重跑也不会重复回帖）→ 最终回执（摘要、文件清单、分支、链接、会话 id）。
+10. **自动合并**（`github.autoMerge`，`src/auto-merge.ts`）。开关打开且任务有 `prUrl` 时，`runTask` 在回执后启动后台流水线：`gh pr view` 读 `statusCheckRollup`，失败立即停、全绿才继续（30 分钟未绿算超时）→ `gh pr diff` → 评审 worker 在 head SHA 的 `--detach` 工作副本里只读评审，输出 `{"verdict":"pass|fail",…}` → pass 后复查 head，与评审时一致才 `gh pr merge --squash --delete-branch`。评审 fail 或解析失败时把阻塞项评论到 PR，不合并。合并成功记 `merge` 副作用（`detail={"base":…}`：squash 提交不在任务分支上，`rewind` 靠 PR 的 `mergeCommit` 做单提交 revert）并清理本地分支与工作副本。流水线不占 `worker.concurrency`，`stop()` 会等待它收口。开关关闭时该步不存在，第 11 步的本地合并路径不变。
+11. **收尾**。`transition(succeeded)` 写入 `summary/branch/prUrl/endedAt` → 删工作副本（保留分支与副作用账本）→ `replyToSource` 回 PR/Issue（正文带隐藏标记 `<!-- pisa:reply task=… -->`，重启重跑也不会重复回帖）→ 最终回执（摘要、文件清单、分支、链接、会话 id）。
 
 一次成功任务落盘的东西：
 
@@ -161,7 +162,7 @@ cancelled ─┘
 | `.pisa/logs/<taskId>.log` | 阶段日志（脱敏） | 不自动清理 |
 | `.pisa/progress/<taskId>.jsonl` | 工具级进度 | 不自动清理 |
 | `.pisa/worktrees/<taskId>` | 工作副本 | 成功、失败、运行中取消后删除；`paused`、重启时按取消请求置 `cancelled` 的任务及其后续取消保留 |
-| git 分支 `pisa/<taskId>` | 改动 | 交付前失败/取消时删；成功后保留 |
+| git 分支 `pisa/<taskId>` | 改动 | 交付前失败/取消时删；成功后保留，自动合并通过后删除 |
 
 四类变体：`continue`（IM 续跑原任务，分支与上下文来自父任务）、PR 评论（`taskByPr` 找到父任务，复用同一分支与 PR）、`resume`（`paused` 且工作副本在，同一 worktree + agent `-r` 会话续跑）、`rewind`（终态任务先出计划，`--yes` 再执行，成功项删账本行，失败项留着重试）。
 
@@ -297,6 +298,6 @@ interface ChannelAdapter {
 | 任务状态与恢复 | `src/types.ts`、`src/store.ts`、`docs/specs/005-crash-resume/` |
 | 事件入口 | `src/router.ts` 的 `handle`、`src/index.ts`、`docs/specs/003-super-agent-loop/` |
 | 换 agent | `src/adapters/`、`src/worker.ts` |
-| 交付与 PR | `src/deliver.ts`、`src/git.ts`、`src/github.ts` |
+| 交付与 PR | `src/deliver.ts`、`src/git.ts`、`src/github.ts`、`src/auto-merge.ts`、`docs/specs/017-pr-auto-merge/` |
 | 撤销 | `src/rewind.ts`、`docs/specs/013-rewind/` |
 | 配置项 | `src/config.ts`、`pisa.config.example.json` |

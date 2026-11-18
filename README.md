@@ -122,7 +122,7 @@ flowchart TB
 | 入口 | `src/index.ts`、`src/channels/`、`src/web.ts` | 把外部消息翻成 `IncomingMessage`，把回执写回来源 | 不做调度、不碰数据库细节 |
 | Core | `src/router.ts`、`src/store.ts` | 鉴权、命令、状态机（queued → running → succeeded/failed/paused）、去重、账本 | 不认识 Telegram 与 omp |
 | Runtime | `src/worker.ts`、`src/adapters/`、`extensions/` | 起进程、喂 prompt、收进度、超时与卡死判定 | 不改任务状态 |
-| 交付 | `src/git.ts`、`src/deliver.ts` | worktree、提交、push、PR 链接 | 不判断任务成功与否 |
+| 交付 | `src/git.ts`、`src/deliver.ts`、`src/auto-merge.ts` | worktree、提交、push、PR 链接；`github.autoMerge` 打开时等 CI、评审并 squash 合并 | 不判断任务成功与否 |
 
 Core 与 Runtime 之间只有一个 `WorkerRunner.run()`；换成别的 agent 只需实现 `WorkerAdapter`（`src/adapters/types.ts`），Router 一行不改。分层依据与失败模式见 [docs/architecture.md](./docs/architecture.md)。
 
@@ -221,6 +221,8 @@ curl -X POST http://127.0.0.1:8799/event \
 **Q：会自己 push 或开 PR 吗？**
 默认不。`delivery.push` 与 `delivery.pr` 都关着，改动只留在本地 `pisa/<任务号>` 分支；打开后才 push 到 origin（在本地裸仓库上验证过），`gh pr create` 还没在真实远程仓库实测。
 
+再打开 `github.autoMerge` 才进入 GitHub Flow：任务产出 PR 后，pisa 等 CI 全绿、让独立会话只读评审 diff，评审 pass 且 head 没变才 `gh pr merge --squash --delete-branch`；评审 fail 会把阻塞项评论到 PR。关着时 `/pisa merge` 仍是本地跑测试后快进合并。这条链路也还没在真实远程上跑过。
+
 **Q：两个任务同时改一个仓库会互相覆盖吗？**
 不会。每任务一个 git worktree 与独立分支。同一分支被别的 worktree 占用时任务直接失败，不会另建同名分支顶替；续跑才会刻意共享父任务的分支。
 
@@ -243,6 +245,7 @@ Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、
 - **单机单进程**：没有分布式调度，并发受本机 CPU 与 agent 进程数限制
 - **没有真正的会话持久化**：续跑靠「上一轮分支 + 上下文注入」，不是恢复 token 流
 - **`gh pr create` 未实测**：没配远程的仓库只得到 compare 链接
+- **自动合并没有真实链路验证**：CI 轮询、评审、squash 合并只在单测里用假 `gh` 与假评审覆盖，真实 GitHub 上未跑过；评审 worker 以你的身份运行，不是沙箱
 - **常驻脚本仅覆盖 macOS launchd**：其它系统需要自己托管进程
 
 ## 文档地图

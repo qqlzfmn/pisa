@@ -35,6 +35,11 @@ export interface GithubConfig {
   userId?: string;
   /** 多仓库写法，优先于旧字段 */
   repos?: GithubRepoConfig[];
+  /**
+   * GitHub Flow 自动合并：任务产出 PR 后，等 CI 全绿、独立评审 pass 且 head 未变才 squash 合并；
+   * 关闭时保持本地 rebase + 快进合并。缺省关闭。
+   */
+  autoMerge?: boolean;
 }
 
 /** 本机 Web 控制台；只监听 127.0.0.1，token 是唯一的鉴权因子 */
