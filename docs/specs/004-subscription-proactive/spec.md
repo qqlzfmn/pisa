@@ -33,6 +33,7 @@
 ### 2.4 交付
 
 - `delivery.push` 打开后 `git push -u origin <branch>`
+- 提交前按路径分拣：`.github/workflows/**`、`.github/actions/**`、`.env*`、`*.pem`、`*.key`、`id_*`、`.npmrc`、`.netrc`、`**/secrets*` 用 `git reset` 剔出索引，不进入提交与推送
 - `delivery.pr` 打开且远程是 GitHub 且本机有 `gh` 时创建 PR
 - 无 PR 时回执里给 compare 链接
 

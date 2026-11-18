@@ -38,6 +38,35 @@ export function deleteBranch(repoPath: string, branch: string): void {
   sh(["git", "-C", repoPath, "branch", "-D", branch]);
 }
 
+/**
+ * 敏感路径：凭据、私钥与 CI 工作流。命中即不进入交付提交，
+ * 避免回执泄露文件名，也避免 push 后 CI 用仓库凭据执行 agent 写入的工作流。
+ */
+export function isSensitivePath(path: string): boolean {
+  const p = path.toLowerCase();
+  if (/(^|\/)\.github\/(workflows|actions)\//.test(p)) return true;
+  const name = p.slice(p.lastIndexOf("/") + 1);
+  return (
+    name.startsWith(".env") ||
+    name.startsWith("secrets") ||
+    name.startsWith("id_") ||
+    name.endsWith(".pem") ||
+    name.endsWith(".key") ||
+    name === ".npmrc" ||
+    name === ".netrc"
+  );
+}
+
+/** 索引里的全部路径：`git add -A` 之后按文件展开，未跟踪目录不会折叠成一条 */
+function stagedFiles(workdir: string): string[] | null {
+  const p = Bun.spawnSync(["git", "-C", workdir, "diff", "--cached", "--name-only", "-z"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if ((p.exitCode ?? -1) !== 0) return null;
+  return (p.stdout?.toString() ?? "").split("\0").filter(Boolean);
+}
+
 export function changedFiles(workdir: string): string[] {
   // 不能用 sh()：它 trim 了行首状态位中的空格，会把 " M a.txt" 解析错
   const p = Bun.spawnSync(["git", "-C", workdir, "status", "--porcelain", "-z"], {
@@ -53,10 +82,43 @@ export function changedFiles(workdir: string): string[] {
     .filter(Boolean);
 }
 
-export function commitAll(workdir: string, message: string, name: string, email: string): ExecResult {
+export interface CommitResult extends ExecResult {
+  /** 实际进入本次提交的路径 */
+  files: string[];
+  /** 命中敏感路径、已用 `git reset` 剔出索引的路径 */
+  blocked: string[];
+}
+
+/** `git add -A` 后剔除敏感路径再提交；全被拦下时不产生空提交 */
+export function commitAll(workdir: string, message: string, name: string, email: string): CommitResult {
   const add = sh(["git", "-C", workdir, "add", "-A"]);
-  if (add.code !== 0) return add;
-  return sh(["git", "-C", workdir, "-c", `user.name=${name}`, "-c", `user.email=${email}`, "commit", "-m", message]);
+  if (add.code !== 0) return { ...add, files: [], blocked: [] };
+
+  const staged = stagedFiles(workdir);
+  if (!staged) return { code: -1, out: "", err: "读取索引失败", files: [], blocked: [] };
+  const blocked = staged.filter(isSensitivePath);
+  if (blocked.length > 0) {
+    // 按 pathspec 分拣而不是信任 .gitignore：agent 可以改 .gitignore 把敏感文件放进索引
+    const reset = sh(["git", "-C", workdir, "reset", "-q", "--", ...blocked.map((path) => `:(literal)${path}`)]);
+    if (reset.code !== 0) return { ...reset, files: [], blocked };
+  }
+  const files = staged.filter((path) => !isSensitivePath(path));
+  // 全被拦下时不产生空提交
+  if (files.length === 0) return { code: 0, out: "", err: "", files, blocked };
+
+  const commit = sh([
+    "git",
+    "-C",
+    workdir,
+    "-c",
+    `user.name=${name}`,
+    "-c",
+    `user.email=${email}`,
+    "commit",
+    "-m",
+    message,
+  ]);
+  return { ...commit, files, blocked };
 }
 
 export function remoteUrl(workdir: string): string {
