@@ -545,6 +545,77 @@ describe("Router", () => {
     }
   });
 
+  test("验证超时：慢测试被杀掉，回执说明超时且 main 不变", async () => {
+    const supervised = process.env.PISA_SUPERVISED;
+    delete process.env.PISA_SUPERVISED;
+    try {
+      cfg.worker.verifyTimeoutSec = 2;
+      // 超时由真实进程时钟决定，假定时器无法覆盖 SIGKILL 路径；sleep 是故意挂住验证进程的夹具
+      const slowWorker: WorkerRunner = {
+        async run(_task, workdir): Promise<WorkerResult> {
+          mkdirSync(join(workdir, "tests"), { recursive: true });
+          writeFileSync(
+            join(workdir, "tests", "slow.test.ts"),
+            'import { test, expect } from "bun:test";\ntest("slow", async () => {\n  await new Promise((r) => setTimeout(r, 30000));\n  expect(1).toBe(1);\n});\n',
+          );
+          return { ok: true, summary: "加了慢测试", exitCode: 0 };
+        },
+      };
+      const router = build(slowWorker);
+      await router.handle(msg("/pisa 加慢测试"));
+      await router.drainOnce();
+      const task = store.recentTasks()[0]!;
+      const before = sh(["git", "-C", repo, "rev-parse", "main"]).out;
+
+      const started = Date.now();
+      await router.handle(msg(`/pisa merge ${task.id}`));
+
+      expect(Date.now() - started).toBeLessThan(3000);
+      const text = channel.sent.at(-1)!.text;
+      expect(text).toContain(`未合并 · ${task.id}`);
+      expect(text).toContain("验证超时");
+      expect(sh(["git", "-C", repo, "rev-parse", "main"]).out).toBe(before);
+    } finally {
+      if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+    }
+  });
+
+  test("验证副本不继承 pisa 凭据，回执里也没有 token 明文", async () => {
+    const supervised = process.env.PISA_SUPERVISED;
+    delete process.env.PISA_SUPERVISED;
+    const token = `ghp_${"D".repeat(36)}`;
+    const previous = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = token;
+    try {
+      const leakWorker: WorkerRunner = {
+        async run(_task, workdir): Promise<WorkerResult> {
+          mkdirSync(join(workdir, "tests"), { recursive: true });
+          writeFileSync(
+            join(workdir, "tests", "leak.test.ts"),
+            `import { test } from "bun:test";\ntest("leak", () => {\n  console.log("ENV=" + process.env.GH_TOKEN);\n  throw new Error("ENV=" + process.env.GH_TOKEN + " literal ${token}");\n});\n`,
+          );
+          return { ok: true, summary: "加了泄漏测试", exitCode: 0 };
+        },
+      };
+      const router = build(leakWorker);
+      await router.handle(msg("/pisa 加泄漏测试"));
+      await router.drainOnce();
+      const task = store.recentTasks()[0]!;
+
+      await router.handle(msg(`/pisa merge ${task.id}`));
+
+      const text = channel.sent.at(-1)!.text;
+      expect(text).toContain(`未合并 · ${task.id}`);
+      expect(text).toContain("测试失败");
+      expect(text).toContain("ENV=undefined");
+      expect(text).not.toContain(token);
+    } finally {
+      if (previous === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = previous;
+      if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+    }
+  });
+
   test("回复任务消息自动续跑该任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 第一轮"));

@@ -2,10 +2,18 @@ import { join, resolve, sep } from "node:path";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { CommandKind, Config, RepoConfig } from "./config";
-import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
+import {
+  DEFAULT_ENV_ALLOW,
+  DEFAULT_VERIFY_TIMEOUT_SEC,
+  githubRepos,
+  parseCommand,
+  repoByAlias,
+  splitRepoAlias,
+  taskGuard,
+} from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
 import type { EffectRow, Store } from "./store";
-import type { WorkerRunner } from "./worker";
+import { workerEnv, type WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
 import { EffectQueue, type CommentPayload, type PrPayload, type PushPayload } from "./effects";
 import { createWorktree, currentBranch, deleteBranch, isGitRepo, listWorktrees, localBranches, remoteBranches, remoteUrl, removeWorktree, sh } from "./git";
@@ -31,7 +39,7 @@ import {
   type WorktreeReality,
 } from "./reconcile";
 import { formatExamples, formatHelp } from "./usage";
-import { TaskLogger } from "./log";
+import { redact, TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
@@ -789,9 +797,22 @@ export class Router {
       let detail = "没有测试目录，跳过测试";
       const hasTests = existsSync(join(verifyDir, "tests")) || existsSync(join(verifyDir, "test"));
       if (hasTests) {
-        const test = sh(["bun", "test"], verifyDir);
+        // 验证副本里是 agent 写的代码：只给它 worker 白名单里的变量，并设上限，
+        // 否则一条 sleep/while(true) 就能把合并闸门永久挂住
+        const verifyTimeoutSec = Math.max(1, cfg.worker.verifyTimeoutSec ?? DEFAULT_VERIFY_TIMEOUT_SEC);
+        const test = sh(["bun", "test"], verifyDir, {
+          env: workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env),
+          timeoutMs: verifyTimeoutSec * 1000,
+        });
+        if (test.timedOut) {
+          await this.reply(
+            msg.chatId,
+            `未合并 · ${task.id}\n验证超时（${verifyTimeoutSec}s），进程已杀掉，${base} 未改动`,
+          );
+          return;
+        }
         ok = test.code === 0;
-        detail = ok ? "测试通过" : `测试失败：\n${(test.err || test.out).slice(-600)}`;
+        detail = ok ? "测试通过" : `测试失败：\n${redact((test.err || test.out).slice(-600))}`;
       }
       if (!ok) {
         await this.reply(msg.chatId, `未合并 · ${task.id}\n${detail}`);

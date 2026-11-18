@@ -32,7 +32,8 @@
       "SHELL",
       "USER"
     ],
-    "idleTimeoutSec": 900
+    "idleTimeoutSec": 900,
+    "verifyTimeoutSec": 600
   },
   "delivery": {
     "push": false,

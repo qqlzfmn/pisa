@@ -21,6 +21,7 @@
 - 恢复中断任务不再重放旧过程消息：`resume` 从进度文件已写位置继续轮询，上一轮推送过的工具调用不会在重启后重复出现
 - 重启恢复尊重 `cancel_requested`：执行中说 `cancel` 的任务遇进程重启直接落 `cancelled`，不会再变成 `paused` 被后续 `resume` 复活；启动日志与恢复表同步三类计数
 - 同一 PR 只有一条工作线：PR 评论所属 PR 已有未结束的评论任务（`Store.activeTaskByPr`，`reply_pr` + `queued`/`running`/`paused`）时，Watcher 仍投递该任务号为 `continueFrom`，Router 占位 `eventId` 后回一条「PR #n 的任务 t_x 正在进行，结束后再发评论」，不再另开从 base 出发的任务；重复投递静默，父任务结束后同一条评论照常续跑
+- 合并闸门按最小权限执行验证：`/pisa merge` 在验证副本跑 `bun test` 时只给 `worker.envAllow` 白名单里的环境变量（不再是 pisa 全量 env，`GH_TOKEN`、`PISA_TELEGRAM_TOKEN` 不进子进程），并加超时 `worker.verifyTimeoutSec`（默认 600 秒）；超时用 SIGKILL 杀掉进程、回执写明「验证超时」，`main` 保持不变。测试输出进回执前统一 `redact`
 
 ### 变更
 

@@ -122,6 +122,9 @@ export interface TriggersConfig {
 /** events 与 progress 的默认保留天数 */
 export const DEFAULT_RETENTION_DAYS = 30;
 
+/** `/pisa merge` 验证副本跑测试的默认超时 */
+export const DEFAULT_VERIFY_TIMEOUT_SEC = 600;
+
 export interface Config {
   trigger: string;
   /** 私聊里不带触发词也当成任务 */
@@ -138,6 +141,8 @@ export interface Config {
     envAllow?: string[];
     /** 多久没有任何输出/进度就算卡死并杀掉，默认 900 秒 */
     idleTimeoutSec?: number;
+    /** `/pisa merge` 在验证副本跑测试的超时，默认 600 秒 */
+    verifyTimeoutSec?: number;
   };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   /** 通知详细程度；progress=false 时只发接单/执行/完成等生命周期消息 */
@@ -208,6 +213,7 @@ export const DEFAULT_CONFIG: Config = {
     concurrency: 2,
     envAllow: [...DEFAULT_ENV_ALLOW],
     idleTimeoutSec: 900,
+    verifyTimeoutSec: DEFAULT_VERIFY_TIMEOUT_SEC,
   },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   notifications: { progress: false },

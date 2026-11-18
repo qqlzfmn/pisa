@@ -71,6 +71,7 @@ describe("workerEnv", () => {
     const cfg = loadConfig(path);
     expect(cfg.worker.envAllow).toEqual([...DEFAULT_ENV_ALLOW]);
     expect(DEFAULT_CONFIG.worker.envAllow).toEqual([...DEFAULT_ENV_ALLOW]);
+    expect(cfg.worker.verifyTimeoutSec).toBe(600);
   });
 });
 
