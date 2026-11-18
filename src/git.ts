@@ -4,12 +4,34 @@ export interface ExecResult {
   err: string;
 }
 
-export function sh(args: string[], cwd?: string): ExecResult {
-  const p = Bun.spawnSync(args, { cwd, stdout: "pipe", stderr: "pipe" });
+/** `sh` 的返回值：额外标出是否由超时杀掉了进程 */
+export interface ShResult extends ExecResult {
+  timedOut: boolean;
+}
+
+export interface ShOptions {
+  /** 替换整个子进程环境；缺省继承 pisa 进程环境 */
+  env?: Record<string, string>;
+  /** 超时毫秒数；到点用 SIGKILL 杀掉进程 */
+  timeoutMs?: number;
+}
+
+export function sh(args: string[], cwd?: string, opts: ShOptions = {}): ShResult {
+  const p = Bun.spawnSync(args, {
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+    ...(opts.env ? { env: opts.env } : {}),
+    ...(opts.timeoutMs === undefined ? {} : { timeout: opts.timeoutMs, killSignal: "SIGKILL" as const }),
+  });
+  // 只有显式传了超时才可能由我们的 SIGKILL 结束；Bun 到点时返回 exitCode=null
+  const timedOut =
+    opts.timeoutMs !== undefined && p.exitCode === null && p.signalCode === "SIGKILL";
   return {
     code: p.exitCode ?? -1,
     out: (p.stdout?.toString() ?? "").trim(),
     err: (p.stderr?.toString() ?? "").trim(),
+    timedOut,
   };
 }
 

@@ -350,7 +350,7 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 pisa 可以改自己：
 
 1. 给机器人发需求（或从 webhook 投递），Worker 在 `pisa/<任务号>` 分支上改代码
-2. `/pisa merge <任务号>`：在临时副本跑 `bun test`，通过后 `--ff-only` 合入 `main`
+2. `/pisa merge <任务号>`：在临时副本按 `worker.envAllow` 白名单环境跑 `bun test`（超时 `worker.verifyTimeoutSec`，默认 600 秒，超时杀掉进程并拒绝合并），通过后 `--ff-only` 合入 `main`
 3. 看护模式（`PISA_SUPERVISED=1`）下进程退出，`scripts/supervise.sh` 拉起新代码
 
 这条链路已经实测：任务改 README → merge → 进程 PID 变化 → 新内容生效。
