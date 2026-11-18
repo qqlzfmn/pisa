@@ -17,6 +17,7 @@
 - 被拒的投递不再占事件号：事件占位排在鉴权与正文校验之后、任务落库之前，非白名单用户投递同一个 `eventId` 不会让随后的合法投递被静默丢弃
 - 恢复中断任务不再重放旧过程消息：`resume` 从进度文件已写位置继续轮询，上一轮推送过的工具调用不会在重启后重复出现
 - 重启恢复尊重 `cancel_requested`：执行中说 `cancel` 的任务遇进程重启直接落 `cancelled`，不会再变成 `paused` 被后续 `resume` 复活；启动日志与恢复表同步三类计数
+- 同一 PR 只有一条工作线：PR 评论所属 PR 已有未结束的评论任务（`Store.activeTaskByPr`，`reply_pr` + `queued`/`running`/`paused`）时，Watcher 仍投递该任务号为 `continueFrom`，Router 占位 `eventId` 后回一条「PR #n 的任务 t_x 正在进行，结束后再发评论」，不再另开从 base 出发的任务；重复投递静默，父任务结束后同一条评论照常续跑
 
 ### 变更
 

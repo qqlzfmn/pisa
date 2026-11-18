@@ -416,6 +416,20 @@ export class Router {
         await this.reply(msg.chatId, "只有原请求者可以续跑。");
         return;
       }
+      // PR 评论续跑复用父任务分支：父任务没结束时另建任务，要么从 base 新开一条工作线、
+      // 完成后多出一个 PR，要么在共享分支上撞工作副本。事件先占位并提示一次，重复投递静默。
+      if (
+        msg.replyPr &&
+        (parent.status === "queued" || parent.status === "running" || parent.status === "paused")
+      ) {
+        if (store.claimEvent(msg.eventId, parent.id)) {
+          await this.reply(
+            msg.chatId,
+            `PR #${msg.replyPr} 的任务 ${parent.id} 正在进行（${parent.status}），结束后再发评论。`,
+          );
+        }
+        return;
+      }
       if (!parent.branch) {
         await this.reply(msg.chatId, `任务 ${parent.id} 没有可续跑的分支。`);
         return;
