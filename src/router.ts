@@ -742,7 +742,7 @@ export class Router {
     }
 
     if (plan.actions.length === 0) {
-      if (plan.merge !== "unknown") store.transition(id, "rewound");
+      if (plan.merge !== "unknown" && store.transition(id, "rewound")) this.effects.cancelTask(id);
       const lines = [plan.merge === "unknown" ? `未完成撤销 · ${id}` : `已标记撤销 · ${id}`, "没有需要执行的撤销动作。"];
       if (plan.irreversible.length > 0) lines.push("", "不可撤销", ...plan.irreversible.map((s) => `- ${s}`));
       if (plan.notes.length > 0) lines.push("", "保留", ...plan.notes.map((s) => `- ${s}`));
@@ -760,7 +760,7 @@ export class Router {
     for (const r of results) {
       if (r.ok && r.effect) store.removeEffect(id, r.effect.kind, r.effect.target);
     }
-    if (plan.merge !== "unknown" && results.every((r) => r.ok)) store.transition(id, "rewound");
+    if (plan.merge !== "unknown" && results.every((r) => r.ok) && store.transition(id, "rewound")) this.effects.cancelTask(id);
     await this.reply(msg.chatId, formatRewindResult(plan, results));
   }
 

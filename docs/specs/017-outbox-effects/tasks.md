@@ -17,6 +17,8 @@
       验证：`bun test tests/github-comments.test.ts`
 - [x] T006 失败/取消路径丢弃未完成 effect (FR-010)
       验证：`bun test tests/effects.test.ts`
+- [x] T010 Router：撤销落 `rewound` 时丢弃未完成 effect (FR-013)
+      验证：`bun test tests/router.test.ts`
 
 ## 文档与回归
 

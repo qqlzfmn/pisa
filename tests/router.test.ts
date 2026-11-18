@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Store } from "../src/store";
 import { Router, formatDuration } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
+import { EffectQueue } from "../src/effects";
 import { parseCommand, taskGuard, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
@@ -1013,5 +1014,58 @@ describe("执行器丢失与合并门禁", () => {
     await router.handle(msg("/pisa merge t_done"));
     expect(channel.sent.at(-1)!.text).toContain("还有 1 个任务在执行");
     store.close();
+  });
+});
+
+describe("rewind 与 outbox", () => {
+  test("撤销完成后丢弃未完成的 effect，不再重放", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "pisa-repo-"));
+    const stateDir = mkdtempSync(join(tmpdir(), "pisa-state-"));
+    const store = new Store(":memory:");
+    const channel = new FakeChannel();
+    const cfg = makeCfg(repo, stateDir);
+    const effects = new EffectQueue(store, { now: () => 1_000 });
+    let runs = 0;
+    effects.register("comment", async () => {
+      runs += 1;
+      return "posted";
+    });
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, effects });
+    store.insertTask({
+      id: "t_done",
+      source: "seed:t_done",
+      channel: "fake",
+      chatId: "c1",
+      requester: "u1",
+      repo: "demo",
+      prompt: "改一下",
+      status: "succeeded",
+      branch: null,
+      prUrl: null,
+      sessionId: null,
+      baseRef: null,
+      context: null,
+      replyPr: null,
+      replyIssue: null,
+      replyRepo: null,
+      summary: "改好了",
+      error: null,
+      createdAt: 0,
+      startedAt: 1,
+      endedAt: 2,
+      cancelRequested: false,
+    });
+    store.enqueueEffect({ kind: "comment", key: "pr:demo#1:t_done", taskId: "t_done", payload: "{}", at: 0 });
+
+    await router.handle(msg("/pisa rewind t_done --yes"));
+
+    expect(store.get("t_done")!.status).toBe("rewound");
+    expect(store.effectRow("comment", "pr:demo#1:t_done")).toBeNull();
+    expect(await effects.flush()).toEqual({ done: 0, failed: 0 });
+    expect(runs).toBe(0);
+
+    store.close();
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
   });
 });
