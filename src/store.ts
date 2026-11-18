@@ -3,7 +3,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
-import type { Effect, EffectKind, Task, TaskStatus } from "./types";
+import type { AdmissionRecord } from "./policy";
+import type { Effect, EffectKind, Mandate, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_issue      INTEGER,
   reply_repo       TEXT,
   mode             TEXT NOT NULL DEFAULT 'work',
+  mandate          TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -79,6 +81,19 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- observe 模式下被记录、未接单的请求：用于调整准入规则与回看版本
+CREATE TABLE IF NOT EXISTS admissions (
+  event_id       TEXT PRIMARY KEY,
+  source         TEXT NOT NULL,
+  subject        TEXT NOT NULL,
+  cell           TEXT NOT NULL,
+  accept         TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  prompt         TEXT NOT NULL,
+  at             INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_admissions_at ON admissions(at);
 
 CREATE TABLE IF NOT EXISTS effects (
   kind       TEXT NOT NULL,
@@ -163,6 +178,7 @@ interface Row {
   reply_issue: number | null;
   reply_repo: string | null;
   mode: string | null;
+  mandate: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -209,6 +225,16 @@ function toTrigger(r: TriggerRow): TriggerRecord {
   };
 }
 
+/** 接单凭据以 JSON 存一列：读坏了按旧任务处理，不影响任务本身 */
+function toMandate(raw: string | null): Mandate | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Mandate;
+  } catch {
+    return null;
+  }
+}
+
 function toTask(r: Row): Task {
   return {
     id: r.id,
@@ -228,6 +254,7 @@ function toTask(r: Row): Task {
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
     mode: r.mode === "review" ? "review" : "work",
+    mandate: toMandate(r.mandate) ?? undefined,
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -272,6 +299,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "mode")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'work'");
+    }
+    if (!cols.some((c) => c.name === "mandate")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN mandate TEXT");
     }
     this.backfillTriggers();
   }
@@ -552,6 +582,50 @@ export class Store {
     return byTask.changes + orphan.changes;
   }
 
+  /**
+   * 记录一条 observe 请求；同一事件重投只留首条。
+   * 返回是否新插入：调用方据此决定要不要回执。
+   */
+  recordAdmission(r: AdmissionRecord): boolean {
+    const res = this.db.run(
+      `INSERT OR IGNORE INTO admissions (event_id, source, subject, cell, accept, policy_version, prompt, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [r.eventId, r.source, r.subject, r.cell, r.accept, r.policyVersion, r.prompt, r.at],
+    );
+    return res.changes > 0;
+  }
+
+  /** 最近的 observe 记录，新在前 */
+  recentAdmissions(limit = 5): AdmissionRecord[] {
+    const rows = this.db
+      .query("SELECT * FROM admissions ORDER BY at DESC LIMIT ?")
+      .all(limit) as Array<{
+      event_id: string;
+      source: string;
+      subject: string;
+      cell: string;
+      accept: AdmissionRecord["accept"];
+      policy_version: string;
+      prompt: string;
+      at: number;
+    }>;
+    return rows.map((r) => ({
+      eventId: r.event_id,
+      source: r.source,
+      subject: r.subject,
+      cell: r.cell,
+      accept: r.accept,
+      policyVersion: r.policy_version,
+      prompt: r.prompt,
+      at: r.at,
+    }));
+  }
+
+  /** 清掉过期的 observe 记录，返回删除行数；保留期与 events 一致 */
+  purgeAdmissions(cutoff: number): number {
+    return this.db.run("DELETE FROM admissions WHERE at < ?", [cutoff]).changes;
+  }
+
   /** 回收磁盘空间；每周由 Retention 调用。WAL 模式下文件要等 checkpoint 才实际缩小 */
   vacuum(): void {
     this.db.exec("VACUUM;");
@@ -560,8 +634,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mode)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mode, mandate)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -580,6 +654,7 @@ export class Store {
         t.replyIssue,
         t.replyRepo,
         t.mode ?? "work",
+        t.mandate ? JSON.stringify(t.mandate) : null,
       ],
     );
   }

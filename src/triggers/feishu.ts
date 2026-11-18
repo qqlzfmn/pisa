@@ -118,6 +118,9 @@ export class FeishuAdapter implements TriggerAdapter<HttpTriggerRequest, FeishuP
     // 群聊里 @机器人 会在正文里留下 @_user_1 之类的占位
     const text = raw.replace(/@_user_\d+/g, "").replace(/@_all/g, "").trim();
     if (!text) return null;
+    // mentions 是官方字段；占位符兜底兼容未带 mentions 的旧载荷
+    const mentions = message.mentions;
+    const mentioned = (Array.isArray(mentions) && mentions.length > 0) || /@_user_\d+|@_all/.test(raw);
 
     const dedupeKey = this.dedupeKey(payload);
     const chatType = typeof message.chat_type === "string" ? message.chat_type : "";
@@ -130,6 +133,7 @@ export class FeishuAdapter implements TriggerAdapter<HttpTriggerRequest, FeishuP
           chatId: this.opts.chatId,
           userId: this.opts.userId,
           actor: openId,
+          mentioned,
           repo: this.opts.repo,
           isDirect: chatType === "p2p",
           text: commandText(this.opts.trigger, text),

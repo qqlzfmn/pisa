@@ -50,12 +50,30 @@ export interface IncomingMessage {
   version?: string;
   /** 触发者：入口侧真实发起人；缺省用 userId（PR 评论这类以配置身份投递的入口要显式给） */
   actor?: string;
+  /** 消息是否 @ 了机器人；只有能可靠判定 @ 的入口（Telegram、飞书）会填 */
+  mentioned?: boolean;
   /** 任务类型；缺省按普通开发任务处理 */
   mode?: TaskMode;
 }
 
 /** work：改代码并交付；review：只读评审，不建分支、不交付 */
 export type TaskMode = "work" | "review";
+
+/** 接单凭据：这条请求按哪一版策略、在哪一格被放行 */
+export interface Mandate {
+  source: string;
+  /** 判定主体：userId 或平台真实发起人 */
+  subject: string;
+  /** 主体是否在来源准入名单内 */
+  listed: boolean;
+  mentioned: boolean;
+  /** 命中的准入格，如 listed.mention */
+  cell: string;
+  /** 接单模式；只有 auto 会建任务 */
+  accept: "auto";
+  policyVersion: string;
+  at: number;
+}
 
 export interface Task {
   id: string;
@@ -81,6 +99,8 @@ export interface Task {
   replyRepo: string | null;
   /** 任务类型：review 只读评审，不建分支、不交付；缺省按 work 处理 */
   mode?: TaskMode;
+  /** 接单凭据：来源、判定主体、命中格与策略版本；旧任务没有这一项 */
+  mandate?: Mandate;
   summary: string | null;
   error: string | null;
   createdAt: number;

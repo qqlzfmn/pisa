@@ -152,7 +152,7 @@ cancelled ─┘
    - PR 自动评审：`github.review.enabled` 打开时，同一轮再列一次 open PR，对 `(仓库, PR, head SHA)` 没有触发器记录的版本拉 `gh pr diff`，投递 `mode: "review"` 的只读任务；去重键落在 `triggers` 表，diff 拉取失败不建任务。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 线程解析（`threadKeyOf`：入口声明 > 被回复任务 > 本条消息）→ 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
-3. **去重与鉴权**（`src/trigger.ts` 与 `checkAccess`，`src/router.ts`）。先 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库，再校验仓库与需求：被拦下的消息不写触发器，改完配置重发同一条即可。通过后 `makeTrigger` 算出触发身份，`store.triggerByMessage(threadKey, messageKey)` 命中同一条消息时，同版本同载荷即重复投递直接丢弃，版本不同即编辑（见 4.2）。
+3. **去重与鉴权**（`src/policy.ts`、`checkRepo` 与 `src/trigger.ts`，`src/router.ts`）。先按来源准入表判定派活资格（`policy.decide`：名单内外 × 是否 @ 取格，再看 `accept`），再校验白名单仓库与目录是 git 仓库（`checkRepo`），最后校验仓库与需求：被拦下的消息不写触发器、不占 `eventId`，改完配置重发同一条即可。`accept=observe` 的来源只把请求写进 `admissions` 表并回一条「已记录」。通过后 `makeTrigger` 算出触发身份，`store.triggerByMessage(threadKey, messageKey)` 命中同一条消息时，同版本同载荷即重复投递直接丢弃，版本不同即编辑（见 4.2）。
 4. **落库与回执**（`Router.handle`，`src/router.ts`）。`store.createTaskFromTrigger` 在同一事务里写触发器与任务（`status=queued`），立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
 5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。评审任务（`mode=review`）不取分支，执行走临时目录，不建 worktree、不交付。
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
@@ -168,6 +168,7 @@ cancelled ─┘
 | `pisa.db` `tasks` | 任务全字段 | 永不 |
 | `pisa.db` `task_messages` | 信道消息 → 任务 | 永不 |
 | `pisa.db` `triggers` | 触发身份（线程 / 消息 / 版本 / 载荷）与归属任务 | 永不 |
+| `pisa.db` `admissions` | `accept=observe` 来源的放行记录（主体、命中格、策略版本、需求） | 超出保留期 |
 | `pisa.db` `events` | 定时与保留任务的占位键 | 超出保留期的终态任务对应行 |
 | `pisa.db` `task_effects` | 仍在生效的分支/推送/PR/回帖/合并 | 撤销或清理时逐条删 |
 | `pisa.db` `effects` | 外部动作队列：推送、建 PR、回帖的待执行/已完成/已终止行 | 不自动清理；任务失败或取消时删该任务的未完成行 |
@@ -176,7 +177,7 @@ cancelled ─┘
 | `.pisa/worktrees/<taskId>` | 工作副本 | 成功、失败、运行中取消后删除；`paused`、重启时按取消请求置 `cancelled` 的任务及其后续取消保留 |
 | git 分支 `pisa/<taskId>` | 改动 | 交付前失败/取消时删；成功后保留 |
 
-四类变体：`continue`（IM 续跑原任务，分支与上下文来自父任务）、PR 评论（`taskByPr` 找到父任务，复用同一分支与 PR）、`resume`（`paused` 且工作副本在，同一 worktree + agent `-r` 会话续跑）、`rewind`（终态任务先出计划，`--yes` 再执行，成功项删账本行，失败项留着重试）。
+四类变体：`continue`（IM 续跑原任务，分支与上下文来自父任务）、PR 评论（`taskByPr` 找到父任务，复用同一分支与 PR）、`resume`（`paused` 且工作副本在，同一 worktree + agent `-r` 会话续跑；先按 `mandate` 重放当前策略，被移出名单或来源降为 `observe`/`off` 时拒绝并保持 `paused`）、`rewind`（终态任务先出计划，`--yes` 再执行，成功项删账本行，失败项留着重试）。
 
 ## 4. 扩展点
 
@@ -290,7 +291,7 @@ interface ChannelAdapter {
 
 | 失败点 | 检测方式 | 任务归宿 | 副作用处理 | 恢复路径 |
 | --- | --- | --- | --- | --- |
-| 非白名单 / 非 git 仓库 | `checkAccess` | 不建任务 | 未写触发器 | 改配置后重发同一条 |
+| 准入拒绝 / 非 git 仓库 | `policy.decide`、`checkRepo` | 不建任务 | 未写触发器 | 改配置后重发同一条；`resume` 时按当前策略重校验 |
 | 工作副本创建失败（分支被占用） | `createWorktree` 报 `already checked out` | `failed` | 无 | 先 `cancel` 占用它的任务 |
 | Worker 非零退出 | 退出码 + 最后 20 行 | `failed` | 删 worktree 与 `pisa/<id>` 分支 | 重新投递 |
 | 执行超时 | `worker.timeoutSec` | `failed`（`执行超时`） | 同上 | 拆小任务 |

@@ -39,6 +39,14 @@ import {
   type WorktreeReality,
 } from "./reconcile";
 import { formatExamples, formatHelp } from "./usage";
+import {
+  admissionSubject,
+  decide,
+  formatPolicy,
+  policySnapshot,
+  recheck,
+  type AdmissionDecision,
+} from "./policy";
 import { redact, TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
@@ -276,6 +284,7 @@ export class Router {
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
+      else if (t === "/policy" || t === "策略") cmd = { kind: "policy", body: "" };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
@@ -297,6 +306,14 @@ export class Router {
       const open = store.openTaskByThread(threadKey);
       const text = msg.text.trim();
       if (open && text) {
+        // 补充说明写的是别人的任务：按同一份准入表判定；被拒或未接单模式静默丢弃，免得陌生人在群里刷屏
+        const policy = policySnapshot(cfg);
+        const gate = decide(policy, {
+          source: msg.channel,
+          subject: admissionSubject(policy, msg),
+          mentioned: msg.mentioned === true,
+        });
+        if (!gate.allowed || gate.accept !== "auto") return;
         const trigger = makeTrigger({
           source: msg.channel,
           threadKey,
@@ -421,6 +438,11 @@ export class Router {
       return;
     }
 
+    if (cmd.kind === "policy") {
+      await this.handlePolicy(msg);
+      return;
+    }
+
     let prompt = cmd.body;
     let baseRef: string | null = null;
     let context: string | null = null;
@@ -478,13 +500,20 @@ export class Router {
 
     const repo = repoByAlias(cfg, msg.repo ?? cfg.repos[0]?.alias);
 
-    const denied = this.checkAccess(msg, repo);
+    // 来源准入先于仓库校验：陌生人不需要看到仓库配置细节
+    const policy = policySnapshot(cfg);
+    const gate = decide(policy, {
+      source: msg.channel,
+      subject: admissionSubject(policy, msg),
+      mentioned: msg.mentioned === true,
+    });
+    if (!gate.allowed) {
+      await this.denyThrottled(msg, `${gate.reason}（策略 ${gate.version}）`);
+      return;
+    }
+    const denied = this.checkRepo(msg, repo);
     if (denied) {
-      const last = this.deniedAt.get(msg.userId) ?? 0;
-      if (this.now() - last > 24 * 3600 * 1000) {
-        this.deniedAt.set(msg.userId, this.now());
-        await this.reply(msg.chatId, denied);
-      }
+      await this.denyThrottled(msg, denied);
       return;
     }
     if (!repo) {
@@ -493,6 +522,24 @@ export class Router {
     }
     if (!prompt) {
       await this.reply(msg.chatId, `用法：${cfg.trigger} <需求描述>`);
+      return;
+    }
+
+    // observe：只记录这次请求，不建任务；同一事件重投只回执一次
+    if (gate.accept === "observe") {
+      const fresh = store.recordAdmission({
+        eventId: msg.eventId,
+        source: gate.source,
+        subject: gate.subject,
+        cell: gate.cell,
+        accept: gate.accept,
+        policyVersion: gate.version,
+        prompt,
+        at: this.now(),
+      });
+      if (fresh) {
+        await this.reply(msg.chatId, `已记录，未接单：${gate.source} 处于 observe（策略 ${gate.version}）。`);
+      }
       return;
     }
 
@@ -525,6 +572,16 @@ export class Router {
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
       mode: msg.mode,
+      mandate: {
+        source: gate.source,
+        subject: gate.subject,
+        listed: gate.listed,
+        mentioned: gate.mentioned,
+        cell: gate.cell,
+        accept: "auto",
+        policyVersion: gate.version,
+        at: this.now(),
+      },
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -720,13 +777,37 @@ export class Router {
     return { repos, worktrees };
   }
 
-  private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
+  /** 仓库侧校验：来源准入（谁能派活）已由 policy 判定，这里只管仓库能不能落任务 */
+  private checkRepo(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
     const { cfg } = this.deps;
-    if (!cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
     if (!repo) return `仓库未配置：${msg.repo ?? "(默认)"}`;
     if (!cfg.whitelist.repos.includes(repo.alias)) return `无权限：仓库 ${repo.alias} 不在白名单。`;
     if (!isGitRepo(repo.path)) return `仓库路径不是 git 仓库：${repo.path}`;
     return null;
+  }
+
+  /** 拒绝提示节流：同一用户 24h 只提示一次，避免群内反复刷屏 */
+  private async denyThrottled(msg: IncomingMessage, text: string): Promise<void> {
+    if (this.now() - (this.deniedAt.get(msg.userId) ?? 0) <= 24 * 3600 * 1000) return;
+    this.deniedAt.set(msg.userId, this.now());
+    await this.reply(msg.chatId, text);
+  }
+
+  /** `/pisa policy`：当前规则、版本与最近 observe 记录，并给出调用者自己的判定 */
+  private async handlePolicy(msg: IncomingMessage): Promise<void> {
+    const { cfg, store } = this.deps;
+    const policy = policySnapshot(cfg);
+    const gate: AdmissionDecision = decide(policy, {
+      source: msg.channel,
+      subject: admissionSubject(policy, msg),
+      mentioned: msg.mentioned === true,
+    });
+    if (!gate.allowed) {
+      await this.reply(msg.chatId, `${gate.reason}（策略 ${gate.version}）`);
+      return;
+    }
+    const mine = `你：${gate.source} · ${gate.subject} · ${gate.cell} · accept=${gate.accept}`;
+    await this.reply(msg.chatId, `${formatPolicy(policy, store.recentAdmissions(5))}\n\n${mine}`);
   }
 
   /** 自举：把已完成任务的分支验证后合入主干 */
@@ -1002,6 +1083,17 @@ export class Router {
     }
     if (!msg.admin && task.requester !== msg.userId) {
       await this.reply(msg.chatId, "只有原请求者可以恢复。");
+      return;
+    }
+    // resume 不沿用接单时的结论：按 mandate 重放当前策略，降权或收紧后拒绝
+    const gate = recheck(policySnapshot(cfg), {
+      source: task.mandate?.source ?? task.channel,
+      subject: task.mandate?.subject ?? task.requester,
+      mentioned: task.mandate?.mentioned ?? false,
+      previousVersion: task.mandate?.policyVersion ?? null,
+    });
+    if (!gate.ok) {
+      await this.reply(msg.chatId, `任务 ${id} 不能恢复：${gate.reason}`);
       return;
     }
     if (task.status !== "paused") {

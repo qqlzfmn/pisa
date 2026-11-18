@@ -6,6 +6,7 @@ import { Store } from "../src/store";
 import { Router, formatDuration } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
 import { parseCommand, taskGuard, type Config } from "../src/config";
+import { policySnapshot } from "../src/policy";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh, changedFiles, createWorktree } from "../src/git";
@@ -1114,5 +1115,147 @@ describe("执行器丢失与合并门禁", () => {
     await router.handle(msg("/pisa merge t_done"));
     expect(channel.sent.at(-1)!.text).toContain("还有 1 个任务在执行");
     store.close();
+  });
+});
+
+describe("来源准入", () => {
+  function mk(policy?: Config["policy"]) {
+    const repo = makeRepo();
+    const stateDir = mkdtempSync(join(tmpdir(), "pisa-state-"));
+    const cfg = makeCfg(repo, stateDir);
+    if (policy) cfg.policy = policy;
+    const store = new Store(":memory:");
+    const channel = new FakeChannel();
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    const events = () => store.db.query("SELECT event_id FROM events").all() as Array<{ event_id: string }>;
+    return { store, channel, router, cfg, stateDir, repo, events };
+  }
+
+  test("任务落库记录 mandate 与策略版本", async () => {
+    const { store, router, cfg } = mk({ sources: { fake: { allowed: ["u1"] } } });
+    await router.handle(msg("/pisa 做事"));
+
+    const task = store.recentTasks()[0]!;
+    expect(task.mandate).toMatchObject({
+      source: "fake",
+      subject: "u1",
+      listed: true,
+      mentioned: false,
+      cell: "listed.plain",
+      accept: "auto",
+      policyVersion: policySnapshot(cfg).version,
+    });
+    expect(task.mandate?.at).toBeGreaterThan(0);
+  });
+
+  test("名单外被拒且不占 eventId，合法者仍可派活", async () => {
+    const { store, channel, router, events } = mk({ sources: { fake: { allowed: ["u1"] } } });
+    const eventId = "webhook:policy-denied";
+
+    await router.handle(msg("/pisa 做事", { userId: "stranger", eventId }));
+    expect(store.recentTasks()).toHaveLength(0);
+    expect(channel.sent[0]?.text).toContain("无权限");
+    expect(events()).toHaveLength(0);
+
+    await router.handle(msg("/pisa 做事", { eventId }));
+    expect(store.recentTasks()).toHaveLength(1);
+  });
+
+  test("名单内未 @ 被格拒绝，@ 后放行", async () => {
+    const { store, channel, router } = mk({
+      sources: { fake: { allowed: ["u1"], cells: { listed: { plain: "deny" } } } },
+    });
+
+    await router.handle(msg("/pisa 做事"));
+    expect(store.recentTasks()).toHaveLength(0);
+    expect(channel.sent.at(-1)!.text).toContain("listed.plain=deny");
+
+    await router.handle(msg("/pisa 做事", { mentioned: true }));
+    expect(store.recentTasks()).toHaveLength(1);
+    expect(store.recentTasks()[0]?.mandate?.cell).toBe("listed.mention");
+  });
+
+  test("observe 只记录不建任务，重投不重复回执", async () => {
+    const { store, channel, router, cfg } = mk({ sources: { fake: { accept: "observe" } } });
+    const m = msg("/pisa 观察中的需求");
+
+    await router.handle(m);
+    expect(store.recentTasks()).toHaveLength(0);
+    const rows = store.recentAdmissions(5);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      source: "fake",
+      subject: "u1",
+      cell: "listed.plain",
+      accept: "observe",
+      policyVersion: policySnapshot(cfg).version,
+      prompt: "观察中的需求",
+    });
+    expect(channel.sent.at(-1)!.text).toContain("observe");
+
+    const sent = channel.sent.length;
+    await router.handle(m);
+    expect(channel.sent.length).toBe(sent);
+    expect(store.recentAdmissions(5)).toHaveLength(1);
+  });
+
+  test("/pisa policy 展示规则、版本与自己的判定", async () => {
+    const { channel, router, cfg } = mk({ sources: { fake: { allowed: ["u1"] } } });
+    await router.handle(msg("/pisa policy"));
+
+    const text = channel.sent.at(-1)!.text;
+    expect(text).toContain(`准入策略 · version ${policySnapshot(cfg).version}`);
+    expect(text).toContain("fake · accept=auto");
+    expect(text).toContain("你：fake · u1 · listed.plain · accept=auto");
+  });
+
+  test("策略收紧后 resume 被拒，任务保持 paused", async () => {
+    const { store, channel, router, cfg, stateDir } = mk({ sources: { fake: { allowed: ["u1"] } } });
+    await router.handle(msg("/pisa 做事"));
+    const task = store.recentTasks()[0]!;
+    expect(store.claimQueued(task.id, Date.now(), `pisa/${task.id}`)).toBe(true);
+    mkdirSync(join(stateDir, "worktrees", task.id), { recursive: true });
+    store.setSessionId(task.id, "sess-1");
+    expect(store.transition(task.id, "paused")).toBe(true);
+
+    cfg.policy = { sources: { fake: { allowed: [] } } };
+    await router.handle(msg(`/pisa resume ${task.id}`));
+
+    const text = channel.sent.at(-1)!.text;
+    expect(text).toContain("不能恢复");
+    expect(text).toContain("无权限");
+    expect(store.get(task.id)!.status).toBe("paused");
+  });
+
+  test("来源降为 observe 后 resume 被拒", async () => {
+    const { store, channel, router, cfg, stateDir } = mk();
+    await router.handle(msg("/pisa 做事"));
+    const task = store.recentTasks()[0]!;
+    expect(store.claimQueued(task.id, Date.now(), `pisa/${task.id}`)).toBe(true);
+    mkdirSync(join(stateDir, "worktrees", task.id), { recursive: true });
+    store.setSessionId(task.id, "sess-1");
+    expect(store.transition(task.id, "paused")).toBe(true);
+
+    cfg.policy = { sources: { fake: { accept: "observe" } } };
+    await router.handle(msg(`/pisa resume ${task.id}`));
+
+    expect(channel.sent.at(-1)!.text).toContain("observe");
+    expect(store.get(task.id)!.status).toBe("paused");
+  });
+
+  test("策略未变时 resume 照常执行", async () => {
+    const { store, channel, router, stateDir, repo } = mk({ sources: { fake: { allowed: ["u1"] } } });
+    await router.handle(msg("/pisa 新建 out.txt"));
+    const task = store.recentTasks()[0]!;
+    const branch = `pisa/${task.id}`;
+    expect(store.claimQueued(task.id, Date.now(), branch)).toBe(true);
+    expect(createWorktree(repo, join(stateDir, "worktrees", task.id), branch).code).toBe(0);
+    store.setSessionId(task.id, "sess-1");
+    expect(store.transition(task.id, "paused")).toBe(true);
+
+    await router.handle(msg(`/pisa resume ${task.id}`));
+    expect(channel.sent.some((m) => m.text.includes("恢复执行"))).toBe(true);
+    await router.drainOnce();
+    expect(store.get(task.id)!.status).toBe("succeeded");
   });
 });

@@ -95,6 +95,8 @@ export class Retention {
         }
       }
       result.events = store.purgeEvents(cutoff);
+      // observe 记录与事件同寿命：保留期外只用于调参，没有查询价值
+      store.purgeAdmissions(cutoff);
     }
 
     if (store.claimEvent(`retention:vacuum:${weekKey(stamp)}`, SELF_TASK, stamp)) {

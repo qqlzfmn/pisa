@@ -9,6 +9,43 @@
       "pisa"
     ]
   },
+  "policy": {
+    "sources": {
+      "telegram": {
+        "allowed": [
+          "<telegram user id>"
+        ],
+        "cells": {
+          "listed": {
+            "mention": "allow",
+            "plain": "allow"
+          },
+          "unlisted": {
+            "mention": "deny",
+            "plain": "deny"
+          }
+        },
+        "accept": "auto"
+      },
+      "feishu": {
+        "accept": "observe"
+      },
+      "wecom": {
+        "allowed": [
+          "zhangsan"
+        ]
+      },
+      "github": {
+        "accept": "auto"
+      },
+      "webhook": {
+        "allowed": [
+          "ci"
+        ],
+        "accept": "off"
+      }
+    }
+  },
   "repos": [
     {
       "alias": "pisa",

@@ -152,6 +152,28 @@ curl -X POST http://127.0.0.1:8799/event \
 - 文件监听不递归子目录，`{path}` 在 `prompt` 里替换成变化的文件；停机期间的变化不补发，重启后按当下状态计。
 - 端口只监听 127.0.0.1，公网或内网转发由反向代理负责；正文上限 64 KiB（超限 413）。
 
+### 来源准入
+
+`whitelist.users` 是缺省名单；要让各入口各自管「谁能派活」，写 `policy.sources`：
+
+```json
+{
+  "policy": {
+    "sources": {
+      "telegram": { "allowed": ["<telegram user id>"] },
+      "feishu": { "allowed": ["ou_owner"], "cells": { "listed": { "plain": "deny" } } },
+      "webhook": { "accept": "observe" }
+    }
+  }
+}
+```
+
+- 来源键取 `IncomingMessage.channel`：`telegram`、`cli`、`web`、`webhook`、`cron`、`github`、`github-actions`、`feishu`、`wecom`、`file-watch`、`proactive`。未配置的来源沿用 `whitelist.users` 与 `accept=auto`，行为与不写 `policy` 完全一致。
+- `cells` 四格是「名单内/外 × 是否 @ 机器人」，缺省名单内两格 `allow`、名单外两格 `deny`。飞书、企业微信、GitHub 在配置了策略时按真实发送者判定（`actor`：open_id / userid / 评论作者）；`allowed` 缺省取飞书、企业微信自己的 `users`，GitHub 缺省取 `whitelist.users`（值是账号名，通常需要显式配 `allowed`）。
+- `accept`：`auto` 正常接单；`observe` 只把请求记进 `admissions` 表并回「已记录」，用于上线前观察谁在派活；`off` 一律拒绝。
+- 策略版本是规则内容的哈希。任务落库写 `mandate`（来源、主体、是否 @、命中格、策略版本）；`resume` 前按当前策略重放，被移出名单或来源降为 `observe`/`off` 时拒绝恢复并保持 `paused`。
+- `/pisa policy`（私聊可裸发 `策略`）列出当前版本、各来源规则与最近 5 条 observe 记录，并给出调用者自己的判定。
+
 ## Agent CLI 与 skill
 
 不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 只读写 `pisa.config.json` 与同一个 `pisa.db`，执行仍由守护进程负责。
@@ -222,7 +244,7 @@ curl -s http://127.0.0.1:8787/health
 }
 ```
 
-`userId` 是页面派出任务的请求者，必须在 `whitelist.users` 里；不配时取 `PISA_CLI_USER` 或 `$USER`。`chatId` 默认 `"web"`，只用于内部记账。也可以 `bun run src/index.ts --web` 临时开启，`--web` 会忽略 `web.enabled`。
+`userId` 是页面派出任务的请求者，缺省按 `whitelist.users` 判定准入，`policy.sources.web.allowed` 可单独覆盖；不配时取 `PISA_CLI_USER` 或 `$USER`。`chatId` 默认 `"web"`，只用于内部记账。也可以 `bun run src/index.ts --web` 临时开启，`--web` 会忽略 `web.enabled`。
 
 ## 多仓库
 
@@ -408,6 +430,6 @@ token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.
 
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `whitelist`、`policy`、`worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
 
-解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。
+解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive`、`policy` 没有默认值，缺省即按 `whitelist.users` + `accept=auto` 判定。

@@ -1,4 +1,4 @@
-import type { Task, TaskStatus } from "./types";
+import type { Mandate, Task, TaskStatus } from "./types";
 import type { Store } from "./store";
 import { STAGE_LABEL, stageText, taskStage, type TaskStage } from "./stage";
 import { windowMetrics, type WindowMetrics } from "./metrics";
@@ -37,6 +37,8 @@ export interface TaskJson {
   startedAt: number | null;
   endedAt: number | null;
   duration: string;
+  /** 接单凭据：来源、判定主体、命中格与策略版本；旧任务为 null */
+  mandate: Mandate | null;
 }
 
 /**
@@ -62,6 +64,7 @@ export function taskJson(t: Task, now = Date.now()): TaskJson {
     startedAt: t.startedAt,
     endedAt: t.endedAt,
     duration: formatDuration((t.endedAt ?? now) - from),
+    mandate: t.mandate ?? null,
   };
 }
 

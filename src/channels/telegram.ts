@@ -15,6 +15,8 @@ interface TgMessage {
   message_thread_id?: number;
   /** 编辑时间（秒）：有它说明是 edited_message，按版本区分 */
   edit_date?: number;
+  /** 实体标注：@username 与 @display name 两种都会出现，用来判定是否 @ 了机器人 */
+  entities?: Array<{ type: string }>;
 }
 
 interface TgUpdate {
@@ -70,6 +72,7 @@ export class TelegramChannel implements ChannelAdapter {
             messageKey: String(m.message_id),
             version: String(m.edit_date ?? m.date ?? ""),
             actor: String(m.from?.username ?? m.from?.id ?? m.chat.id),
+            mentioned: m.entities?.some((e) => e.type === "mention" || e.type === "text_mention") ?? false,
           });
         }
       } catch (err) {

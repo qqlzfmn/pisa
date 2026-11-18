@@ -105,7 +105,8 @@ export interface FileWatchTriggerConfig {
 
 /**
  * 通用触发适配层：GitHub Actions、飞书、企业微信、文件监听。
- * 任务请求者固定取 userId（必须是 whitelist.users 的一员），平台侧发送者只记进 actor。
+ * 任务请求者取 userId（投递身份）；平台侧真实发送者记进 actor，
+ * 来源在 policy.sources 里配了策略时按 actor 判定准入（见 src/policy.ts）。
  */
 export interface TriggersConfig {
   chatId?: string;
@@ -124,6 +125,39 @@ export const DEFAULT_RETENTION_DAYS = 30;
 
 /** `/pisa merge` 验证副本跑测试的默认超时 */
 export const DEFAULT_VERIFY_TIMEOUT_SEC = 600;
+
+/** 接单模式：off 不接单、observe 只记录、auto 正常派活 */
+export type AcceptMode = "off" | "observe" | "auto";
+
+/** 准入格的判定值 */
+export type AdmissionCell = "allow" | "deny";
+
+/** 主体相对准入名单的位置 */
+export type CellRole = "listed" | "unlisted";
+
+/** 消息是否 @ 机器人 */
+export type CellKind = "mention" | "plain";
+
+/** 单个来源的准入策略；字段缺省时按默认规则 */
+export interface SourcePolicy {
+  /** 准入名单：名单外一律拒绝；缺省取 whitelist.users（飞书/企业微信取各自 users） */
+  allowed?: string[];
+  /** 名单内外 × 是否 @ 的准入格 */
+  cells?: {
+    listed?: Partial<Record<CellKind, AdmissionCell>>;
+    unlisted?: Partial<Record<CellKind, AdmissionCell>>;
+  };
+  /** 接单模式，缺省 auto */
+  accept?: AcceptMode;
+}
+
+/**
+ * 来源准入表：按入口分别决定谁能在什么条件下派活。
+ * 未配置的来源沿用 whitelist.users 与 accept=auto。
+ */
+export interface PolicyConfig {
+  sources?: Record<string, SourcePolicy>;
+}
 
 export interface Config {
   trigger: string;
@@ -173,6 +207,8 @@ export interface Config {
       prompt?: string;
     };
   };
+  /** 来源准入表与策略；缺省时按 whitelist.users + accept=auto 判定 */
+  policy?: PolicyConfig;
   stateDir: string;
 }
 
@@ -329,7 +365,8 @@ export type CommandKind =
   | "confirm"
   | "verbose"
   | "gc"
-  | "reconcile";
+  | "reconcile"
+  | "policy";
 
 /** 帮助分组：派活（新任务与续跑）、查询（状态与用法）、维护（改撤合）、集成（不经 IM 的入口） */
 export type HelpGroup = "派活" | "查询" | "维护" | "集成";
@@ -355,6 +392,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "status", alias: "状态", description: "查看任务看板", group: "查询", menu: true },
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
+  { command: "policy", alias: "策略", description: "查看准入策略与版本", group: "查询", menu: true },
   { command: "verbose", alias: "进度", description: "过程消息开关（on/off）", args: "[on|off]", group: "查询", menu: true },
   { command: "gc", alias: "清理", description: "清理已结束任务的分支/工作副本/PR", args: "[天数] [--dry]", group: "维护", menu: true },
   { command: "reconcile", alias: "对账", description: "对比任务记录与分支/工作副本/PR", args: "[任务号] [--fix]", group: "维护", menu: true },

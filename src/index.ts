@@ -11,6 +11,7 @@ import { Retention } from "./retention";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import { ReplyBus, startWebServer, type WebServer } from "./web";
+import { decide, policySnapshot } from "./policy";
 import { webhookHandler } from "./webhook";
 import { startTriggers, type TriggersRuntime } from "./triggers";
 import type { ChannelAdapter } from "./types";
@@ -68,8 +69,8 @@ async function main(): Promise<void> {
       deliverer: new GitDeliverer(cfg),
       channel: bus,
     });
-    if (!cfg.whitelist.users.includes(web.userId)) {
-      console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
+    if (!decide(policySnapshot(cfg), { source: "web", subject: web.userId, mentioned: false }).allowed) {
+      console.warn(`[pisa] web.userId=${web.userId} 不在 web 准入名单，页面派活会被拒绝`);
     }
     webServer = startWebServer({ cfg, store, router, bus }, web);
   } else {
