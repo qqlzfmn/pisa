@@ -9,8 +9,9 @@
 - [x] [P] `CONTRIBUTING.md`：环境、启动、测试命令、SDD 流程、分支与提交、代码规范要点、提交前清单、文档地图（FR-005, FR-008）
 - [x] [P] `SECURITY.md`：信任边界表、已知不防护、密钥处理、上报流程、支持版本（FR-006, FR-008）
 - [x] [P] `CHANGELOG.md`：`Unreleased` + `0.1.0`，固定分组（FR-007）
+- [x] `README.md`：顶部挂 CI 徽章，链到 `ci.yml` 的 Actions 页面（FR-009）
+      验证: 徽章地址与 GitHub 远程 `qqlzfmn/pisa` 一致；测试断言工作流文件存在、链接等于图片地址去掉 `/badge.svg`
 - [x] `README.md`：开发方式段落加入 CONTRIBUTING / SECURITY / CHANGELOG 入口
-- [x] `tests/repo-ops.test.ts`：13 条用例，覆盖 FR-001 至 FR-008 的验收点与四个文档的相对链接
-      验证: `bun test tests/repo-ops.test.ts`（13 pass）；红相已确认（改坏 CI 命令、删掉回滚段、改错版本号各触发一条失败）
-- [x] 验证：`bun test`（210 pass，含既有 197 条）、`bunx tsc --noEmit`（无错误）
-- [ ] 待远程仓库就绪：CI 徽章（需要 `owner/repo`，当前无远程）
+- [x] `tests/repo-ops.test.ts`：15 条用例，覆盖 FR-001 至 FR-009 的验收点与四个文档的相对链接
+      验证: `bun test tests/repo-ops.test.ts`（15 pass）；红相已确认（改坏 CI 命令、删掉回滚段、改错版本号、改错徽章文件名各触发一条失败）
+- [x] 验证：`bun test`（232 pass，含既有用例）、`bunx tsc --noEmit`（无错误）

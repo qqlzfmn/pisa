@@ -69,6 +69,13 @@
 - Given 当前版本是 `0.1.0`，Then CHANGELOG 有 `0.1.0` 条目，按新增/变更/修复分组，并保留 `Unreleased` 段给未发布改动。
 - Given 版本号被提升，Then 测试在缺少对应 CHANGELOG 条目时失败。
 
+### US-7 CI 状态对外可见
+
+作为访客，打开 README 就知道 main 当前是不是绿的，不用先翻 Actions 页面。
+
+- Given main 上最近一次 CI 运行，When 打开 README，Then 顶部徽章显示该次结果，点击进入 `ci.yml` 的 Actions 页面。
+- Given 工作流文件改名或被删，Then `tests/repo-ops.test.ts` 失败，不允许徽章指向不存在的工作流。
+
 ## 4. 需求
 
 | ID | 需求 |
@@ -81,6 +88,7 @@
 | FR-006 | SECURITY 覆盖：信任边界（各入口的鉴权面）、已知不防护的面、密钥处理、漏洞上报流程与支持版本 |
 | FR-007 | CHANGELOG 按版本倒序、固定分组记录，当前版本条目与 `package.json` 的 version 一致 |
 | FR-008 | 同一事实只有一处来源：能力边界细节留在 `docs/usage.md`，编码规范留在 `AGENTS.md`，规格流程留在 `SDD.md`；新文档只做索引与差异说明 |
+| FR-009 | README 顶部挂 CI 状态徽章，指向 `.github/workflows/` 下真实存在的工作流，点击进入其 Actions 页面 |
 
 ## 5. 验收
 
@@ -90,12 +98,12 @@
 4. `CONTRIBUTING.md` 出现 `bun test`、`bunx tsc --noEmit`、规格流程与 Conventional Commits
 5. `SECURITY.md` 出现信任边界、`docs/usage.md` 链接、不上公开渠道的要求
 6. `CHANGELOG.md` 有 `Unreleased` 与 `0.1.0` 条目，`0.1.0` 与 `package.json` 一致
-7. `tests/repo-ops.test.ts` 覆盖 1–6，且新文档里的相对链接都能解析到真实文件
-8. `bun test` 与 `bunx tsc --noEmit` 通过
+7. `README.md` 顶部有 CI 徽章，图片链接指向 `.github/workflows/` 下真实存在的工作流，徽章本身链到该工作流的 Actions 页面
+8. `tests/repo-ops.test.ts` 覆盖 1–7，且新文档里的相对链接都能解析到真实文件
+9. `bun test` 与 `bunx tsc --noEmit` 通过
 
 ## 6. 非目标
 
-- **CI 徽章**：徽章 URL 需要 `owner/repo`，仓库当前没有远程，任何写法都会指向不存在的地址。等配置远程后再加，不在这里塞占位符。
 - **macOS 专用链路进 CI**：`scripts/install-launchd.sh` 依赖 launchd，只在本地验证。
 - **发布自动化、依赖机器人、PR 体积检查**：没有需求支撑。
 - **改动运行行为**：本 feature 只新增仓库文件与一个测试，不碰 Worker、Router、存储。

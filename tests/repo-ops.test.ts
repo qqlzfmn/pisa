@@ -35,6 +35,21 @@ describe("CI", () => {
   test("bun 版本固定，不在运行侧浮动", () => {
     expect(yml).toMatch(/bun-version: \d+\.\d+\.\d+/);
   });
+
+  test("README 的 CI 徽章指向真实存在的工作流", () => {
+    const badge = /\/actions\/workflows\/([\w.-]+)\/badge\.svg/.exec(read("README.md"));
+    const workflow = badge?.[1] ?? "";
+    expect(workflow).not.toBe("");
+    expect(existsSync(join(ROOT, ".github/workflows", workflow))).toBe(true);
+  });
+
+  test("徽章点击进入同一工作流的 Actions 页面", () => {
+    const readme = read("README.md");
+    const image = /!\[CI\]\((\S+?)\/badge\.svg\)/.exec(readme);
+    const url = image?.[1] ?? "";
+    expect(url).not.toBe("");
+    expect(readme).toContain(`](${url})`);
+  });
 });
 
 describe("Issue 表单", () => {

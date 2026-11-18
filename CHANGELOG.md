@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增
+
+- README 顶部 CI 徽章：直连 GitHub Actions 上 `ci.yml` 的运行结果，点击进入其 Actions 页面；测试锁住徽章引用的工作流文件必须真实存在
+
+### 修复
+
+- `/pisa merge` 在主干前进后的 rebase 带上配置里的提交身份（`delivery.commitName` / `delivery.commitEmail`），没有全局 git 配置的机器（CI、全新环境）不再因 `Committer identity unknown` 卡在「未合并」
+
 ## [0.1.0] - 2026-11-18
 
 ### 新增

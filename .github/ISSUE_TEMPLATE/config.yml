@@ -1,3 +1,3 @@
 # 关闭空白 Issue：所有问题都走结构化表单，必填项与复现信息由 GitHub 校验。
-# 有意不配置 contact_links：它要求绝对 URL，仓库当前没有远程，写死就是死链。
+# 有意不配置 contact_links：bug 表单首屏已给出安全上报渠道，不再挂需要随仓库地址维护的绝对 URL。
 blank_issues_enabled: false

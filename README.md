@@ -4,6 +4,7 @@
 
 **Pi Super Agent** · 用 pi 作底座，把编码 Agent 从「一个会话」变成「一个常驻团队」
 
+[![CI](https://github.com/qqlzfmn/pisa/actions/workflows/ci.yml/badge.svg)](https://github.com/qqlzfmn/pisa/actions/workflows/ci.yml)
 ![status](https://img.shields.io/badge/status-spec--first-blue)
 ![base](https://img.shields.io/badge/base-pi-111111)
 ![method](https://img.shields.io/badge/method-SDD-2f6b5a)

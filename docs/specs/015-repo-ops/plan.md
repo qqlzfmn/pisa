@@ -20,7 +20,7 @@ Issue Form（`.github/ISSUE_TEMPLATE/*.yml`）由 GitHub 校验必填项与下�
 
 `config.yml` 设 `blank_issues_enabled: false`，把用户逼到结构化的两条路径上。
 
-不给 `contact_links`：它要求绝对 URL，仓库当前没有远程，写死了就是死链（见 spec 非目标）。等有远程再加。
+不给 `contact_links`：bug 表单首屏已给出安全上报渠道，再挂一个绝对 URL 就是第二处要跟着仓库地址维护的常量。
 
 PR 模板用 `.github/pull_request_template.md` 单文件：回滚方式、验证输出是自由文本，表单没有优势。段落顺序对齐 `AGENTS.md` 的 PR 规范：目的/结论 → 背景 → 方案 → 影响与风险 → 验收结果。
 
@@ -52,3 +52,9 @@ PR 模板用 `.github/pull_request_template.md` 单文件：回滚方式、验�
 ## D7 不改运行代码
 
 本 feature 不碰 `src/`、`extensions/`。`bun test` 的既有 197 条用例必须保持通过，新增测试与它们同进程跑。
+
+## D8 CI 徽章直接指向工作流文件
+
+远程仓库已就绪（`qqlzfmn/pisa`），徽章用 GitHub 原生地址 `<repo>/actions/workflows/ci.yml/badge.svg`，不用 shields.io 的 `github/workflows/status`：后者要额外接口、有缓存滞后，且要写同样的 `owner/repo`。
+
+徽章里带工作流文件名，所以改名或删除 `ci.yml` 会让图片挂掉。测试断言图片 URL 里的文件名在 `.github/workflows/` 下真实存在，且徽章链接就是同一地址去掉 `/badge.svg`，不额外维护一份 owner/repo 常量。

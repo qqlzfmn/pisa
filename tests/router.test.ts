@@ -508,6 +508,9 @@ describe("Router", () => {
   test("main 前进后 merge 仍能快进（先 rebase）", async () => {
     const supervised = process.env.PISA_SUPERVISED;
     delete process.env.PISA_SUPERVISED;
+    // 仓库本地身份留空：遮蔽机器上的全局配置，合并流程必须自带身份才不会挂（CI 与全新环境都没有全局配置）
+    sh(["git", "-C", repo, "config", "user.name", ""]);
+    sh(["git", "-C", repo, "config", "user.email", ""]);
     try {
       const router = build(okWorker);
       await router.handle(msg("/pisa 新建 out.txt"));
