@@ -41,6 +41,8 @@ export class Proactive {
       chatId: k.chatId ?? msg.chatId,
       userId: k.userId ?? this.cfg.whitelist.users[0] ?? msg.userId,
       isDirect: true,
+      // 群关键词是被动发现：没人点名 pisa，按「未点名」列参与准入判定
+      mentioned: false,
       text: [
         k.prompt ?? "群里有人报障且没有人接：先定位原因，能修就修，不能修给出可执行的下一步。",
         "",

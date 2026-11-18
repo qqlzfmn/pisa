@@ -54,6 +54,7 @@ core 内部模块关系：
 | 模块 | 职责 | 主要对外接口 |
 | --- | --- | --- |
 | `router.ts` | 全局唯一编排者：事件入口、命令、状态跃迁、进度转发、回帖 | `handle()`、`start()/stop()`、`recoverInterrupted()` |
+| `policy.ts` | 准入纯函数：来源策略默认表、四格判定、配置校验、策略版本、回执格式化 | `admit`、`resolvePolicy`、`sanitizePolicy`、`policyVersion`、`formatPolicy` |
 | `store.ts` | SQLite 持久化：任务、消息映射、事件去重、副作用账本 | `insertTask`、`claimQueued`、`transition`、`taskByPr`、`effectsOf` |
 | `worker.ts` | 拉起 agent 进程、解析输出、超时与取消 | `class Worker implements WorkerRunner` |
 | `adapters/` | 把 pisa 的任务翻译成某个 agent 的命令行与输出格式 | `getAdapter(name)` |
@@ -96,7 +97,7 @@ cancelled ─┘
 | `running` | `succeeded` | 交付完成 | `runTask`（`src/router.ts`） |
 | `running` | `failed` | Worker 非零退出、超时、异常、交付抛错、启动失败 | `runTask`（`src/router.ts`） |
 | `running` | `cancelled` | 请求者 `cancel`，Worker 退出后落地 | `handleCancel` 与 `runTask`（`src/router.ts`） |
-| `paused` | `running` | 请求者 `resume`（人工，不自动） | `handleResume`（`src/router.ts`） |
+| `paused` | `running` | 请求者 `resume`（人工，不自动），恢复前按当前策略重校验 | `handleResume`（`src/router.ts`） |
 | `paused` | `cancelled` | 请求者 `cancel` | `handleCancel`（`src/router.ts`） |
 | `succeeded`/`failed`/`cancelled` | `rewound` | 请求者 `rewind --yes`，执行完且合并状态可确认 | `handleRewind`（`src/router.ts`） |
 
@@ -139,7 +140,7 @@ cancelled ─┘
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
-3. **去重与鉴权**（`claimEvent` 与 `checkAccess`，`src/router.ts`）。`newId()` 先出任务号，`store.claimEvent(eventId, taskId)` 用主键抢占事件，抢不到直接丢弃；随后 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库。被拒事件同样占用 `eventId`。
+3. **去重与准入**（`claimEvent`、`admit` 与 `checkRepo`，`src/router.ts`）。`newId()` 先出任务号，`store.claimEvent(eventId, taskId)` 用主键抢占事件，抢不到直接丢弃；随后按 `msg.channel` 与「是否名单内 / 是否点名」查准入表，`accept=observe` 只回判定不建任务，拒单与观察共用一个用户 24 小时节流；通过后 `checkRepo` 校验仓库别名在白名单且目录是 git 仓库。被拒事件同样占用 `eventId`。
 4. **落库与回执**（`Router.handle`，`src/router.ts`）。`insertTask`（`status=queued`）后立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
 5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。

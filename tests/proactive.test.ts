@@ -33,6 +33,8 @@ describe("主动发现", () => {
     expect(got.length).toBe(1);
     expect(got[0]!.text).toContain("线上支付挂了");
     expect(got[0]!.userId).toBe("u1");
+    // 被动发现没人点名：记为未点名，按准入表的未点名列判定
+    expect(got[0]!.mentioned).toBe(false);
   });
 
   test("私聊与带触发词的消息不走关键词", () => {

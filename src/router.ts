@@ -19,6 +19,7 @@ import {
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
 import { formatExamples, formatHelp } from "./usage";
+import { admit, formatPolicy, mandateOf, policyVersion } from "./policy";
 import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { continuationContext } from "./task-context";
@@ -195,6 +196,7 @@ export class Router {
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
+      else if (t === "/policy" || t === "策略") cmd = { kind: "policy", body: "" };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
@@ -252,6 +254,15 @@ export class Router {
 
     if (cmd.kind === "examples") {
       await this.reply(msg.chatId, formatExamples(cfg.trigger));
+      return;
+    }
+
+    if (cmd.kind === "policy") {
+      if (!msg.admin && !cfg.whitelist.users.includes(msg.userId)) {
+        await this.reply(msg.chatId, "无权限：准入策略只对白名单用户可见。");
+        return;
+      }
+      await this.reply(msg.chatId, formatPolicy(cfg));
       return;
     }
 
@@ -346,19 +357,19 @@ export class Router {
     // 去重：同一事件只登记一次；重复投递直接丢弃
     if (!store.claimEvent(msg.eventId, taskId)) return;
 
-    const denied = this.checkAccess(msg, repo);
-    if (denied) {
-      const last = this.deniedAt.get(msg.userId) ?? 0;
-      if (this.now() - last > 24 * 3600 * 1000) {
-        this.deniedAt.set(msg.userId, this.now());
-        await this.reply(msg.chatId, denied);
-      }
+    // 准入：来源策略定谁能派活；观察模式接单但不建任务，拒绝与观察共用节流避免刷屏
+    const request = { source: msg.channel, listed: cfg.whitelist.users.includes(msg.userId), mentioned: msg.mentioned ?? true };
+    const verdict = admit(cfg, request);
+    if (!verdict.execute) {
+      await this.replyThrottled(msg, verdict.reason);
       return;
     }
-    if (!repo) {
-      await this.reply(msg.chatId, `仓库未配置：${msg.repo ?? "(默认)"}`);
+    const checked = this.checkRepo(msg, repo);
+    if (typeof checked === "string") {
+      await this.replyThrottled(msg, checked);
       return;
     }
+    const target = checked;
     if (!prompt) {
       await this.reply(msg.chatId, `用法：${cfg.trigger} <需求描述>`);
       return;
@@ -370,7 +381,7 @@ export class Router {
       channel: msg.channel,
       chatId: msg.chatId,
       requester: msg.userId,
-      repo: repo.alias,
+      repo: target.alias,
       prompt,
       status: "queued",
       branch,
@@ -381,6 +392,8 @@ export class Router {
       replyPr: msg.replyPr ?? null,
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
+      mandate: mandateOf(request, verdict),
+      policyVersion: policyVersion(cfg),
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -389,7 +402,7 @@ export class Router {
       cancelRequested: false,
     };
     store.insertTask(task);
-    await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库：${repo.alias}\n排队中。`);
+    await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库：${target.alias}\n排队中。`);
   }
 
   /** 待确认任务按人与会话隔离，避免群里互相确认别人的任务 */
@@ -428,13 +441,20 @@ export class Router {
     }
   }
 
-  private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
+  /** 拒绝与观察回执：同一用户 24 小时内只发一次，避免群里刷屏 */
+  private async replyThrottled(msg: IncomingMessage, text: string): Promise<void> {
+    if (this.now() - (this.deniedAt.get(msg.userId) ?? 0) <= 24 * 3600 * 1000) return;
+    this.deniedAt.set(msg.userId, this.now());
+    await this.reply(msg.chatId, text);
+  }
+
+  /** 仓库级准入：来源与用户已由 policy 判定，这里只管仓库配置 */
+  private checkRepo(msg: IncomingMessage, repo: RepoConfig | undefined): RepoConfig | string {
     const { cfg } = this.deps;
-    if (!cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
     if (!repo) return `仓库未配置：${msg.repo ?? "(默认)"}`;
     if (!cfg.whitelist.repos.includes(repo.alias)) return `无权限：仓库 ${repo.alias} 不在白名单。`;
     if (!isGitRepo(repo.path)) return `仓库路径不是 git 仓库：${repo.path}`;
-    return null;
+    return repo;
   }
 
   /** 自举：把已完成任务的分支验证后合入主干 */
@@ -668,6 +688,24 @@ export class Router {
     }
     if (task.status !== "paused") {
       await this.reply(msg.chatId, `任务 ${id} 不是中断状态（${task.status}），只有中断的任务可以恢复。`);
+      return;
+    }
+    // 恢复前按当前策略重校验：降权后不再放行，凭据与版本用于解释差异
+    const resume = admit(cfg, {
+      source: task.channel,
+      listed: cfg.whitelist.users.includes(task.requester),
+      mentioned: task.mandate?.mentioned ?? true,
+    });
+    if (!resume.execute) {
+      await this.reply(
+        msg.chatId,
+        [
+          `恢复被拒 · ${task.id}`,
+          `原因：${resume.reason}`,
+          `建单策略 ${task.policyVersion ?? "未记录"} · 当前 ${policyVersion(cfg)}`,
+          "策略变更不追溯已建立的任务；调整 pisa.config.json 的 policy 后重启再试。",
+        ].join("\n"),
+      );
       return;
     }
     if (!existsSync(resolve(cfg.stateDir, "worktrees", id))) {

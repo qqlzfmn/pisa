@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { policyWarnings, type PolicyConfig } from "./policy";
 
 export interface RepoConfig {
   alias: string;
@@ -80,6 +81,8 @@ export interface Config {
   schedules?: ScheduleJob[];
   /** events 与 progress 的保留天数；≤ 0 关闭每日清理，默认 30 */
   retentionDays?: number;
+  /** 来源准入：键为来源（渠道名），缺省字段按 policy.ts 的来源默认值 */
+  policy?: PolicyConfig;
   proactive?: {
     keywords?: { enabled: boolean; words: string[]; cooldownSec?: number; chatId?: string; userId?: string; prompt?: string };
     probe?: {
@@ -173,6 +176,7 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
   if (process.env.PISA_TRIGGER) cfg.trigger = process.env.PISA_TRIGGER;
   if (process.env.PISA_USERS) cfg.whitelist.users = process.env.PISA_USERS.split(",").map((s) => s.trim()).filter(Boolean);
   if (process.env.PISA_STATE_DIR) cfg.stateDir = resolve(process.env.PISA_STATE_DIR);
+  for (const warning of policyWarnings(cfg.policy)) console.warn(`配置告警：${warning}`);
   return cfg;
 }
 
@@ -230,6 +234,7 @@ export type CommandKind =
   | "merge"
   | "resume"
   | "rewind"
+  | "policy"
   | "confirm";
 
 /** 帮助分组：派活（新任务与续跑）、查询（状态与用法）、维护（改撤合）、集成（不经 IM 的入口） */
@@ -256,6 +261,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "status", alias: "状态", description: "查看任务看板", group: "查询", menu: true },
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
+  { command: "policy", alias: "策略", description: "查看来源准入规则与策略版本", group: "查询", menu: true },
   { command: "help", alias: "帮助", description: "查看命令帮助", group: "查询", menu: true },
   { command: "cancel", alias: "取消", description: "取消任务", args: "[任务号]", group: "维护", menu: true },
   { command: "resume", alias: "恢复", description: "恢复被中断的任务", args: "<任务号>", group: "维护", menu: true },

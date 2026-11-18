@@ -6,6 +6,7 @@ import { Store } from "../src/store";
 import { Router, formatDuration } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
 import { parseCommand, taskGuard, type Config } from "../src/config";
+import { policyVersion } from "../src/policy";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh, changedFiles, createWorktree } from "../src/git";
@@ -167,6 +168,8 @@ describe("Router", () => {
       replyPr: null,
       replyIssue: null,
       replyRepo: null,
+      mandate: null,
+      policyVersion: null,
       summary: null,
       error: null,
       createdAt: 0,
@@ -802,6 +805,123 @@ describe("Router", () => {
       expect(channel.sent.at(-1)?.text).toContain("/status");
     });
   });
+
+  describe("来源准入与策略版本", () => {
+    test("建单记录准入凭据与策略版本", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 做点事", { channel: "telegram" }));
+
+      const task = store.recentTasks()[0]!;
+      expect(task.mandate).toEqual({
+        source: "telegram",
+        listed: true,
+        mentioned: true,
+        cell: "listed:mentioned",
+        mode: "auto",
+      });
+      expect(task.policyVersion).toBe(policyVersion(cfg));
+    });
+
+    test("点名放宽后名单外用户接单，未点名仍被拒", async () => {
+      cfg = { ...cfg, policy: { fake: { admission: { unlisted: { mentioned: true } } } } };
+      const router = build(okWorker);
+
+      await router.handle(msg("/pisa 做点事", { userId: "stranger" }));
+      const task = store.recentTasks()[0]!;
+      expect(task.requester).toBe("stranger");
+      expect(task.mandate?.cell).toBe("unlisted:mentioned");
+
+      await router.handle(msg("/pisa 做点事", { userId: "stranger2", mentioned: false }));
+      expect(store.recentTasks()).toHaveLength(1);
+      expect(channel.sent.at(-1)?.text).toContain("无权限");
+    });
+
+    test("名单内未点名按未点名列判定", async () => {
+      cfg = { ...cfg, policy: { fake: { admission: { listed: { plain: false } } } } };
+      const router = build(okWorker);
+
+      await router.handle(msg("/pisa 做点事", { mentioned: false }));
+      expect(store.recentTasks()).toHaveLength(0);
+      expect(channel.sent.at(-1)?.text).toContain("无权限");
+
+      await router.handle(msg("/pisa 做点事"));
+      expect(store.recentTasks()).toHaveLength(1);
+      expect(store.recentTasks()[0]?.mandate?.cell).toBe("listed:mentioned");
+    });
+
+    test("allowed 关闭与 accept=off 都拒单并说明原因", async () => {
+      cfg = { ...cfg, policy: { fake: { allowed: false } } };
+      await build(okWorker).handle(msg("/pisa 做点事"));
+      expect(store.recentTasks()).toHaveLength(0);
+      expect(channel.sent.at(-1)?.text).toContain("未开放接单");
+
+      cfg = { ...cfg, policy: { fake: { accept: "off" } } };
+      // 换到 24 小时后再发，绕过上一轮拒单的节流，仍用白名单用户
+      const later = Date.now() + 25 * 3600 * 1000;
+      await build(okWorker, () => later).handle(msg("/pisa 做点事"));
+      expect(store.recentTasks()).toHaveLength(0);
+      expect(channel.sent.at(-1)?.text).toContain("暂停接单");
+    });
+
+    test("观察模式只记录判定，不建任务", async () => {
+      cfg = { ...cfg, policy: { fake: { accept: "observe" } } };
+      await build(okWorker).handle(msg("/pisa 做点事"));
+
+      expect(store.recentTasks()).toHaveLength(0);
+      const text = channel.sent.at(-1)?.text ?? "";
+      expect(text).toContain("观察模式");
+      expect(text).not.toContain("无权限");
+    });
+
+    test("策略变更不追溯：已排队的任务照常执行", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 新建 out.txt"));
+      expect(store.recentTasks()[0]?.status).toBe("queued");
+
+      cfg = { ...cfg, policy: { fake: { accept: "off" } } };
+      expect(await router.drainOnce()).toBe(true);
+      expect(store.recentTasks()[0]?.status).toBe("succeeded");
+    });
+
+    test("降权后恢复被拒，回执给出两个版本，任务保持暂停", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 待办"));
+      const task = store.recentTasks()[0]!;
+      expect(store.claimQueued(task.id, Date.now(), `pisa/${task.id}`)).toBe(true);
+      expect(store.transition(task.id, "paused")).toBe(true);
+      const created = task.policyVersion!;
+      expect(created).toBe(policyVersion(cfg));
+
+      cfg = { ...cfg, policy: { fake: { accept: "observe" } } };
+      await build(okWorker).handle(msg(`/pisa resume ${task.id}`));
+
+      const text = channel.sent.at(-1)?.text ?? "";
+      expect(text).toContain("恢复被拒");
+      expect(text).toContain("观察模式");
+      expect(text).toContain(created);
+      expect(text).toContain(policyVersion(cfg));
+      expect(store.get(task.id)?.status).toBe("paused");
+    });
+
+    test("/pisa policy 展示规则与版本，非白名单用户不可见", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa policy", { channel: "telegram" }));
+      const text = channel.sent.at(-1)?.text ?? "";
+      expect(text).toContain(`准入策略 ${policyVersion(cfg)}`);
+      expect(text).toContain("telegram · 开放 · auto");
+      expect(text).toContain("名单内：点名 放行 · 未点名 放行");
+      expect(text).toContain("名单外：点名 拒绝 · 未点名 拒绝");
+      expect(store.recentTasks()).toHaveLength(0);
+
+      await router.handle(msg("/pisa policy", { userId: "stranger" }));
+      expect(channel.sent.at(-1)?.text).toContain("无权限");
+    });
+
+    test("私聊 /policy 免触发词", async () => {
+      await build(okWorker).handle(msg("/policy", { isDirect: true }));
+      expect(channel.sent.at(-1)?.text).toContain("准入策略");
+    });
+  });
 });
 
 describe("状态机", () => {
@@ -822,6 +942,8 @@ describe("状态机", () => {
     replyPr: null,
     replyIssue: null,
     replyRepo: null,
+    mandate: null,
+    policyVersion: null,
     summary: null,
     error: null,
     createdAt: 0,
@@ -880,6 +1002,8 @@ describe("执行器丢失与合并门禁", () => {
     replyPr: null,
     replyIssue: null,
     replyRepo: null,
+    mandate: null,
+    policyVersion: null,
     summary: null,
     error: null,
     createdAt: 0,

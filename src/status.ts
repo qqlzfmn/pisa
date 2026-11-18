@@ -28,6 +28,9 @@ export interface TaskJson {
   prompt: string;
   summary: string | null;
   error: string | null;
+  /** 建单时的准入凭据与策略版本；旧任务为 null */
+  mandate: Task["mandate"];
+  policyVersion: string | null;
   createdAt: number;
   startedAt: number | null;
   endedAt: number | null;
@@ -50,6 +53,8 @@ export function taskJson(t: Task, now = Date.now()): TaskJson {
     prompt: t.prompt,
     summary: t.summary,
     error: t.error,
+    mandate: t.mandate,
+    policyVersion: t.policyVersion,
     createdAt: t.createdAt,
     startedAt: t.startedAt,
     endedAt: t.endedAt,

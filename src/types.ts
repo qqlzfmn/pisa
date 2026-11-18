@@ -1,3 +1,5 @@
+import type { Mandate } from "./policy";
+
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
 /** 任务对外产生的副作用种类：rewind 的依据 */
@@ -37,6 +39,11 @@ export interface IncomingMessage {
   replyIssue?: number;
   /** 回帖目标仓库（owner/repo）；缺省时用 github 配置的单仓库 */
   replyRepo?: string;
+  /**
+   * 这条消息是否点名 pisa：人工触发与机器入口（私聊、cron、探针、webhook、GitHub、CLI）为 true；
+   * 被动发现（群关键词）为 false。缺省视为 true。
+   */
+  mentioned?: boolean;
   receivedAt?: number;
 }
 
@@ -62,6 +69,10 @@ export interface Task {
   replyIssue: number | null;
   /** 回帖目标仓库；null 表示回退到 github 配置的单仓库 */
   replyRepo: string | null;
+  /** 建单时的准入凭据；旧任务为 null */
+  mandate: Mandate | null;
+  /** 建单时的准入策略版本；旧任务为 null */
+  policyVersion: string | null;
   summary: string | null;
   error: string | null;
   createdAt: number;

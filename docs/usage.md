@@ -55,12 +55,33 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 
 ### 鉴权面
 
-- **IM**：`whitelist.users` 与 `whitelist.repos` 双重白名单，未授权用户不建任务（24 小时内只提示一次）。群里仍需要触发词；私聊可直接说需求。
-- **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，所以它也必须进白名单。要从外网调用，自己加反向代理与 TLS。
-- **Web 控制台**：只监听 `127.0.0.1`，`/ui` 与 `/api/*` 全部要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、`HttpOnly` cookie 任一），否则 401。页面派出的任务归 `web.userId`，同样要进白名单；取消与合并不再校验原请求者，因为浏览器里的操作由 token 直接认证。
+准入统一在 `src/policy.ts`，所有来源都过同一张表：`allowed`（是否开放）+ 四格准入（名单内/名单外 × 是否点名）+ `accept`（`off` / `observe` / `auto`）。任务落库时记录命中格、模式与策略版本（`p-<hash>`）；`/pisa policy` 打印当前规则与版本。
+
+- **默认表**：名单内点名、名单内未点名放行；名单外点名、名单外未点名拒绝。`cli` 例外，四格全放行——本机 shell 已是可信边界。
+- **被动路径按未点名判定**：群聊关键词识别出的事故没人点名 pisa，落在「未点名」列；定时任务与探针用配置身份开单，`mentioned` 视为点名。
+- **`accept` 三档**：`auto` 建任务并执行；`observe` 只回判定、不建任务（灰度新来源时先看清楚会放行什么）；`off` 拒单。
+- **拒单回执**以 `无权限` 开头并写明命中格（名单内未获准入 / 名单外且无点名 / 来源未开放 / 暂停接单），同一用户 24 小时内只提示一次，观察模式共用这层节流。
+- **不追溯**：策略变更只影响之后新建的任务。已建立的任务按建单时的判定执行；`/pisa resume` 恢复暂停任务前按当前策略重校验，降权后拒绝恢复并给出建单时与当前的版本号。
+- **IM**：`whitelist.users` 决定是否名单内；群里仍需要触发词，私聊可直接说需求。
+- **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，准入按这具身份算。要从外网调用，自己加反向代理与 TLS。
+- **Web 控制台**：只监听 `127.0.0.1`，`/ui` 与 `/api/*` 全部要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、`HttpOnly` cookie 任一），否则 401。页面派出的任务归 `web.userId`；取消与合并不再校验原请求者，因为浏览器里的操作由 token 直接认证。
 - **GitHub**：只处理正文以 `/pisa ` 开头的评论；评论作者不参与鉴权，任务归属由各仓库条目配置的 `chatId` / `userId` 决定。`gh` token 从 `tokenEnv` 指定的环境变量读取。
-- **定时、探针、关键词**：都用配置里的身份开单，同样走白名单；触发不了的根因通常是身份不在白名单或缺少 `scheduler` 配置。
+- **定时、探针、关键词**：都用配置里的身份开单，同样过准入表；触发不了的根因通常是身份不在名单内或被 `accept` 拦住，`/pisa policy` 能看到命中的是哪一格。
 - **密钥**：Telegram bot token、webhook token 只从环境变量或 `~/.pisa/` 下的文件读取，不写入配置文件与 launchd plist。
+
+配置示例：
+
+```json
+{
+  "policy": {
+    "telegram": { "accept": "observe" },
+    "github": { "admission": { "unlisted": { "mentioned": true } } },
+    "webhook": { "allowed": false }
+  }
+}
+```
+
+只写想改的字段，其余沿用默认值；非法取值（例如 `accept: "sometimes"`）落回默认并写进启动日志。
 
 ## 任务卡住了怎么办
 

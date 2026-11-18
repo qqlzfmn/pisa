@@ -92,6 +92,8 @@ function seed(over: Partial<Task> = {}): Task {
     replyPr: null,
     replyIssue: null,
     replyRepo: null,
+    mandate: null,
+    policyVersion: null,
     summary: null,
     error: null,
     createdAt: Date.now(),
@@ -139,6 +141,33 @@ describe("pisa task", () => {
     expect(task.prompt).toBe("修一下 CI");
     expect(task.channel).toBe("cli");
     expect(task.requester).toBe(process.env.USER ?? "local");
+    store.close();
+  });
+
+  test("任务记录准入凭据与策略版本", async () => {
+    const body = parse<TaskJson>(await cli(...base("task", "修 CI", "--json")));
+
+    const store = new Store(join(stateDir, "pisa.db"));
+    const task = store.get(body.id)!;
+    expect(task.mandate).toEqual({
+      source: "cli",
+      listed: false,
+      mentioned: true,
+      cell: "unlisted:mentioned",
+      mode: "auto",
+    });
+    expect(task.policyVersion).toMatch(/^p-[0-9a-f]{12}$/);
+    store.close();
+  });
+
+  test("准入策略拒单时以用法错误退出", async () => {
+    writeConfig({ policy: { cli: { accept: "off" } } });
+    const r = await cli(...base("task", "修 CI"));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("暂停接单");
+
+    const store = new Store(join(stateDir, "pisa.db"));
+    expect(store.listTasks()).toHaveLength(0);
     store.close();
   });
 

@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 来源准入策略：`policy` 按来源（telegram / cli / web / webhook / github / cron / proactive）配置 `allowed`、四格准入（名单内外 × 是否点名）与 `accept`（off / observe / auto）
+- 任务记录 `mandate`（来源、是否名单内、是否点名、命中格、模式）与 `policyVersion`；策略变更不追溯已建立的任务
+- `/pisa policy`（私聊 `/policy`、别名 `策略`）查看当前准入规则与策略版本，仅白名单用户可见
+- `/pisa resume` 恢复前按当前策略重校验，降权后拒绝恢复并给出建单时与当前的版本号
+- `pisa.config.json` 的 `policy` 非法取值会落回默认值并在启动日志告警
+
 ## [0.1.0] - 2026-11-18
 
 ### 新增

@@ -10,6 +10,7 @@ import { newTaskId } from "./ids";
 import { continuationContext } from "./task-context";
 import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
+import { admit, mandateOf, policyVersion, type Mandate } from "./policy";
 
 /** 退出码：脚本据此分支，不要在版本间随意改语义 */
 const EXIT = {
@@ -124,7 +125,17 @@ function cliRequester(args: ParsedArgs): string {
   return flagString(args, "requester") ?? process.env.PISA_CLI_USER ?? process.env.USER ?? "local";
 }
 
-function newCliTask(init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "baseRef" | "context" | "prUrl">): Task {
+/** 与 Router 同一套准入判定；CLI 直接写库，拒绝时按用法错误退出（码 2） */
+function cliAdmission(cfg: Config, requester: string): { mandate: Mandate; policyVersion: string } {
+  const request = { source: "cli", listed: cfg.whitelist.users.includes(requester), mentioned: true };
+  const verdict = admit(cfg, request);
+  if (!verdict.execute) throw new UsageError(verdict.reason);
+  return { mandate: mandateOf(request, verdict), policyVersion: policyVersion(cfg) };
+}
+
+function newCliTask(
+  init: Pick<Task, "id" | "requester" | "repo" | "prompt" | "baseRef" | "context" | "prUrl" | "mandate" | "policyVersion">,
+): Task {
   return {
     ...init,
     source: "cli",
@@ -223,6 +234,9 @@ function taskHuman(io: Io, task: Task, logPath: string): void {
     ["耗时", task.startedAt ? formatDuration((task.endedAt ?? Date.now()) - task.startedAt) : "-"],
     ["日志", logPath],
   ];
+  if (task.mandate) {
+    rows.push(["准入", `${task.mandate.source} · ${task.mandate.cell} · ${task.mandate.mode} · 策略 ${task.policyVersion ?? "未记录"}`]);
+  }
   if (task.summary) rows.push(["摘要", task.summary]);
   if (task.error) rows.push(["错误", task.error]);
   for (const [k, v] of rows) io.out(`${k}：${v}`);
@@ -270,14 +284,16 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
         const brief = args.positional.slice(1).join(" ").trim();
         if (!brief) throw new UsageError("task 需要需求正文");
         const repo = repoForTask(cfg, flagString(args, "repo") ?? process.env.PISA_REPO);
+        const requester = cliRequester(args);
         const task = newCliTask({
           id: newTaskId(),
-          requester: cliRequester(args),
+          requester,
           repo: repo.alias,
           prompt: brief,
           baseRef: null,
           context: null,
           prUrl: null,
+          ...cliAdmission(cfg, requester),
         });
         const code = enqueue(io, store, args, task);
         return code === EXIT.ok && args.flags.get("wait") ? await waitTask(io, store, args, task.id) : code;
@@ -290,14 +306,16 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
         const parent = store.get(parentId);
         if (!parent) throw new NotFoundError(`找不到任务 ${parentId}`);
         if (!parent.branch) throw new UsageError(`任务 ${parent.id} 没有可续跑的分支`);
+        const requester = cliRequester(args);
         const task = newCliTask({
           id: newTaskId(),
-          requester: cliRequester(args),
+          requester,
           repo: parent.repo,
           prompt: brief,
           baseRef: parent.branch,
           context: continuationContext(parent),
           prUrl: parent.prUrl,
+          ...cliAdmission(cfg, requester),
         });
         const code = enqueue(io, store, args, task);
         return code === EXIT.ok && args.flags.get("wait") ? await waitTask(io, store, args, task.id) : code;
