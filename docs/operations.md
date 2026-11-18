@@ -41,6 +41,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 ```
 /pisa <需求>            接一个任务
 /pisa examples          可直接照抄的场景（触发方式 + 预期产出）
+/pisa prompts [diff]    提示词版本与覆盖；diff 只看差异
 /pisa cancel [任务号]   取消
 /pisa help              按用途分组的命令帮助
 
@@ -323,6 +324,36 @@ token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.
 
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`prompts`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
 
 解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。
+
+### 提示词覆盖
+
+Worker 提示词由五个段落组成，顺序固定：`intro`、`resume`（仅恢复任务）、`context`（仅有上下文）、`task`、`constraints`。内置文件是包内的 `prompts/worker.md`，版本写在文件头：
+
+```md
+---
+version: 1
+---
+
+<!-- section: intro -->
+你是 pisa 的 Worker，任务号 {{taskId}}。
+```
+
+覆盖目录由 `prompts.dir` 指定，默认是配置文件同级的 `prompts/team`：
+
+```
+prompts/team/worker.md         # 团队层
+prompts/team/repos/<别名>.md   # 仓库层
+```
+
+覆盖文件只需写要改的段落，其余段落回退到团队层或内置；`version` 必填。未知 front matter 键、未知段落、重复/空段落、内置缺段都会让守护进程启动失败并打印文件路径。修改后重启生效。
+
+```bash
+/pisa prompts          # 每个仓库的组合版本与段落来源
+/pisa prompts diff     # 覆盖段落相对内置的统一 diff
+pisa prompts --config pisa.config.json
+```
+
+完整规则见 [`docs/specs/018-prompt-layers/spec.md`](./specs/018-prompt-layers/spec.md)。

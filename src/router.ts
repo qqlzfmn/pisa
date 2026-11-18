@@ -20,6 +20,7 @@ import {
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
 import { formatExamples, formatHelp } from "./usage";
+import { formatPrompts, PromptLibrary, type ResolvedPrompts } from "./prompts";
 import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
@@ -40,6 +41,8 @@ export interface RouterDeps {
   effects?: EffectQueue;
   /** 注入以便测试 */
   now?: () => number;
+  /** 提示词分层；缺省按 cfg.prompts.dir 读取团队覆盖 */
+  prompts?: PromptLibrary;
 }
 
 /** 单英文词任务的待确认正文，10 分钟过期 */
@@ -67,12 +70,20 @@ export class Router {
   private pending = new Map<string, PendingTask>();
   /** 外部动作的 outbox：推送、建 PR、回帖都先落库再执行 */
   private readonly effects: EffectQueue;
+  private readonly prompts: PromptLibrary;
 
   constructor(private deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
     this.progressOn = deps.cfg.notifications?.progress ?? false;
     this.effects = deps.effects ?? new EffectQueue(deps.store, { now: this.now });
+    this.prompts = deps.prompts ?? new PromptLibrary({ teamDir: deps.cfg.prompts?.dir ?? null });
     this.registerEffects(deps.deliverer);
+  }
+
+  /** `/pisa prompts` 的展示对象：按配置里的仓库逐个解析，没有仓库时只看默认层 */
+  private promptList(): ResolvedPrompts[] {
+    const aliases = this.deps.cfg.repos.map((r) => r.alias);
+    return aliases.length > 0 ? aliases.map((alias) => this.prompts.resolve(alias)) : [this.prompts.resolve(null)];
   }
 
   /** 注册外部动作；成功时顺手记账本，重启后的重放走同一条路径 */
@@ -257,6 +268,9 @@ export class Router {
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
+      else if (t === "/prompts" || t === "提示词" || t.startsWith("/prompts ")) {
+        cmd = { kind: "prompts", body: t.slice(8).trim() };
+      }
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
@@ -331,6 +345,20 @@ export class Router {
 
     if (cmd.kind === "examples") {
       await this.reply(msg.chatId, formatExamples(cfg.trigger));
+      return;
+    }
+
+    if (cmd.kind === "prompts") {
+      const mode = cmd.body.trim();
+      if (mode && mode !== "diff") {
+        await this.reply(msg.chatId, `用法：${cfg.trigger} prompts [diff]`);
+        return;
+      }
+      try {
+        await this.reply(msg.chatId, formatPrompts(this.promptList(), { diff: mode === "diff" }));
+      } catch (err) {
+        await this.reply(msg.chatId, `提示词配置有误：${(err as Error).message}`);
+      }
       return;
     }
 

@@ -8,6 +8,7 @@ import { GitDeliverer } from "../src/deliver";
 import { parseCommand, taskGuard, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
+import { PromptLibrary } from "../src/prompts";
 import { sh, changedFiles, createWorktree } from "../src/git";
 
 class FakeChannel implements ChannelAdapter {
@@ -143,8 +144,8 @@ describe("Router", () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  function build(worker: WorkerRunner, now?: () => number) {
-    return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel, now });
+  function build(worker: WorkerRunner, now?: () => number, prompts?: PromptLibrary) {
+    return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel, now, prompts });
   }
 
   /** 直接落一条任务，用于构造续跑/占用场景 */
@@ -209,6 +210,49 @@ describe("Router", () => {
       expect(headers).toEqual(["派活", "查询", "维护", "集成"]);
       expect(text).toContain("/pisa examples");
       expect(text).toContain("/pisa confirm");
+      expect(text).toContain("/pisa prompts");
+    });
+
+    test("/pisa prompts 显示版本与段落来源", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa prompts"));
+
+      expect(store.recentTasks()).toHaveLength(0);
+      const text = channel.sent.at(-1)!.text;
+      expect(text).toContain("[demo] worker · 内置 v");
+      expect(text).toMatch(/constraints\s+内置 v/);
+    });
+
+    test("/pisa prompts 使用注入的提示词库", async () => {
+      const teamDir = mkdtempSync(join(tmpdir(), "pisa-prompts-"));
+      writeFileSync(join(teamDir, "worker.md"), "---\nversion: 9\n---\n\n<!-- section: task -->\n团队任务 {{prompt}}\n");
+      try {
+        const router = build(okWorker, undefined, new PromptLibrary({ teamDir }));
+        await router.handle(msg("/pisa prompts"));
+        const text = channel.sent.at(-1)!.text;
+        expect(text).toContain("团队 v9");
+        expect(text).toMatch(/task\s+团队 v9/);
+      } finally {
+        rmSync(teamDir, { recursive: true, force: true });
+      }
+    });
+
+    test("/pisa prompts diff 无覆盖时说明", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa prompts diff"));
+      expect(channel.sent.at(-1)!.text).toContain("全部段落使用内置");
+    });
+
+    test("/pisa prompts 参数非法只回用法", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa prompts bogus"));
+      expect(channel.sent.at(-1)!.text).toContain("用法：/pisa prompts [diff]");
+    });
+
+    test("私聊 /prompts 免触发词", async () => {
+      const router = build(okWorker);
+      await router.handle(msg("/prompts", { isDirect: true }));
+      expect(channel.sent.at(-1)!.text).toContain("worker · 内置 v");
     });
   });
 

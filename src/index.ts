@@ -8,6 +8,7 @@ import { Proactive } from "./proactive";
 import { GithubWatcher } from "./github-watcher";
 import { Scheduler } from "./scheduler";
 import { Retention } from "./retention";
+import { PromptLibrary } from "./prompts";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import { ReplyBus, startWebServer, type WebServer } from "./web";
@@ -18,6 +19,15 @@ async function main(): Promise<void> {
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
   // `--web` 强制开启控制台；没有可用通道时回落到 CLI 通道，只当服务宿主
   const web: WebConfig = { ...(cfg.web ?? DEFAULT_WEB), enabled: cfg.web?.enabled === true || process.argv.includes("--web") };
+
+  // 提示词在启动时全部读入并校验：未知段落、缺版本等配置错误不等到第一个任务才暴露
+  const prompts = new PromptLibrary({ teamDir: cfg.prompts?.dir ?? null });
+  try {
+    prompts.validate(cfg.repos.map((r) => r.alias));
+  } catch (err) {
+    console.error(`[pisa] 提示词配置无效：${(err as Error).message}`);
+    process.exit(1);
+  }
 
   const store = new Store(join(cfg.stateDir, "pisa.db"));
 
@@ -62,7 +72,7 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, prompts),
       deliverer: new GitDeliverer(cfg),
       channel: bus,
     });
@@ -74,7 +84,7 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, prompts),
       deliverer: new GitDeliverer(cfg),
       channel,
     });
@@ -139,6 +149,10 @@ async function main(): Promise<void> {
       console.log(`[pisa] webhook listening on 127.0.0.1:${cfg.webhook.port}`);
     }
   }
+  const promptInfo = prompts.resolve(cfg.repos[0]?.alias);
+  console.log(
+    `[pisa] 提示词 · 内置 v${promptInfo.builtinVersion} · 团队 ${promptInfo.teamVersion ? `v${promptInfo.teamVersion}` : "无"} · 目录 ${cfg.prompts?.dir ?? "(仅内置)"}`,
+  );
   const allowedEnv = Object.keys(workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env));
   console.log(`[pisa] Worker 环境白名单 · ${allowedEnv.join(",") || "(空)"}`);
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);

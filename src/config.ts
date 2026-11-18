@@ -95,6 +95,8 @@ export interface Config {
       prompt?: string;
     };
   };
+  /** 提示词覆盖目录；缺省为配置文件同级的 prompts/team */
+  prompts?: { dir?: string };
   stateDir: string;
 }
 
@@ -165,8 +167,10 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
   }
   // 相对路径以配置文件所在目录为基准：守护进程与 CLI 从不同工作目录启动时指向同一份状态
   if (!isAbsolute(cfg.stateDir)) cfg.stateDir = resolve(baseDir, cfg.stateDir);
+  const promptsDir = cfg.prompts?.dir ?? "prompts/team";
   cfg = {
     ...cfg,
+    prompts: { ...cfg.prompts, dir: isAbsolute(promptsDir) ? promptsDir : resolve(baseDir, promptsDir) },
     repos: cfg.repos.map((r) => ({
       ...r,
       path: typeof r.path === "string" && !isAbsolute(r.path) ? resolve(baseDir, r.path) : r.path,
@@ -234,7 +238,8 @@ export type CommandKind =
   | "resume"
   | "rewind"
   | "confirm"
-  | "verbose";
+  | "verbose"
+  | "prompts";
 
 /** 帮助分组：派活（新任务与续跑）、查询（状态与用法）、维护（改撤合）、集成（不经 IM 的入口） */
 export type HelpGroup = "派活" | "查询" | "维护" | "集成";
@@ -261,6 +266,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
   { command: "verbose", alias: "进度", description: "过程消息开关（on/off）", args: "[on|off]", group: "查询", menu: true },
+  { command: "prompts", alias: "提示词", description: "查看提示词版本与覆盖差异", args: "[diff]", group: "查询", menu: true },
   { command: "help", alias: "帮助", description: "查看命令帮助", group: "查询", menu: true },
   { command: "cancel", alias: "取消", description: "取消任务", args: "[任务号]", group: "维护", menu: true },
   { command: "resume", alias: "恢复", description: "恢复被中断的任务", args: "<任务号>", group: "维护", menu: true },

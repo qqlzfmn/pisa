@@ -32,6 +32,7 @@ const input = {
   workdir: "/tmp/wt",
   extensionPath: "/tmp/ext.ts",
   progressFile: "/tmp/p.jsonl",
+  prompt: "CUSTOM PROMPT",
   cfg: { adapter: "omp", command: "omp", timeoutSec: 60, extraArgs: [], concurrency: 1 },
 };
 
@@ -41,7 +42,7 @@ describe("WorkerAdapter", () => {
     expect(args[0]).toBe("omp");
     expect(args).toContain("--cwd");
     expect(args[args.indexOf("--cwd") + 1]).toBe("/tmp/wt");
-    expect(args[args.indexOf("-p") + 1]).toContain("修一下登录");
+    expect(args[args.indexOf("-p") + 1]).toBe("CUSTOM PROMPT");
     expect(args).toContain("-e");
   });
 
@@ -51,29 +52,12 @@ describe("WorkerAdapter", () => {
     expect(at).toBeGreaterThan(-1);
     expect(args[at + 1]).toBe("sess-9");
     expect(at).toBeLessThan(args.indexOf("--mode=json"));
-    expect(args[args.indexOf("-p") + 1]).toContain("上一次执行被中断");
-  });
-
-  test("恢复提示要求先核对目录、git 历史与 PR，再决定外部动作", () => {
-    const args = getAdapter("omp").buildArgs({ ...input, resume: true });
-    const prompt = args[args.indexOf("-p") + 1]!;
-    expect(prompt).toContain("git status");
-    expect(prompt).toContain("git log");
-    expect(prompt).toContain("PR 是否已存在");
-    expect(prompt).toContain("外部动作");
-    expect(prompt).toContain("不重复创建");
   });
 
   test("恢复标记与是否有会话 id 无关", () => {
     const args = getAdapter("omp").buildArgs({ ...input, resume: true, resumeSessionId: null });
     expect(args).not.toContain("-r");
-    expect(args[args.indexOf("-p") + 1]).toContain("git log");
-  });
-
-  test("新任务不带 -r，提示词也没有恢复段", () => {
-    const args = getAdapter("omp").buildArgs(input);
-    expect(args).not.toContain("-r");
-    expect(args[args.indexOf("-p") + 1]).not.toContain("上一次执行被中断");
+    expect(args[args.indexOf("-p") + 1]).toBe("CUSTOM PROMPT");
   });
 
   test("只取 assistant 的 message_end", () => {

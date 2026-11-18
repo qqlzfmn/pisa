@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, DEFAULT_ENV_ALLOW, loadConfig } from "../src/config";
 import { Worker, workerEnv } from "../src/worker";
+import { PromptLibrary } from "../src/prompts";
 import type { Task } from "../src/types";
 
 const task: Task = {
@@ -93,6 +94,7 @@ describe("Worker.run", () => {
       const worker = new Worker(
         { adapter: "omp", command: printEnv, timeoutSec: 30, extraArgs: [], concurrency: 1 },
         join(dir, "state"),
+        new PromptLibrary(),
       );
       const result = await worker.run(task, dir, (line) => lines.push(line), () => false);
       const out = lines.join("\n");

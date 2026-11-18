@@ -12,6 +12,7 @@ import { continuationContext } from "./task-context";
 import { readTail, tailLines } from "./log";
 import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
 import { stageText } from "./stage";
+import { formatPrompts, PromptLibrary } from "./prompts";
 
 /** 退出码：脚本据此分支，不要在版本间随意改语义 */
 const EXIT = {
@@ -255,6 +256,7 @@ export function helpText(): string {
   pisa logs <任务号> [--tail N]
   pisa cancel <任务号>
   pisa repos [--json]
+  pisa prompts [diff]      查看提示词版本；diff 显示覆盖段落的差异
 
 全局选项：
   --config <path>   配置文件；默认 PISA_CONFIG，否则从当前目录向上找 pisa.config.json
@@ -417,6 +419,16 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
         if (args.flags.get("json")) json(io, rows);
         else if (rows.length === 0) io.out("(配置里没有仓库)");
         else for (const r of rows) io.out(`${r.alias} · ${r.allowed ? "可用" : "未授权"} · ${r.path}`);
+        return EXIT.ok;
+      }
+
+      case "prompts": {
+        const mode = args.positional[1] ?? "";
+        if (mode && mode !== "diff") throw new UsageError("用法：pisa prompts [diff]");
+        const prompts = new PromptLibrary({ teamDir: cfg.prompts?.dir ?? null });
+        const aliases = cfg.repos.map((r) => r.alias);
+        const list = aliases.length > 0 ? aliases.map((alias) => prompts.resolve(alias)) : [prompts.resolve(null)];
+        io.out(formatPrompts(list, { diff: mode === "diff" }));
         return EXIT.ok;
       }
 

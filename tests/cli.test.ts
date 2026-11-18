@@ -127,6 +127,49 @@ describe("config 路径锚定", () => {
   });
 });
 
+describe("pisa prompts", () => {
+  test("默认目录按配置文件定位", () => {
+    const cfg = loadConfig(cfgPath);
+    expect(cfg.prompts?.dir).toBe(join(root, "prompts", "team"));
+  });
+
+  test("展示团队与仓库覆盖，diff 给出差异", async () => {
+    const teamDir = join(root, "prompts", "team");
+    mkdirSync(join(teamDir, "repos"), { recursive: true });
+    writeFileSync(join(teamDir, "worker.md"), "---\nversion: 2\n---\n\n<!-- section: task -->\n团队任务：{{prompt}}\n");
+    writeFileSync(join(teamDir, "repos", "demo.md"), "---\nversion: 4\n---\n\n<!-- section: intro -->\n仓库身份 {{taskId}}\n");
+    writeConfig({ prompts: { dir: teamDir } });
+
+    const view = await cli(...base("prompts"));
+    expect(view.code).toBe(0);
+    expect(view.out).toContain("[demo] worker · 内置 v1 · 团队 v2 · 仓库 v4");
+    expect(view.out).toMatch(/task\s+团队 v2/);
+
+    const diff = await cli(...base("prompts", "diff"));
+    expect(diff.code).toBe(0);
+    expect(diff.out).toContain("-## 任务");
+    expect(diff.out).toContain("+团队任务：{{prompt}}");
+    expect(diff.out).toContain("intro · 内置 v1 → 仓库 v4");
+  });
+
+  test("非法覆盖文件以配置错误退出", async () => {
+    const teamDir = join(root, "prompts", "team");
+    mkdirSync(teamDir, { recursive: true });
+    writeFileSync(join(teamDir, "worker.md"), "---\nversion: 2\n---\n<!-- section: unknown -->\nx\n");
+    writeConfig({ prompts: { dir: teamDir } });
+
+    const r = await cli(...base("prompts"));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("未知段落");
+  });
+
+  test("非法参数报用法", async () => {
+    const r = await cli(...base("prompts", "bogus"));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("用法：pisa prompts [diff]");
+  });
+});
+
 describe("pisa task", () => {
   test("提交任务并返回任务号", async () => {
     const r = await cli(...base("task", "修一下 CI", "--json"));

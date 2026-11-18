@@ -6,6 +6,8 @@ export interface AdapterInput {
   workdir: string;
   extensionPath: string;
   progressFile: string;
+  /** 由 Worker 按提示词分层渲染好的完整提示词 */
+  prompt: string;
   cfg: Config["worker"];
   /** 是否恢复中断任务；决定提示词是否带核对段落，与会话 id 是否存在无关 */
   resume?: boolean;

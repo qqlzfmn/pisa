@@ -34,6 +34,9 @@
     ],
     "idleTimeoutSec": 900
   },
+  "prompts": {
+    "dir": "prompts/team"
+  },
   "delivery": {
     "push": false,
     "pr": false,
