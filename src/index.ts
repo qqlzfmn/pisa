@@ -89,7 +89,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const proactive = new Proactive(cfg, (m) => router.handle(m));
+  const proactive = new Proactive(cfg, (m) => router.handle(m), { store });
   const githubWatcher = new GithubWatcher({ cfg, store, enqueue: (m) => router.handle(m) });
   const scheduler = new Scheduler({ cfg, store, enqueue: (m) => router.handle(m) });
   const retention = new Retention({ cfg, store });
