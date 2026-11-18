@@ -454,6 +454,18 @@ export class Router {
     }
   }
 
+  /** 合并后清理：工作副本、本地分支、远端分支都不再需要；代码已在主干，回退走 rewind 账本 */
+  private cleanupMerged(repo: RepoConfig, task: Task): void {
+    try {
+      removeWorktree(repo.path, resolve(this.deps.cfg.stateDir, "worktrees", task.id));
+      if (!task.branch) return;
+      deleteBranch(repo.path, task.branch);
+      if (repo.remote) sh(["git", "-C", repo.path, "push", "origin", "--delete", task.branch]);
+    } catch (err) {
+      console.error(`[pisa] 清理合并分支失败：${String(err).slice(0, 200)}`);
+    }
+  }
+
   private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
     const { cfg } = this.deps;
     if (!cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
@@ -562,7 +574,8 @@ export class Router {
         }
       }
 
-      await this.reply(msg.chatId, `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}`);
+      await this.reply(msg.chatId, `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}（分支与工作副本已清理）`);
+      this.cleanupMerged(repo, task);
     } finally {
       removeWorktree(repo.path, verifyDir);
       deleteBranch(repo.path, verifyBranch);
