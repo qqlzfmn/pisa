@@ -1,5 +1,6 @@
 import type { Config, RepoConfig } from "./config";
 import type { DeliveryResult, Task } from "./types";
+import type { EffectHandler, EffectQueue } from "./effects";
 import {
   changedFiles,
   commitAll,
@@ -12,8 +13,16 @@ import {
   remoteUrl,
 } from "./git";
 
+/** 交付阶段注册进 outbox 的外部动作 */
+export interface DeliveryHandlers {
+  push: EffectHandler<"push">;
+  pr: EffectHandler<"pr">;
+}
+
 export interface Deliverer {
-  deliver(task: Task, workdir: string, repo: RepoConfig): Promise<DeliveryResult>;
+  deliver(task: Task, workdir: string, repo: RepoConfig, effects: EffectQueue): Promise<DeliveryResult>;
+  /** 推送与建 PR 的 outbox handler：先落库再由 EffectQueue 执行，失败退避重试 */
+  effectHandlers(): DeliveryHandlers;
 }
 
 /** 审核与交付：PR 正文带上任务号与需求；Issue 来源追加 Closes 关联 */
@@ -36,7 +45,25 @@ export class GitDeliverer implements Deliverer {
     private deps: DelivererDeps = {},
   ) {}
 
-  async deliver(task: Task, workdir: string, repo: RepoConfig): Promise<DeliveryResult> {
+  effectHandlers(): DeliveryHandlers {
+    return {
+      push: async (p) => {
+        const res = pushBranch(p.repoPath, p.branch);
+        if (res.code !== 0) throw new Error(`推送失败: ${res.err || res.out}`);
+        return null;
+      },
+      // 先认领同 head 的开放 PR：上次建好却没标记完成时，重试拿到同一个 PR 而不是再建一个
+      pr: async (p) => {
+        const claimed = this.claimPr(p.repoPath, p.branch);
+        if (claimed) return { url: claimed };
+        const pr = (this.deps.createPr ?? createPr)(p.repoPath, { title: p.title, body: p.body, base: p.base, head: p.branch });
+        if (pr.code !== 0) throw new Error(`创建 PR 失败: ${pr.err || pr.out}`);
+        return { url: pr.out.split("\n").pop()?.trim() || null };
+      },
+    };
+  }
+
+  async deliver(task: Task, workdir: string, repo: RepoConfig, effects: EffectQueue): Promise<DeliveryResult> {
     const files = changedFiles(workdir);
     const base = repo.baseBranch ?? "main";
     const branch = task.branch ?? `pisa/${task.id}`;
@@ -46,7 +73,7 @@ export class GitDeliverer implements Deliverer {
 
     // 续跑既有 PR 时没有改动也要保住 PR 绑定；上次建好 PR 却没来得及记账时按分支认领
     if (files.length === 0) {
-      const claimed = !task.prUrl && prReady && pushedBranch(workdir, branch) ? this.claimPr(workdir, branch) : undefined;
+      const claimed = !task.prUrl && prReady && pushedBranch(workdir, branch) ? this.claimPr(repo.path, branch) : undefined;
       return { files: [], pushed: false, prUrl: task.prUrl ?? claimed };
     }
 
@@ -57,24 +84,30 @@ export class GitDeliverer implements Deliverer {
 
     let pushed = false;
     if (this.cfg.delivery.push && remote) {
-      const p = pushBranch(workdir, branch);
-      if (p.code !== 0) throw new Error(`推送失败: ${p.err || p.out}`);
+      await effects.exec("push", `${task.id}:${branch}`, task.id, { taskId: task.id, repoPath: repo.path, branch });
       pushed = true;
     }
 
     // 已有 PR：分支推送即更新 PR，不再新建；远端同 head 的 PR 说明上次建好没记账，认领它
-    const existing = task.prUrl ?? (prReady && pushed ? this.claimPr(workdir, branch) : undefined);
+    const existing = task.prUrl ?? (prReady && pushed ? this.claimPr(repo.path, branch) : undefined);
     if (existing) return { branch, prUrl: existing, files, pushed };
 
     let prUrl: string | undefined;
     if (prReady && pushed) {
-      const pr = (this.deps.createPr ?? createPr)(workdir, {
-        title,
-        body: prBody(task),
-        base,
-        head: branch,
-      });
-      if (pr.code === 0) prUrl = pr.out.split("\n").pop()?.trim();
+      try {
+        const res = await effects.exec("pr", `${task.id}:${branch}`, task.id, {
+          taskId: task.id,
+          repoPath: repo.path,
+          branch,
+          base,
+          title,
+          body: prBody(task),
+          repo: repo.alias,
+        });
+        prUrl = res.url ?? undefined;
+      } catch {
+        // 建 PR 失败留在队列里退避重试；本轮退回 compare 链接，不改任务终态
+      }
     }
 
     if (!prUrl && remote) {

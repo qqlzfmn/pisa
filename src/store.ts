@@ -62,7 +62,71 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS effects (
+  kind       TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  task_id    TEXT,
+  payload    TEXT NOT NULL,
+  status     TEXT NOT NULL,
+  result     TEXT,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  next_at    INTEGER NOT NULL,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (kind, key)
+);
+CREATE INDEX IF NOT EXISTS idx_effects_due ON effects(status, next_at);
 `;
+
+/** 外部动作的执行状态：pending 待执行/重试，done 已完成，failed 超过重试上限后终止 */
+export type EffectStatus = "pending" | "done" | "failed";
+
+/** outbox 行：与 task_effects 账本不同，这里记录「动作做过没有、要不要重试」 */
+export interface EffectRow {
+  kind: string;
+  key: string;
+  taskId: string | null;
+  payload: string;
+  status: EffectStatus;
+  result: string | null;
+  attempts: number;
+  nextAt: number;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface EffectDbRow {
+  kind: string;
+  key: string;
+  task_id: string | null;
+  payload: string;
+  status: EffectStatus;
+  result: string | null;
+  attempts: number;
+  next_at: number;
+  last_error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function toEffect(r: EffectDbRow): EffectRow {
+  return {
+    kind: r.kind,
+    key: r.key,
+    taskId: r.task_id,
+    payload: r.payload,
+    status: r.status,
+    result: r.result,
+    attempts: r.attempts,
+    nextAt: r.next_at,
+    lastError: r.last_error,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
 
 interface Row {
   id: string;
@@ -167,6 +231,11 @@ export class Store {
     this.db.run("UPDATE tasks SET session_id = ? WHERE id = ?", [sessionId, id]);
   }
 
+  /** 后台重试的 PR effect 完成后回填链接 */
+  setPrUrl(id: string, prUrl: string): void {
+    this.db.run("UPDATE tasks SET pr_url = ? WHERE id = ?", [prUrl, id]);
+  }
+
   /** 记一条副作用；同一任务同类同对象的重复记录合并为最新一条 */
   effect(taskId: string, kind: EffectKind, target: string, detail: string | null = null): void {
     this.db.run(
@@ -185,6 +254,62 @@ export class Store {
       .query("SELECT task_id, kind, target, detail, created_at FROM task_effects WHERE task_id = ? ORDER BY created_at, kind, target")
       .all(taskId) as Array<{ task_id: string; kind: EffectKind; target: string; detail: string | null; created_at: number }>;
     return rows.map((r) => ({ taskId: r.task_id, kind: r.kind, target: r.target, detail: r.detail, createdAt: r.created_at }));
+  }
+
+  /** 入队一条外部动作；键已存在时原样返回已有行，由调用方决定是否执行 */
+  enqueueEffect(input: { kind: string; key: string; taskId: string | null; payload: string; at: number }): EffectRow {
+    this.db.run(
+      "INSERT OR IGNORE INTO effects(kind, key, task_id, payload, status, next_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)",
+      [input.kind, input.key, input.taskId, input.payload, input.at, input.at, input.at],
+    );
+    const row = this.effectRow(input.kind, input.key);
+    if (!row) throw new Error(`effect 入队失败：${input.kind}:${input.key}`);
+    return row;
+  }
+
+  effectRow(kind: string, key: string): EffectRow | null {
+    const row = this.db.query("SELECT * FROM effects WHERE kind = ? AND key = ?").get(kind, key) as EffectDbRow | null;
+    return row ? toEffect(row) : null;
+  }
+
+  /** 到期且未完成的 outbox 行，按到期时间排序 */
+  dueEffects(at: number, kinds: string[], limit = 20): EffectRow[] {
+    if (kinds.length === 0) return [];
+    const marks = kinds.map(() => "?").join(", ");
+    const rows = this.db
+      .query(
+        `SELECT * FROM effects WHERE status = 'pending' AND next_at <= ? AND kind IN (${marks}) ORDER BY next_at, created_at LIMIT ?`,
+      )
+      .all(at, ...kinds, limit) as EffectDbRow[];
+    return rows.map(toEffect);
+  }
+
+  completeEffect(kind: string, key: string, result: string | null, at: number): EffectRow | null {
+    this.db.run(
+      "UPDATE effects SET status = 'done', result = ?, last_error = NULL, updated_at = ? WHERE kind = ? AND key = ?",
+      [result, at, kind, key],
+    );
+    return this.effectRow(kind, key);
+  }
+
+  /** 记一次失败：attempts 自增，next_at 由调用方按退避算好；terminal 时不再重试 */
+  failEffect(
+    kind: string,
+    key: string,
+    error: string,
+    opts: { nextAt: number; terminal: boolean },
+    at: number,
+  ): EffectRow | null {
+    this.db.run(
+      "UPDATE effects SET attempts = attempts + 1, last_error = ?, next_at = ?, status = ?, updated_at = ? WHERE kind = ? AND key = ?",
+      [error, opts.nextAt, opts.terminal ? "failed" : "pending", at, kind, key],
+    );
+    return this.effectRow(kind, key);
+  }
+
+  /** 任务终止：它未完成的外部动作不再重试 */
+  dropPendingEffects(taskId: string): number {
+    return this.db.run("DELETE FROM effects WHERE task_id = ? AND status = 'pending'", [taskId]).changes;
   }
 
   /** 跨重启的单值状态（心跳、轮询游标）；调用方自己约定 key */
