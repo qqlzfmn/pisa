@@ -17,6 +17,7 @@
 | 去重 | 传给 `Router.handle` 的 `eventId` 固定为 `github:comment:<id>`，由 Router 既有的 `store.claimEvent(eventId, taskId)` 落库 | Router 是唯一的建任务入口，也在建任务前占键；watcher 再占同一键会把键消耗掉、导致 Router 丢弃该评论。故去重只保留一处（FR-005） |
 | 续跑绑定 | `IncomingMessage` 增加可选 `continueFrom`（父任务号）与 `replyPr`（回帖目标）；Router 复用 `continue` 的分支/上下文构造 | 不另开任务创建路径；`continue` 命令路径与 PR 评论路径共用同一段父任务校验与上下文格式（FR-006） |
 | 权限 | PR 评论以配置的 `userId` 投递，因此不走「只有原请求者可以续跑」；IM 的 `continue` 仍保留该校验 | 评论作者是 GitHub 身份，与 IM 白名单无对应关系（spec 非目标） |
+| 工作线去重 | `Store.activeTaskByPr(pr, repo)` 按 `reply_pr` 与未结束状态取最新一条；Watcher 优先用它作为 `continueFrom`；Router 续跑段落对「PR 评论 + 父任务未结束」不建任务，先 `claimEvent` 再回提示，重复投递静默 | 同一 PR 上另开任务会从 base 开新分支、完成后多出一个 PR；改成复用分支又会撞 `runTask` 的「分支已占用」。守卫只作用于 PR 评论路径：只有它复用父任务分支，IM 的 `continue` 自建分支，保持原行为（FR-016） |
 | 回帖 | `Task.replyPr` 落库（tasks 表新增 `reply_pr INTEGER`，含轻量迁移）；`runTask` 在写 `succeeded` 后调用 `postComment`，正文由 `formatReply(summary)` 生成（截 3000 字） | 回帖是任务收尾动作，放在状态写入之后；失败只 `TaskLogger.write`，不改状态（FR-008/FR-009） |
 | 回帖幂等 | `replyMarker(taskId, purpose)` 生成隐藏注释，`postReplyOnce` 先查讨论串（`repos/<repo>/issues/<n>/comments`，`--jq '.[]'` 逐行取正文）再发；已有标记返回 `skipped`，检查失败返回错误且不发 | 幂等键用任务号：任务收尾只会发生一次，重跑复用同一号；检查失败时漏发可重跑补救，重复发不可撤销（FR-014/FR-015） |
 | 装配 | `index.ts` 创建 watcher，`enqueue = (m) => router.handle(m)`；shutdown 里 `watcher.stop()` | 与 `Proactive` 的装配方式一致（FR-011） |

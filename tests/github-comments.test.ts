@@ -473,6 +473,68 @@ describe("GitHub 评论 → 任务", () => {
     expect(child.replyPr).toBe(12);
   });
 
+  test("PR 有进行中的任务时不再另开工作线，只提示一次", async () => {
+    store.insertTask({
+      ...baseTask,
+      id: "t_running",
+      prompt: "第一轮",
+      replyPr: 12,
+      replyRepo: "o/r",
+      prUrl: "https://github.com/o/r/pull/12",
+    });
+    expect(store.claimQueued("t_running", Date.now(), "pisa/t_running")).toBe(true);
+
+    const { runner } = ghRouter(
+      [{ id: 21, body: "/pisa 再改一处", issue_url: "https://api.github.com/repos/o/r/issues/12" }],
+      { prs: [12] },
+    );
+    const { w } = watcher(runner);
+    await w.poll();
+
+    // 进行中的任务还在同一 PR 上工作：不建第二个任务，也不新开分支
+    expect(store.recentTasks().length).toBe(1);
+    expect(store.queuedTasks().length).toBe(0);
+    expect(channel.sent.length).toBe(1);
+    expect(channel.sent[0]!.text).toContain("t_running");
+    expect(channel.sent[0]!.text).toContain("PR #12");
+
+    // 同一 eventId 重投：事件占位已存在，静默
+    await w.poll();
+    expect(store.recentTasks().length).toBe(1);
+    expect(channel.sent.length).toBe(1);
+  });
+
+  test("父任务成功后新评论正常续跑", async () => {
+    store.insertTask({
+      ...baseTask,
+      id: "t_slow",
+      prompt: "第一轮",
+      replyPr: 12,
+      replyRepo: "o/r",
+      prUrl: "https://github.com/o/r/pull/12",
+    });
+    expect(store.claimQueued("t_slow", Date.now(), "pisa/t_slow")).toBe(true);
+    const { runner } = ghRouter(
+      [{ id: 22, body: "/pisa 再改一处", issue_url: "https://api.github.com/repos/o/r/issues/12" }],
+      { prs: [12] },
+    );
+    const { w } = watcher(runner);
+
+    // 进行中：只提示，不建任务
+    await w.poll();
+    expect(store.recentTasks().length).toBe(1);
+
+    // 父任务结束后同一条评论再被拉到：走正常续跑，落在父分支上
+    expect(store.transition("t_slow", "succeeded", { summary: "改好了", endedAt: Date.now() })).toBe(true);
+    await w.poll();
+    const child = store.recentTasks().find((t) => t.prompt === "再改一处")!;
+    expect(child).toBeDefined();
+    expect(child.baseRef).toBe("pisa/t_slow");
+    expect(child.branch).toBe("pisa/t_slow");
+    expect(channel.sent.length).toBe(2);
+    expect(channel.sent[1]!.text).toContain("已接单");
+  });
+
   test("评论续跑在原分支上提交，不新建分支也不新建 PR", async () => {
     expect(sh(["git", "-C", repo, "branch", "pisa/t_parent", "main"]).code).toBe(0);
     store.insertTask({ ...baseTask, id: "t_parent", prompt: "第一轮" });

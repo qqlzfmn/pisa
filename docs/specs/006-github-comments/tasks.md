@@ -22,3 +22,5 @@
       验证: `bun test tests/github-comments.test.ts`（`postReplyOnce` 组、「讨论串已有同标记时跳过回帖」）；`tsc --noEmit`
 - [x] T11 游标落库：`Store.getMeta/setMeta`（`beat`/`lastBeat` 复用同一实现），watcher 以 `github:since:<repo>` 读写增量下界，缺失才用启动时刻初始化 (FR-003/FR-010)
       验证: `bun test tests/github-comments.test.ts`（「预置游标优先于启动时刻」「重启后沿用落库游标」「旧库没有游标时以启动时刻为界」「拉取失败时不建任务、不推进下界」「一个仓库失败不推进自己的下界」）；`tsc --noEmit`
+- [x] T12 同一 PR 只有一条工作线：`Store.activeTaskByPr`、Watcher 优先投递进行中的父任务、Router 对未结束父任务占位事件并提示一次 (FR-016)
+      验证: `bun test tests/github-comments.test.ts tests/router.test.ts`（「PR 有进行中的任务时不再另开工作线，只提示一次」「父任务成功后新评论正常续跑」）；`tsc --noEmit`

@@ -611,6 +611,19 @@ export class Store {
     );
   }
 
+  /**
+   * 该 PR 下尚未结束的评论任务：同一 PR 的工作线已有任务在跑时，新评论不另开一条。
+   * 只认 PR 评论产生的任务（reply_pr 落库），取最新一条。
+   */
+  activeTaskByPr(pr: number, repo?: string): Task | null {
+    const rows = this.db
+      .query(
+        `SELECT * FROM tasks WHERE reply_pr = ? AND status IN ('queued','running','paused') ORDER BY created_at DESC`,
+      )
+      .all(pr) as Row[];
+    return rows.map(toTask).find((t) => !repo || t.replyRepo === repo) ?? null;
+  }
+
   nextQueued(): Task | null {
     const row = this.db.query("SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at LIMIT 1").get() as Row | null;
     return row ? toTask(row) : null;

@@ -109,7 +109,9 @@ export class GithubWatcher {
         actor: comment.userLogin,
       };
       if (isPr.value) {
-        await this.deps.enqueue({ ...base, continueFrom: this.deps.store.taskByPr(n, repo)?.id, replyPr: n });
+        // 进行中的任务优先：Router 据此识别「同一工作线还在跑」，而不是拿成功任务的分支另起
+        const parent = this.deps.store.activeTaskByPr(n, repo) ?? this.deps.store.taskByPr(n, repo);
+        await this.deps.enqueue({ ...base, continueFrom: parent?.id, replyPr: n });
       } else {
         // Issue 没有父分支：从主干开新分支，完成后回帖到 Issue
         await this.deps.enqueue({ ...base, replyIssue: n });
