@@ -129,3 +129,21 @@ describe("outsideWorkdir", () => {
     expect(outsideWorkdir("a.ts", "")).toContain("工作目录");
   });
 });
+
+describe("blockBash · 只读评审", () => {
+  const readonly = (cmd: string): string | null => blockBash(cmd, WORKDIR, true);
+
+  test("写子命令拒绝", () => {
+    expect(readonly("git add -A")).toContain("只读评审");
+    expect(readonly("git commit -m x")).toContain("只读评审");
+    expect(readonly("cd sub && git merge origin/main")).toContain("只读评审");
+    expect(readonly("git worktree add ../wt main")).toContain("只读评审");
+  });
+
+  test("读命令放行", () => {
+    expect(readonly("git diff origin/main...HEAD")).toBeNull();
+    expect(readonly("git log --oneline -5")).toBeNull();
+    expect(readonly("git show HEAD --stat")).toBeNull();
+    expect(readonly("rg TODO src")).toBeNull();
+  });
+});

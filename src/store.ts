@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_pr         INTEGER,
   reply_issue      INTEGER,
   reply_repo       TEXT,
+  readonly         INTEGER NOT NULL DEFAULT 0,
+  review_base      TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -161,6 +163,8 @@ interface Row {
   reply_pr: number | null;
   reply_issue: number | null;
   reply_repo: string | null;
+  readonly: number;
+  review_base: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -225,6 +229,8 @@ function toTask(r: Row): Task {
     replyPr: r.reply_pr,
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
+    readonly: r.readonly === 1,
+    reviewBase: r.review_base,
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -266,6 +272,12 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "readonly")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN readonly INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!cols.some((c) => c.name === "review_base")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN review_base TEXT");
     }
     this.backfillTriggers();
   }
@@ -554,8 +566,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, readonly, review_base)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -573,6 +585,8 @@ export class Store {
         t.replyPr,
         t.replyIssue,
         t.replyRepo,
+        t.readonly ? 1 : 0,
+        t.reviewBase,
       ],
     );
   }

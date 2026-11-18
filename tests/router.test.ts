@@ -173,6 +173,8 @@ describe("Router", () => {
       startedAt: null,
       endedAt: null,
       cancelRequested: false,
+      readonly: false,
+      reviewBase: null,
       ...rest,
     };
     store.insertTask(task);
@@ -927,6 +929,8 @@ describe("状态机", () => {
     startedAt: null,
     endedAt: null,
     cancelRequested: false,
+    readonly: false,
+    reviewBase: null,
   };
   const task = (over: Partial<Task> & { id: string }): Task => ({ ...baseTask, ...over });
 
@@ -985,6 +989,8 @@ describe("执行器丢失与合并门禁", () => {
     startedAt: null,
     endedAt: null,
     cancelRequested: false,
+    readonly: false,
+    reviewBase: null,
   });
 
   function mk() {

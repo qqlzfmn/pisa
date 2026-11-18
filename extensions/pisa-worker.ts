@@ -7,6 +7,22 @@ import { blockBash, outsideWorkdir } from "./guard";
 
 const FILE = process.env.PISA_PROGRESS_FILE;
 const WORKDIR = process.env.PISA_WORKDIR ?? "";
+const READONLY = process.env.PISA_READONLY === "1";
+
+/** 只读任务拒绝的写入类工具名（pi 及其别名） */
+const WRITE_TOOLS: Record<string, true> = {
+  write: true,
+  edit: true,
+  multiedit: true,
+  multi_edit: true,
+  apply_patch: true,
+  patch: true,
+  str_replace_editor: true,
+  create: true,
+  delete: true,
+  move: true,
+  rename: true,
+};
 
 /** 文件工具的路径参数名，四者同等对待 */
 const PATH_KEYS = ["path", "file_path", "filePath", "target"];
@@ -65,10 +81,14 @@ export default async function (pi: Pi) {
 
     if (name === "bash") {
       const cmd = String(input.command ?? "");
-      const reason = blockBash(cmd, WORKDIR);
+      const reason = blockBash(cmd, WORKDIR, READONLY);
       if (reason) return denied(name, bashDetail(cmd), reason);
       emit({ type: "tool", tool: "bash", detail: bashDetail(cmd) });
       return;
+    }
+
+    if (READONLY && WRITE_TOOLS[name]) {
+      return denied(name, "", `只读评审：禁止 ${name}`);
     }
 
     for (const key of PATH_KEYS) {

@@ -23,6 +23,8 @@ const task: Task = {
   replyPr: null,
   replyIssue: null,
   replyRepo: null,
+  readonly: false,
+  reviewBase: null,
   summary: null,
   error: null,
   createdAt: 0,

@@ -21,6 +21,8 @@ function task(id: string, status: TaskStatus, startedAt: number | null, endedAt:
     replyPr: null,
     replyIssue: null,
     replyRepo: null,
+    readonly: false,
+    reviewBase: null,
     summary: null,
     error: null,
     createdAt: startedAt ?? endedAt ?? 0,

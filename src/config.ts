@@ -35,6 +35,8 @@ export interface GithubConfig {
   userId?: string;
   /** 多仓库写法，优先于旧字段 */
   repos?: GithubRepoConfig[];
+  /** 新 PR 自动评审；缺省关闭 */
+  review?: { enabled: boolean };
 }
 
 /** 本机 Web 控制台；只监听 127.0.0.1，token 是唯一的鉴权因子 */

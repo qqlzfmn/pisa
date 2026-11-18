@@ -125,12 +125,36 @@ function parseGit(args: string[], workdir: string): GitCommand {
   return { sub: "", args: [], reason };
 }
 
-function checkGit(args: string[], workdir: string): string | null {
+function checkGit(args: string[], workdir: string, readonly: boolean): string | null {
   const { sub, args: rest, reason } = parseGit(args, workdir);
   if (reason) return reason;
   const has = (pred: (t: string) => boolean) => rest.some(pred);
   const flagWithF = (t: string) =>
     t === "--force" || (t.startsWith("-") && !t.startsWith("--") && t.includes("f"));
+
+  // 只读评审：任何会改工作副本或历史的子命令都拒绝；diff/log/show/status 等放行
+  if (readonly) {
+    const writes = [
+      "add",
+      "am",
+      "apply",
+      "checkout",
+      "cherry-pick",
+      "commit",
+      "merge",
+      "mv",
+      "rebase",
+      "reset",
+      "restore",
+      "revert",
+      "rm",
+      "stash",
+      "switch",
+      "tag",
+    ];
+    if (writes.includes(sub)) return `只读评审：禁止 git ${sub}`;
+    if (sub === "worktree" && rest[0] === "add") return "只读评审：禁止 git worktree add";
+  }
 
   switch (sub) {
     case "push":
@@ -165,7 +189,7 @@ const WRAPPERS: Record<string, true> = {
   time: true,
 };
 
-function checkSegment(tokens: string[], workdir: string, depth: number): string | null {
+function checkSegment(tokens: string[], workdir: string, depth: number, readonly: boolean): string | null {
   let at = 0;
   while (
     at < tokens.length &&
@@ -188,7 +212,7 @@ function checkSegment(tokens: string[], workdir: string, depth: number): string 
     return `禁止 ${head} /etc`;
   }
   if (head === "git") {
-    const hit = checkGit(args, workdir);
+    const hit = checkGit(args, workdir, readonly);
     if (hit) return hit;
   }
 
@@ -196,22 +220,22 @@ function checkSegment(tokens: string[], workdir: string, depth: number): string 
   if (depth < 2) {
     for (const tok of tokens) {
       if (!/\s/.test(tok)) continue;
-      const hit = scan(tok, workdir, depth + 1);
+      const hit = scan(tok, workdir, depth + 1, readonly);
       if (hit) return hit;
     }
   }
   return null;
 }
 
-function scan(cmd: string, workdir: string, depth: number): string | null {
+function scan(cmd: string, workdir: string, depth: number, readonly: boolean): string | null {
   for (const seg of segments(cmd)) {
-    const hit = checkSegment(seg, workdir, depth);
+    const hit = checkSegment(seg, workdir, depth, readonly);
     if (hit) return hit;
   }
   return null;
 }
 
 /** 命中返回原因，放行返回 null。workdir 用于判定 `-C` / `--work-tree` / `--git-dir` 越界 */
-export function blockBash(cmd: string, workdir: string): string | null {
-  return scan(cmd, workdir, 0);
+export function blockBash(cmd: string, workdir: string, readonly = false): string | null {
+  return scan(cmd, workdir, 0, readonly);
 }

@@ -7,10 +7,11 @@ import type { EffectRow, Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
 import { EffectQueue, type CommentPayload, type PrPayload, type PushPayload } from "./effects";
-import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
+import { createWorktree, currentBranch, deleteBranch, isGitRepo, prepareReviewCheckout, removeWorktree, sh } from "./git";
 import {
   defaultRunner,
   formatReply,
+  formatReviewReply,
   postComment,
   postIssueComment,
   postReplyOnce,
@@ -479,11 +480,13 @@ export class Router {
       branch,
       prUrl,
       sessionId: null,
-      baseRef,
+      baseRef: msg.review?.head ?? baseRef,
       context,
       replyPr: msg.replyPr ?? null,
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
+      readonly: msg.readonly ?? false,
+      reviewBase: msg.review?.base ?? null,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -986,7 +989,10 @@ export class Router {
     // 多仓库：任务记住评论所在仓库；旧任务与 IM 触发的回帖退回配置里的单仓库
     const repo = task.replyRepo ?? githubRepos(gh)[0]?.repo;
     if (!gh?.enabled || !repo) return;
-    const body = formatReply(summary);
+    const body =
+      task.readonly && task.replyPr
+        ? formatReviewReply(task.replyPr, task.baseRef ?? "", summary)
+        : formatReply(summary);
     if (task.replyPr) await this.postReply(repo, task.replyPr, "pr", task, body, log);
     if (task.replyIssue) await this.postReply(repo, task.replyIssue, "issue", task, body, log);
   }
@@ -1053,6 +1059,19 @@ export class Router {
     if (resuming) {
       log.write("resume", "复用已有工作副本");
     } else {
+      if (task.readonly) {
+        const base = task.reviewBase ?? repo.baseBranch ?? "main";
+        const prep = task.replyPr
+          ? prepareReviewCheckout(repo.path, task.replyPr, task.baseRef ?? "", base)
+          : { code: 1, out: "", err: "评审任务缺少 PR 编号" };
+        if (prep.code !== 0) {
+          const error = `评审检出失败：${prep.err || prep.out}`;
+          log.write("review", error);
+          store.transition(task.id, "failed", { error, endedAt: this.now() });
+          await this.reply(task.chatId, `失败 · ${task.id}\n${error.slice(0, 800)}`);
+          return;
+        }
+      }
       const wt = createWorktree(repo.path, workdir, branch, task.baseRef ?? repo.baseBranch ?? "HEAD");
       if (wt.code !== 0) {
         // 分支被占：git 拒绝把同一分支挂到两个工作副本；绝不另建同名分支顶替
@@ -1112,6 +1131,23 @@ export class Router {
       this.effects.cancelTask(task.id);
       store.transition(task.id, "failed", { error: result.error ?? "未知错误", endedAt: this.now() });
       await this.reply(task.chatId, `失败 · ${task.id}\n${(result.error ?? "").slice(0, 800)}`, task.id);
+      return;
+    }
+
+    // 只读评审：不进入交付，结论直接回帖；工作副本与临时分支用完即删
+    if (task.readonly) {
+      store.transition(task.id, "succeeded", {
+        summary: result.summary,
+        branch: null,
+        endedAt: this.now(),
+      });
+      this.dropWorktree(repo.path, task, workdir);
+      this.cleanupBranch(repo.path, task, branch);
+      log.write("review", "只读评审完成，未交付");
+      await this.replyToSource(task, result.summary, log);
+      const lines = [`✅ ${task.id} 评审完成`, result.summary.slice(0, 1200)];
+      if (task.replyPr) lines.push(`评论：PR #${task.replyPr}`);
+      await this.reply(task.chatId, lines.join("\n\n"), task.id);
       return;
     }
 

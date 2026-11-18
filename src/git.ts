@@ -28,6 +28,36 @@ export function createWorktree(repoPath: string, workdir: string, branch: string
   return sh(["git", "-C", repoPath, "worktree", "add", workdir, branch]);
 }
 
+/**
+ * 评审前准备：确保 PR head 提交与目标分支的远端引用在本地。
+ * head 已存在时不联网；拉到的 head 与待评审 SHA 不一致时失败，交给下一轮评审新提交。
+ */
+export function prepareReviewCheckout(repoPath: string, n: number, headSha: string, base: string): ExecResult {
+  if (sh(["git", "-C", repoPath, "cat-file", "-e", `${headSha}^{commit}`]).code !== 0) {
+    const fetched = sh(["git", "-C", repoPath, "fetch", "--quiet", "origin", `pull/${n}/head`]);
+    if (fetched.code !== 0) {
+      return { ...fetched, err: fetched.err || `无法拉取 PR #${n} 的 head` };
+    }
+    const head = sh(["git", "-C", repoPath, "rev-parse", "FETCH_HEAD"]);
+    if (head.code !== 0 || head.out !== headSha) {
+      return {
+        code: 1,
+        out: head.out,
+        err: `PR #${n} 的 head 已变化（${head.out.slice(0, 12) || "未知"}），跳过本次评审`,
+      };
+    }
+  }
+  const remoteBase = `origin/${base}`;
+  const hasBase =
+    sh(["git", "-C", repoPath, "rev-parse", "--verify", "--quiet", remoteBase]).code === 0 ||
+    sh(["git", "-C", repoPath, "rev-parse", "--verify", "--quiet", base]).code === 0;
+  if (!hasBase) {
+    const fetched = sh(["git", "-C", repoPath, "fetch", "--quiet", "origin", base]);
+    if (fetched.code !== 0) return { ...fetched, err: fetched.err || `无法拉取目标分支 ${base}` };
+  }
+  return { code: 0, out: "", err: "" };
+}
+
 export function removeWorktree(repoPath: string, workdir: string): void {
   sh(["git", "-C", repoPath, "worktree", "remove", "--force", workdir]);
   sh(["git", "-C", repoPath, "worktree", "prune"]);

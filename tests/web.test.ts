@@ -157,6 +157,8 @@ describe("web 控制台", () => {
       startedAt: null,
       endedAt: null,
       cancelRequested: false,
+      readonly: false,
+      reviewBase: null,
       ...rest,
     };
     store.insertTask(task);

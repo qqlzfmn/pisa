@@ -1,7 +1,7 @@
 import { githubRepos, type Config } from "./config";
 import type { Store } from "./store";
 import type { IncomingMessage } from "./types";
-import { defaultRunner, isPullRequest, listComments, prNumberFromIssueUrl, type Runner } from "./github";
+import { defaultRunner, isPullRequest, listComments, listOpenPrs, prNumberFromIssueUrl, reviewRequest, type Runner } from "./github";
 
 type Enqueue = (m: IncomingMessage) => Promise<void> | void;
 
@@ -17,6 +17,16 @@ export interface GithubWatcherDeps {
 /** 每个仓库的增量游标落库键：重启后从上次整轮成功的位置继续 */
 function sinceKey(repo: string): string {
   return `github:since:${repo}`;
+}
+
+/** 评审基线：启用时刻之前创建的 PR 只记 head，不建任务 */
+function reviewSinceKey(repo: string): string {
+  return `github:review:since:${repo}`;
+}
+
+/** 每个 PR 已投递评审的 head SHA */
+function reviewedKey(repo: string, n: number): string {
+  return `github:review:${repo}#${n}`;
 }
 
 /**
@@ -40,6 +50,10 @@ export class GithubWatcher {
     for (const target of githubRepos(deps.cfg.github)) {
       const key = sinceKey(target.repo);
       if (deps.store.getMeta(key) === null) deps.store.setMeta(key, startedAt);
+      if (deps.cfg.github?.review?.enabled) {
+        const reviewKey = reviewSinceKey(target.repo);
+        if (deps.store.getMeta(reviewKey) === null) deps.store.setMeta(reviewKey, startedAt);
+      }
     }
   }
 
@@ -67,6 +81,14 @@ export class GithubWatcher {
         } catch (err) {
           // 投递异常只影响本仓库：下界不推进，下一轮重试
           console.warn(`[pisa] GitHub 评论投递失败 · ${target.repo}：${String(err).slice(0, 300)}`);
+        }
+        if (gh.review?.enabled) {
+          try {
+            await this.pollReviews(target.repo, target.chatId, target.userId, startedAt);
+          } catch (err) {
+            // 评审发现失败不影响评论链路；每个 PR 的已评审 SHA 未推进，下一轮重试
+            console.warn(`[pisa] GitHub 评审发现失败 · ${target.repo}：${String(err).slice(0, 300)}`);
+          }
         }
       }
     } finally {
@@ -116,5 +138,45 @@ export class GithubWatcher {
       }
     }
     if (complete) this.deps.store.setMeta(sinceKey(repo), startedAt);
+  }
+
+  /**
+   * 新 PR（含已有 PR 的新 head）→ 只读评审任务。
+   * 基线之前创建的 PR 只记 head，不回填；同一 head SHA 由 meta 与触发器双重去重。
+   */
+  private async pollReviews(repo: string, chatId: string, userId: string, startedAt: string): Promise<void> {
+    const since = this.deps.store.getMeta(reviewSinceKey(repo)) ?? startedAt;
+    const res = listOpenPrs(this.runner, repo);
+    if (!res.ok) {
+      console.warn(`[pisa] GitHub PR 列表拉取失败 · ${repo}：${res.error.slice(0, 300)}`);
+      return;
+    }
+
+    for (const pr of res.value) {
+      const key = reviewedKey(repo, pr.number);
+      const seen = this.deps.store.getMeta(key);
+      if (seen === pr.headSha) continue;
+      // 启用前就存在的开放 PR：记下当前 head 作为基线，之后的新提交仍会评审
+      const created = Date.parse(pr.createdAt);
+      if (seen === null && Number.isFinite(created) && created < Date.parse(since)) {
+        this.deps.store.setMeta(key, pr.headSha);
+        continue;
+      }
+      await this.deps.enqueue({
+        eventId: `github:review:${repo}:${pr.number}:${pr.headSha}`,
+        channel: "github",
+        chatId,
+        userId,
+        text: `${this.deps.cfg.trigger} ${reviewRequest(pr)}`,
+        replyRepo: repo,
+        replyPr: pr.number,
+        threadKey: `github:${repo}:review:${pr.number}`,
+        messageKey: pr.headSha,
+        actor: pr.authorLogin,
+        readonly: true,
+        review: { head: pr.headSha, base: pr.baseRefName || "main" },
+      });
+      this.deps.store.setMeta(key, pr.headSha);
+    }
   }
 }

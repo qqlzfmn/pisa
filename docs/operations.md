@@ -285,6 +285,7 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
     "enabled": true,
     "intervalSec": 120,
     "tokenEnv": "GH_TOKEN",
+    "review": { "enabled": true },
     "repos": [
       { "repo": "owner/pisa", "chatId": "<telegram chat id>", "userId": "<telegram user id>" },
       { "repo": "owner/site", "chatId": "<telegram chat id>", "userId": "<telegram user id>" }
@@ -299,6 +300,11 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 - 轮询仓库的 Issue 评论（PR 评论走同一个 API），默认 120 秒一轮
 - 只认正文（去首尾空白）以 `/pisa ` 开头的评论，其余一律忽略
 - 启动时刻作为下界，不回放历史评论；拉取失败不推进下界，下一轮继续
+- `github.review.enabled` 打开后，每轮额外列出各仓库的开放 PR：新的 head 提交建一个只读评审任务，结论回帖到该 PR；默认关闭
+- 评审任务的基线是启用（或进程启动）时刻：之前创建的 PR 只记录当前 head，不建任务；之后新的提交照常评审
+- 同一 PR 同一 head SHA 只评审一次：meta `github:review:<repo>#<n>` 记录已投递的 SHA，触发器再按「PR + SHA」去重，重启不会重评
+- 评审任务只读：工作副本按 head SHA 创建、执行完即删；回收写工具与 git 写子命令，不产生提交、分支或 PR，也不经过交付流程
+- 评审回帖以 `pisa` 名义发出，正常评论触发任务的回帖仍是「任务完成」摘要
 - 同一条评论按「仓库 + 评论 id」去重（事件 id `github:comment:<repo>:<id>`），重启、轮询重叠都只建一个任务
 - 编号先判定类型（`gh api repos/<repo>/issues/<n>` 看有没有 `pull_request`）：失败就不投递，该仓库本轮也不推进下界
 - PR 上已有成功任务时直接在该任务的分支上继续并更新原 PR（不新开分支、不新建 PR）；任务按仓库匹配，`o/a#7` 与 `o/b#7` 互不干扰。上下文带 PR 号与原评论；没有就按普通任务处理，正文是去掉触发词的部分

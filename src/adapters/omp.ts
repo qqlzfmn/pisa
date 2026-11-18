@@ -45,11 +45,22 @@ export function buildPrompt(task: Task, opts: { resume?: boolean } = {}): string
     `## 任务`,
     task.prompt,
     ``,
+    ...(task.readonly
+      ? [
+          `## 只读评审`,
+          `- 只读：不要修改、创建或删除任何文件，不要提交或推送`,
+          `- 只用 read / grep / glob 与 \`git diff\`、\`git log\`、\`git show\` 等只读命令获取信息`,
+          `- 结论会作为评论回到 PR，不需要交付代码`,
+          ``,
+        ]
+      : []),
     `## 约束（以下由 pisa guard 强制，越界调用会被拒绝）`,
     `- 文件读写、编辑只能落在工作目录内；git 的 -C / --work-tree / --git-dir 也只能指向工作目录`,
     `- 禁止 git push（任意形态）、reset --hard、clean -f、切换分支、worktree remove/prune、branch -D、rebase、commit --amend`,
     `- 禁止 sudo、删除根目录、改动 /etc 权限`,
-    `- 提交与推送由 pisa 在任务结束后完成，不需要你操作`,
+    ...(task.readonly
+      ? [`- 禁止 git add / commit / merge / apply / restore / rm / mv / stash 等写操作`]
+      : [`- 提交与推送由 pisa 在任务结束后完成，不需要你操作`]),
     `- 有测试就跑测试；没有测试就说明你如何验证`,
     `- 完成后用中文给出：改了什么、动了哪些文件、验证结果`,
     `- 不要输出寒暄，直接给结论`,
@@ -79,6 +90,7 @@ export class OmpAdapter implements WorkerAdapter {
     return {
       PISA_WORKDIR: input.workdir,
       PISA_PROGRESS_FILE: input.progressFile,
+      ...(input.task.readonly ? { PISA_READONLY: "1" } : {}),
     };
   }
 

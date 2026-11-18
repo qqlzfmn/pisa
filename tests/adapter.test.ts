@@ -19,6 +19,8 @@ const task: Task = {
   replyPr: null,
   replyIssue: null,
   replyRepo: null,
+  readonly: false,
+  reviewBase: null,
   summary: null,
   error: null,
   createdAt: 0,
@@ -91,5 +93,30 @@ describe("WorkerAdapter", () => {
 
   test("未知适配器直接报错", () => {
     expect(() => getAdapter("nope")).toThrow();
+  });
+});
+
+describe("WorkerAdapter · 只读评审", () => {
+  const readonlyInput = { ...input, task: { ...task, readonly: true, reviewBase: "main" } };
+
+  test("提示词声明只读，替换交付约束", () => {
+    const args = getAdapter("omp").buildArgs(readonlyInput);
+    const prompt = args[args.indexOf("-p") + 1]!;
+    expect(prompt).toContain("## 只读评审");
+    expect(prompt).toContain("不要修改、创建或删除任何文件");
+    expect(prompt).toContain("禁止 git add / commit");
+    expect(prompt).not.toContain("提交与推送由 pisa 在任务结束后完成");
+  });
+
+  test("环境注入 PISA_READONLY，普通任务不注入", () => {
+    expect(getAdapter("omp").buildEnv(readonlyInput)).toEqual({
+      PISA_WORKDIR: "/tmp/wt",
+      PISA_PROGRESS_FILE: "/tmp/p.jsonl",
+      PISA_READONLY: "1",
+    });
+    expect(getAdapter("omp").buildEnv(input)).toEqual({
+      PISA_WORKDIR: "/tmp/wt",
+      PISA_PROGRESS_FILE: "/tmp/p.jsonl",
+    });
   });
 });

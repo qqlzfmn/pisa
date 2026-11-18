@@ -168,6 +168,8 @@ describe("Router.rewind", () => {
       startedAt: null,
       endedAt: null,
       cancelRequested: false,
+      readonly: false,
+      reviewBase: null,
       ...rest,
     };
     store.insertTask(task);

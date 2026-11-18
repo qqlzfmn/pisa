@@ -1,9 +1,10 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   formatReply,
+  formatReviewReply,
   isPullRequest,
   listComments,
   postComment,
@@ -138,6 +139,8 @@ const baseTask: Task = {
   startedAt: null,
   endedAt: null,
   cancelRequested: false,
+  readonly: false,
+  reviewBase: null,
 };
 
 describe("prNumberFromIssueUrl", () => {
@@ -1261,6 +1264,258 @@ describe("GitDeliverer 更新既有 PR", () => {
       expect(store.taskByPr(9)?.id).toBe(task.id);
     } finally {
       store.close();
+    }
+  });
+});
+
+describe("PR 自动评审", () => {
+  const NOW = Date.parse("2026-11-18T12:00:00Z");
+  const reviewCfg = (repoPath: string, stateDir: string, enabled: boolean): Config =>
+    makeCfg(repoPath, stateDir, {
+      enabled: true,
+      repos: [{ repo: "o/r", chatId: "c1", userId: "u1" }],
+      review: { enabled },
+    });
+
+  interface FakePr {
+    number: number;
+    headSha: string;
+    createdAt: string;
+  }
+
+  /** gh 假实现：评论列表恒为空，PR 列表按传入数组输出 */
+  function prListRunner(prs: FakePr[]) {
+    const calls: string[][] = [];
+    const runner: Runner = (args) => {
+      calls.push(args);
+      if ((args[2] ?? "").includes("/issues/comments")) return apiReply([]);
+      if (args[1] === "pr" && args[2] === "list") {
+        return reply(
+          0,
+          JSON.stringify(
+            prs.map((p) => ({
+              number: p.number,
+              headRefOid: p.headSha,
+              title: "改登录",
+              author: { login: "alice" },
+              baseRefName: "main",
+              createdAt: p.createdAt,
+            })),
+          ),
+        );
+      }
+      return reply(1, "", `unexpected: ${args.join(" ")}`);
+    };
+    return { runner, calls };
+  }
+
+  function setup(enabled: boolean) {
+    const repo = makeRepo();
+    const stateDir = mkdtempSync(join(tmpdir(), "pisa-review-"));
+    const cfg = reviewCfg(repo, stateDir, enabled);
+    const store = new Store(join(stateDir, "pisa.db"));
+    const channel = new FakeChannel();
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    return { repo, stateDir, cfg, store, channel, router };
+  }
+
+  test("开关关闭时不拉 PR 列表，也不建评审任务", async () => {
+    const env = setup(false);
+    const { runner, calls } = prListRunner([{ number: 12, headSha: "a".repeat(40), createdAt: new Date(NOW + 60_000).toISOString() }]);
+    const watcher = new GithubWatcher({
+      cfg: env.cfg,
+      store: env.store,
+      runner,
+      now: () => NOW,
+      enqueue: (m) => env.router.handle(m),
+    });
+    try {
+      await watcher.poll();
+      expect(calls.some((c) => c[1] === "pr" && c[2] === "list")).toBe(false);
+      expect(env.store.recentTasks()).toHaveLength(0);
+    } finally {
+      env.store.close();
+      rmSync(env.repo, { recursive: true, force: true });
+      rmSync(env.stateDir, { recursive: true, force: true });
+    }
+  });
+
+  test("新 PR 建只读评审任务；同 head SHA 跨轮询与重启只建一次", async () => {
+    const env = setup(true);
+    const sha = "b".repeat(40);
+    const prs: FakePr[] = [{ number: 12, headSha: sha, createdAt: new Date(NOW + 60_000).toISOString() }];
+    const { runner, calls } = prListRunner(prs);
+    const watcher = new GithubWatcher({
+      cfg: env.cfg,
+      store: env.store,
+      runner,
+      now: () => NOW,
+      enqueue: (m) => env.router.handle(m),
+    });
+    try {
+      await watcher.poll();
+      await watcher.poll();
+      const restarted = new GithubWatcher({
+        cfg: env.cfg,
+        store: env.store,
+        runner,
+        now: () => NOW,
+        enqueue: (m) => env.router.handle(m),
+      });
+      await restarted.poll();
+
+      const tasks = env.store.recentTasks();
+      expect(tasks).toHaveLength(1);
+      const task = tasks[0]!;
+      expect(task.readonly).toBe(true);
+      expect(task.reviewBase).toBe("main");
+      expect(task.baseRef).toBe(sha);
+      expect(task.replyPr).toBe(12);
+      expect(task.replyRepo).toBe("o/r");
+      expect(task.prompt).toContain("评审新 PR #12");
+      expect(calls.find((c) => c[1] === "pr" && c[2] === "list")).toEqual([
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        "o/r",
+        "--state",
+        "open",
+        "--limit",
+        "100",
+        "--json",
+        "number,headRefOid,title,author,baseRefName,createdAt",
+      ]);
+      expect(env.store.getMeta("github:review:o/r#12")).toBe(sha);
+    } finally {
+      env.store.close();
+      rmSync(env.repo, { recursive: true, force: true });
+      rmSync(env.stateDir, { recursive: true, force: true });
+    }
+  });
+
+  test("同一 PR 的新 head 重新评审", async () => {
+    const env = setup(true);
+    const first = "c".repeat(40);
+    const second = "d".repeat(40);
+    const prs: FakePr[] = [{ number: 12, headSha: first, createdAt: new Date(NOW + 60_000).toISOString() }];
+    const { runner } = prListRunner(prs);
+    const watcher = new GithubWatcher({
+      cfg: env.cfg,
+      store: env.store,
+      runner,
+      now: () => NOW,
+      enqueue: (m) => env.router.handle(m),
+    });
+    try {
+      await watcher.poll();
+      prs[0]!.headSha = second;
+      await watcher.poll();
+
+      const tasks = env.store.recentTasks();
+      expect(tasks).toHaveLength(2);
+      expect(tasks.map((t) => t.baseRef).sort()).toEqual([first, second].sort());
+      expect(env.store.getMeta("github:review:o/r#12")).toBe(second);
+    } finally {
+      env.store.close();
+      rmSync(env.repo, { recursive: true, force: true });
+      rmSync(env.stateDir, { recursive: true, force: true });
+    }
+  });
+
+  test("启用前已存在的 PR 只记基线，之后的新提交才评审", async () => {
+    const env = setup(true);
+    const old = "e".repeat(40);
+    const next = "f".repeat(40);
+    const prs: FakePr[] = [{ number: 12, headSha: old, createdAt: new Date(NOW - 60_000).toISOString() }];
+    const { runner } = prListRunner(prs);
+    const watcher = new GithubWatcher({
+      cfg: env.cfg,
+      store: env.store,
+      runner,
+      now: () => NOW,
+      enqueue: (m) => env.router.handle(m),
+    });
+    try {
+      await watcher.poll();
+      expect(env.store.recentTasks()).toHaveLength(0);
+      expect(env.store.getMeta("github:review:o/r#12")).toBe(old);
+
+      prs[0]!.headSha = next;
+      await watcher.poll();
+      expect(env.store.recentTasks()).toHaveLength(1);
+      expect(env.store.recentTasks()[0]!.baseRef).toBe(next);
+    } finally {
+      env.store.close();
+      rmSync(env.repo, { recursive: true, force: true });
+      rmSync(env.stateDir, { recursive: true, force: true });
+    }
+  });
+
+  test("只读任务不交付，结论回帖到 PR 并清理工作副本与临时分支", async () => {
+    const env = setup(true);
+    writeFileSync(join(env.repo, "b.txt"), "b\n");
+    sh(["git", "-C", env.repo, "add", "-A"]);
+    sh(["git", "-C", env.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "b"]);
+    const sha = sh(["git", "-C", env.repo, "rev-parse", "HEAD"]).out;
+
+    const { runner: ghRunner, calls } = scripted(reply(0));
+    let delivered = 0;
+    const inner = new GitDeliverer(env.cfg);
+    const router = new Router({
+      cfg: env.cfg,
+      store: env.store,
+      worker: okWorker,
+      deliverer: {
+        deliver(...args) {
+          delivered += 1;
+          return inner.deliver(...args);
+        },
+        effectHandlers: () => inner.effectHandlers(),
+      },
+      channel: env.channel,
+      ghRunner,
+      now: () => NOW,
+    });
+    try {
+      await router.handle({
+        eventId: `github:review:o/r:12:${sha}`,
+        channel: "github",
+        chatId: "c1",
+        userId: "u1",
+        text: "/pisa 评审新 PR #12",
+        replyPr: 12,
+        replyRepo: "o/r",
+        readonly: true,
+        review: { head: sha, base: "main" },
+        threadKey: "github:o/r:review:12",
+        messageKey: sha,
+        actor: "alice",
+      });
+      await router.drainOnce();
+
+      const task = env.store.recentTasks()[0]!;
+      expect(task.status).toBe("succeeded");
+      expect(task.readonly).toBe(true);
+      expect(task.branch).toBeNull();
+      expect(delivered).toBe(0);
+      expect(env.store.effectsOf(task.id).map((e) => e.kind)).toEqual(["comment"]);
+      expect(calls[1]).toEqual([
+        "gh",
+        "pr",
+        "comment",
+        "12",
+        "--repo",
+        "o/r",
+        "--body",
+        `${formatReviewReply(12, sha, "改好了")}\n\n${replyMarker(task.id, "pr")}`,
+      ]);
+      expect(existsSync(join(env.stateDir, "worktrees", task.id))).toBe(false);
+      expect(sh(["git", "-C", env.repo, "branch", "--list", `pisa/${task.id}`]).out.trim()).toBe("");
+    } finally {
+      env.store.close();
+      rmSync(env.repo, { recursive: true, force: true });
+      rmSync(env.stateDir, { recursive: true, force: true });
     }
   });
 });

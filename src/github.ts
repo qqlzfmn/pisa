@@ -61,6 +61,82 @@ export function formatReply(summary: string): string {
   return `**pisa** 任务完成\n\n${summary.trim().slice(0, 3000)}`;
 }
 
+/** 评审回帖正文：标明 PR 与 head，便于对应到具体提交 */
+export function formatReviewReply(pr: number, headSha: string, summary: string): string {
+  return `**pisa** 评审结论 · PR #${pr} @ ${headSha.slice(0, 12)}\n\n${summary.trim().slice(0, 3000)}`;
+}
+
+/** 开放 PR 的评审所需字段 */
+export interface OpenPr {
+  number: number;
+  headSha: string;
+  title: string;
+  authorLogin: string;
+  baseRefName: string;
+  createdAt: string;
+}
+
+/** 开放 PR 列表；`gh pr list --json` 输出一个 JSON 数组 */
+export function listOpenPrs(runner: Runner, repo: string): GhResult<OpenPr[]> {
+  const res = runner([
+    "gh",
+    "pr",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "open",
+    "--limit",
+    "100",
+    "--json",
+    "number,headRefOid,title,author,baseRefName,createdAt",
+  ]);
+  if (res.code !== 0) return { ok: false, error: res.err || res.out || `gh 退出码 ${res.code}` };
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(res.out || "[]");
+  } catch {
+    return { ok: false, error: `PR 列表解析失败：${res.out.slice(0, 200)}` };
+  }
+  if (!Array.isArray(raw)) return { ok: false, error: "PR 列表不是数组" };
+
+  const prs: OpenPr[] = [];
+  for (const item of raw as Array<Record<string, unknown>>) {
+    const number = Number(item["number"]);
+    const headSha = String(item["headRefOid"] ?? "");
+    if (!Number.isSafeInteger(number) || number <= 0 || !headSha) continue;
+    const author = item["author"] as { login?: unknown } | undefined;
+    prs.push({
+      number,
+      headSha,
+      title: String(item["title"] ?? ""),
+      authorLogin: String(author?.login ?? ""),
+      baseRefName: String(item["baseRefName"] ?? ""),
+      createdAt: String(item["createdAt"] ?? ""),
+    });
+  }
+  return { ok: true, value: prs };
+}
+
+/** 评审请求正文（不含触发词）：只读、给出 diff 命令与输出结构 */
+export function reviewRequest(pr: OpenPr): string {
+  const base = pr.baseRefName || "main";
+  return [
+    `评审新 PR #${pr.number}《${pr.title}》（作者 ${pr.authorLogin || "未知"}，目标分支 ${base}，head ${pr.headSha.slice(0, 12)}）。`,
+    ``,
+    `只读评审：不要修改任何文件，不要提交或推送。先读仓库约定（AGENTS.md、docs/specs），再看改动：`,
+    `- git log --oneline origin/${base}..HEAD（本地没有 origin 时改用 ${base}）`,
+    `- git diff origin/${base}...HEAD`,
+    ``,
+    `按顺序给出结论：`,
+    `1. 结论：通过 / 需要修改`,
+    `2. 必须修的问题：文件:行 + 原因`,
+    `3. 建议（可选）`,
+    `4. 测试覆盖缺口`,
+  ].join("\n");
+}
+
 /** 拉取 since 之后新增或更新的 Issue / PR 评论；逐行解析 `--jq '.[]'` 的输出 */
 export function listComments(runner: Runner, repo: string, sinceIso: string): GhResult<PrComment[]> {
   const since = encodeURIComponent(sinceIso);

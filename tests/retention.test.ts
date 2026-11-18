@@ -42,6 +42,8 @@ function seed(store: Store, id: string, status: TaskStatus, endedAt: number | nu
     replyPr: null,
     replyIssue: null,
     replyRepo: null,
+    readonly: false,
+    reviewBase: null,
     summary: null,
     error: null,
     createdAt: endedAt ?? NOW - 100 * DAY,

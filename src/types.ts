@@ -37,6 +37,10 @@ export interface IncomingMessage {
   replyIssue?: number;
   /** 回帖目标仓库（owner/repo）；缺省时用 github 配置的单仓库 */
   replyRepo?: string;
+  /** 只读任务：只做评审，不交付、不提交 */
+  readonly?: boolean;
+  /** 只读评审的检出范围：head 用于建工作副本，base 用于对比 */
+  review?: { head: string; base: string };
   receivedAt?: number;
   /**
    * 会话线程键：同一线程的后续消息归到这里，由入口按自身语义给出
@@ -74,6 +78,10 @@ export interface Task {
   replyIssue: number | null;
   /** 回帖目标仓库；null 表示回退到 github 配置的单仓库 */
   replyRepo: string | null;
+  /** 只读任务：只做评审，不提交、不推送、不建 PR */
+  readonly: boolean;
+  /** 评审对比的目标分支；只读任务使用 */
+  reviewBase: string | null;
   summary: string | null;
   error: string | null;
   createdAt: number;

@@ -129,6 +129,8 @@ describe("Trigger 身份与线程归属", () => {
       startedAt: null,
       endedAt: null,
       cancelRequested: false,
+      readonly: false,
+      reviewBase: null,
       ...rest,
     };
     store.insertTask(task);
@@ -320,5 +322,7 @@ function seedTaskFixture(): Task {
     startedAt: null,
     endedAt: null,
     cancelRequested: false,
+    readonly: false,
+    reviewBase: null,
   };
 }
