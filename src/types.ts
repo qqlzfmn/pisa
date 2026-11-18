@@ -50,12 +50,29 @@ export interface IncomingMessage {
   version?: string;
   /** 触发者：入口侧真实发起人；缺省用 userId（PR 评论这类以配置身份投递的入口要显式给） */
   actor?: string;
+  /**
+   * 消息是否显式 @ 了机器人。缺省由 core 推断：私聊或正文带触发词视为已 @。
+   * 群聊里没 @ 的消息由各入口自己置 false，准入策略据此决定收不收。
+   */
+  mentioned?: boolean;
   /** 任务类型；缺省按普通开发任务处理 */
   mode?: TaskMode;
 }
 
 /** work：改代码并交付；review：只读评审，不建分支、不交付 */
 export type TaskMode = "work" | "review";
+
+/** 派活时的准入凭据：来源、真实发起人、当时怎么判的；策略改版不影响已创建的任务 */
+export interface TaskMandate {
+  source: string;
+  actor: string;
+  listed: boolean;
+  mentioned: boolean;
+  decision: "allow" | "deny";
+  mode: "off" | "observe" | "auto";
+  /** observe 模式下这里记录「本会被拒绝」的原因，便于事后审计 */
+  reason: string | null;
+}
 
 export interface Task {
   id: string;
@@ -81,6 +98,10 @@ export interface Task {
   replyRepo: string | null;
   /** 任务类型：review 只读评审，不建分支、不交付；缺省按 work 处理 */
   mode?: TaskMode;
+  /** 派活时的准入判定；旧任务没有这条记录 */
+  mandate?: TaskMandate | null;
+  /** 派活时的策略版本；恢复前与当前版本比对后重校验 */
+  policyVersion?: string | null;
   summary: string | null;
   error: string | null;
   createdAt: number;

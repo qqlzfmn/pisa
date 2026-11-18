@@ -52,6 +52,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
 /pisa status                     任务看板（私聊可用 /status）
+/pisa policy                     查看来源准入规则与策略版本（私聊可用 /policy）
 ```
 
 场景说明、最佳实践与能力边界（无沙箱、回滚范围、单机、并发、鉴权面）见 [usage.md](./usage.md)。
@@ -87,6 +88,37 @@ Telegram 启动时用 `setMyCommands` 注册命令菜单（私聊可直接点选
 ### 进度回传
 
 执行时会实时回传进度（`🛠 命令` / `✏️ 文件`），破坏性命令会在 agent 内部被拦下。
+
+## 来源准入
+
+谁能派活由「来源 + 名单 + 是否 @」决定，规则带版本：
+
+```json
+{
+  "policy": {
+    "sources": {
+      "github": {
+        "allowed": ["alice", "bob"],
+        "accept": "auto",
+        "admit": {
+          "listed":   { "mentioned": "allow", "unmentioned": "deny" },
+          "unlisted": { "mentioned": "deny",  "unmentioned": "deny" }
+        }
+      },
+      "feishu": { "accept": "observe" }
+    }
+  }
+}
+```
+
+- 来源：`cli`、`telegram`、`web`、`webhook`、`github`、`github-actions`、`feishu`、`wecom`、`file-watch`、`cron`、`proactive`；配置里写别的名字也计入
+- `allowed`：允许派活的真实发起人（`actor ?? userId`；GitHub 是评论 login）。留空表示不额外限制名单
+- `admit`：名单内/外 × 是否 @ 四格。缺省见上例：名单内 @ 放行，名单内未 @ 与名单外一律拒绝
+- `accept`：`auto` 按四格执行；`observe` 只记录不拦（任务的 mandate 里留下本会拒绝的原因）；`off` 开关闭该来源
+- 「是否 @」缺省按私聊或正文带触发词推断；飞书群消息按正文里的 `@_user_N` / `@_all` 判断
+- 策略版本是 `whitelist` 与各来源策略的摘要（8 位十六进制）；任务落库时记下 mandate 与版本，策略改版不追溯
+- `/pisa resume` 会按任务记录的原来源与原发起人、用当前策略重判，并重跑白名单与仓库检查；失败则拒绝并回 `旧版本 → 当前版本`
+- 改完配置要重启才生效；`/pisa policy` 同时列出未结束任务按版本的分布，方便看清哪些单是旧规则开的
 
 ## 撤销与账本
 
@@ -349,7 +381,7 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 - 任务成功后把摘要（限 3000 字）回帖到评论所在的仓库；旧任务或没有仓库记录时回退到配置里的单仓库；回帖失败进 outbox 按 2s→60s 退避重试，任务状态不变
 - GitHub 评论产生的任务仍落在本地默认仓库：配置里没有 GitHub 仓库到本地别名的映射
 
-`gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
+`gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。任务归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）；评论者本身默认不鉴权，要限制就把 login 写进 `policy.sources.github.allowed`，名单外的评论直接拒绝。
 
 ### PR 自动评审
 

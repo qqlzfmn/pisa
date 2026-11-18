@@ -119,6 +119,29 @@ export interface TriggersConfig {
   fileWatch?: FileWatchTriggerConfig;
 }
 
+/** 来源准入：一个格子允许或拒绝这类消息派活 */
+export type AdmissionCell = "allow" | "deny";
+
+/** 来源的接单方式：off 完全关闭，observe 只记录不拦，auto 按准入表执行 */
+export type AcceptMode = "off" | "observe" | "auto";
+
+/** 准入表：名单内外 × 是否 @ 机器人 */
+export interface AdmissionTableConfig {
+  listed?: { mentioned?: AdmissionCell; unmentioned?: AdmissionCell };
+  unlisted?: { mentioned?: AdmissionCell; unmentioned?: AdmissionCell };
+}
+
+export interface PolicySourceConfig {
+  /** 允许派活的身份（入口真实 actor）；留空表示不额外限制名单 */
+  allowed?: string[];
+  admit?: AdmissionTableConfig;
+  accept?: AcceptMode;
+}
+
+export interface PolicyConfig {
+  sources?: Record<string, PolicySourceConfig>;
+}
+
 /** events 与 progress 的默认保留天数 */
 export const DEFAULT_RETENTION_DAYS = 30;
 
@@ -153,6 +176,8 @@ export interface Config {
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
   /** 通用触发适配层；缺省不启用任何入口 */
   triggers?: TriggersConfig;
+  /** 来源准入策略；缺省沿用各入口现有行为 */
+  policy?: PolicyConfig;
   /** 评论 → 任务 → 回帖；repo 形如 owner/repo */
   github?: GithubConfig;
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
@@ -334,7 +359,8 @@ export type CommandKind =
   | "confirm"
   | "verbose"
   | "gc"
-  | "reconcile";
+  | "reconcile"
+  | "policy";
 
 /** 帮助分组：派活（新任务与续跑）、查询（状态与用法）、维护（改撤合）、集成（不经 IM 的入口） */
 export type HelpGroup = "派活" | "查询" | "维护" | "集成";
@@ -360,6 +386,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "status", alias: "状态", description: "查看任务看板", group: "查询", menu: true },
   { command: "schedules", alias: "定时", description: "查看定时任务", group: "查询", menu: true },
   { command: "examples", alias: "示例", description: "查看可直接照抄的场景", group: "查询", menu: true },
+  { command: "policy", alias: "策略", description: "查看来源准入策略与版本", group: "查询", menu: true },
   { command: "verbose", alias: "进度", description: "过程消息开关（on/off）", args: "[on|off]", group: "查询", menu: true },
   { command: "gc", alias: "清理", description: "清理已结束任务的分支/工作副本/PR", args: "[天数] [--dry]", group: "维护", menu: true },
   { command: "reconcile", alias: "对账", description: "对比任务记录与分支/工作副本/PR", args: "[任务号] [--fix]", group: "维护", menu: true },
