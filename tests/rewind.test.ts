@@ -93,13 +93,18 @@ function ghRunner(state: "OPEN" | "MERGED" | "fail", closeOk = true, mergeCommit
   const runner: Runner = (args) => {
     calls.push(args);
     if (args[2] === "view") {
-      if (state === "fail") return { code: 1, out: "", err: "gh: boom" };
-      return { code: 0, out: JSON.stringify({ state, mergeCommit: mergeCommit ? { oid: mergeCommit } : null }), err: "" };
+      if (state === "fail") return { code: 1, out: "", err: "gh: boom", timedOut: false };
+      return {
+        code: 0,
+        out: JSON.stringify({ state, mergeCommit: mergeCommit ? { oid: mergeCommit } : null }),
+        err: "",
+        timedOut: false,
+      };
     }
     if (args[2] === "close") {
-      return closeOk ? { code: 0, out: "", err: "" } : { code: 1, out: "", err: "gh: close refused" };
+      return closeOk ? { code: 0, out: "", err: "", timedOut: false } : { code: 1, out: "", err: "gh: close refused", timedOut: false };
     }
-    return { code: 0, out: "", err: "" };
+    return { code: 0, out: "", err: "", timedOut: false };
   };
   return { runner, calls };
 }
@@ -289,9 +294,10 @@ describe("Router.rewind", () => {
     const calls: string[][] = [];
     const flaky: Runner = (args) => {
       calls.push(args);
-      if (args[2] === "view") return { code: 0, out: JSON.stringify({ state: "OPEN", mergeCommit: null }), err: "" };
+      if (args[2] === "view")
+        return { code: 0, out: JSON.stringify({ state: "OPEN", mergeCommit: null }), err: "", timedOut: false };
       attempt += 1;
-      return attempt === 1 ? { code: 1, out: "", err: "gh: close refused" } : { code: 0, out: "", err: "" };
+      return attempt === 1 ? { code: 1, out: "", err: "gh: close refused", timedOut: false } : { code: 0, out: "", err: "", timedOut: false };
     };
     const router = new Router({
       cfg,

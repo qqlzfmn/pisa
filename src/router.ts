@@ -1,10 +1,18 @@
 import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import type { CommandKind, Config, RepoConfig } from "./config";
-import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
+import {
+  DEFAULT_ENV_ALLOW,
+  DEFAULT_VERIFY_TIMEOUT_SEC,
+  githubRepos,
+  parseCommand,
+  repoByAlias,
+  splitRepoAlias,
+  taskGuard,
+} from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
 import type { EffectRow, Store } from "./store";
-import type { WorkerRunner } from "./worker";
+import { workerEnv, type WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
 import { EffectQueue, type CommentPayload, type PrPayload, type PushPayload } from "./effects";
 import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
@@ -20,7 +28,7 @@ import {
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
 import { formatExamples, formatHelp } from "./usage";
-import { TaskLogger } from "./log";
+import { TaskLogger, redact } from "./log";
 import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
@@ -533,10 +541,12 @@ export class Router {
 
   /** 统一发送；带 taskId 时记住消息 id，之后用户回复这条消息即可续跑 */
   private async reply(chatId: string, text: string, taskId?: string): Promise<void> {
+    // 回执里可能带 agent 代码打印的内容（验证失败时的测试输出）：与任务日志同一套脱敏
+    const safe = redact(text);
     // 通知失败不能影响任务本身：Telegram 429/网络抖动时只记日志
     let receipt: { messageId?: string } | void;
     try {
-      receipt = await this.deps.channel.send(chatId, text);
+      receipt = await this.deps.channel.send(chatId, safe);
     } catch (err) {
       console.error(`[pisa] 回复失败：${String(err).slice(0, 200)}`);
       return;
@@ -689,7 +699,20 @@ export class Router {
       let detail = "没有测试目录，跳过测试";
       const hasTests = existsSync(join(verifyDir, "tests")) || existsSync(join(verifyDir, "test"));
       if (hasTests) {
-        const test = sh(["bun", "test"], verifyDir);
+        // 验证副本里是 agent 写的测试：只给白名单里的变量，且必须有上限，
+        // 否则一条 sleep 或死循环就让这条「合入 main 前的唯一闸门」永久挂住
+        const verifyTimeoutSec = Math.max(1, cfg.worker.verifyTimeoutSec ?? DEFAULT_VERIFY_TIMEOUT_SEC);
+        const test = sh(["bun", "test"], verifyDir, {
+          env: workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env),
+          timeoutMs: verifyTimeoutSec * 1000,
+        });
+        if (test.timedOut) {
+          await this.reply(
+            msg.chatId,
+            `未合并 · ${task.id}\n验证超时（上限 ${verifyTimeoutSec}s），${base} 未改动`,
+          );
+          return;
+        }
         ok = test.code === 0;
         detail = ok ? "测试通过" : `测试失败：\n${(test.err || test.out).slice(-600)}`;
       }

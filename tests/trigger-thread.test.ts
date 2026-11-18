@@ -260,12 +260,12 @@ describe("Trigger 身份与线程归属", () => {
     const runner: Runner = (args) => {
       const path = args[2] ?? "";
       if (path.includes("/issues/comments")) {
-        return { code: 0, out: comments.map((c) => JSON.stringify(c)).join("\n"), err: "" };
+        return { code: 0, out: comments.map((c) => JSON.stringify(c)).join("\n"), err: "", timedOut: false };
       }
       const m = path.match(/\/issues\/(\d+)$/);
-      if (!m) return { code: 1, out: "", err: `unexpected: ${args.join(" ")}` };
+      if (!m) return { code: 1, out: "", err: `unexpected: ${args.join(" ")}`, timedOut: false };
       // 普通 Issue：没有 pull_request 字段
-      return { code: 0, out: "", err: "" };
+      return { code: 0, out: "", err: "", timedOut: false };
     };
     cfg = {
       ...cfg,

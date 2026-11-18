@@ -13,6 +13,7 @@
 
 ### 修复
 
+- `/pisa merge` 的验证步骤按最小权限执行：验证副本里的 `bun test` 只拿 `worker.envAllow` 白名单里的环境变量（此前经 `sh` 继承 pisa 启动环境，含 `GH_TOKEN`、`PISA_TELEGRAM_TOKEN`），并加上限 `worker.verifyTimeoutSec`（默认 600s），到点 `SIGKILL` 并回「未合并 · 验证超时」，主干不动；`sh` 新增 `env` / `timeoutMs` 与 `ExecResult.timedOut`，Router 回执统一过 `redact`
 - webhook 事件号越界占用：`eventId` 必须以 `webhook:` 开头，`cron:` / `github:comment:` / `telegram:` 等通道命名空间返回 400，避免持有 webhook token 的一方先占定时任务与评论派活的键；token 改常量时间比较（长度不等 403），正文上限 64 KiB（413）
 - 被拒的投递不再占事件号：事件占位排在鉴权与正文校验之后、任务落库之前，非白名单用户投递同一个 `eventId` 不会让随后的合法投递被静默丢弃
 - 恢复中断任务不再重放旧过程消息：`resume` 从进度文件已写位置继续轮询，上一轮推送过的工具调用不会在重启后重复出现

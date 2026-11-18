@@ -1,11 +1,11 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Store } from "../src/store";
 import { Router, formatDuration } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
-import { parseCommand, taskGuard, type Config } from "../src/config";
+import { DEFAULT_ENV_ALLOW, parseCommand, taskGuard, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh, changedFiles, createWorktree } from "../src/git";
@@ -541,6 +541,126 @@ describe("Router", () => {
       expect(sh(["git", "-C", repo, "cat-file", "-e", "main:out.txt"]).code).toBe(0);
       expect(sh(["git", "-C", repo, "cat-file", "-e", "main:later.txt"]).code).toBe(0);
     } finally {
+      if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+    }
+  });
+
+  test("验证超时：慢测试被杀，main 不变", async () => {
+    const supervised = process.env.PISA_SUPERVISED;
+    delete process.env.PISA_SUPERVISED;
+    try {
+      const before = sh(["git", "-C", repo, "rev-parse", "main"]).out;
+      const slowWorker: WorkerRunner = {
+        async run(_task, workdir): Promise<WorkerResult> {
+          mkdirSync(join(workdir, "tests"), { recursive: true });
+          writeFileSync(
+            join(workdir, "tests", "slow.test.ts"),
+            // 目的就是让真实子进程挂住，假定时器跨不了进程，只能用真实时钟
+            'import { test } from "bun:test";\ntest("slow", async () => { await Bun.sleep(30_000); });\n',
+          );
+          return { ok: true, summary: "加了慢测试", exitCode: 0 };
+        },
+      };
+      cfg.worker.verifyTimeoutSec = 2;
+      const router = build(slowWorker);
+      await router.handle(msg("/pisa 加慢测试"));
+      await router.drainOnce();
+      const id = store.recentTasks()[0]!.id;
+
+      const t0 = Date.now();
+      await router.handle(msg(`/pisa merge ${id}`));
+      const elapsed = Date.now() - t0;
+
+      expect(channel.sent.at(-1)!.text).toContain("未合并");
+      expect(channel.sent.at(-1)!.text).toContain("验证超时");
+      expect(elapsed).toBeLessThan(8000);
+      expect(sh(["git", "-C", repo, "rev-parse", "main"]).out).toBe(before);
+      expect(sh(["git", "-C", repo, "cat-file", "-e", "main:tests/slow.test.ts"]).code).not.toBe(0);
+    } finally {
+      if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+    }
+  });
+
+  /** 落一个任务、写入给定测试文件，然后 merge，返回全部回执拼接 */
+  async function mergeWithTests(files: Record<string, string>, before?: () => void): Promise<string> {
+    const worker: WorkerRunner = {
+      async run(_task, workdir): Promise<WorkerResult> {
+        for (const [path, content] of Object.entries(files)) {
+          mkdirSync(dirname(join(workdir, path)), { recursive: true });
+          writeFileSync(join(workdir, path), content);
+        }
+        return { ok: true, summary: "加了测试", exitCode: 0 };
+      },
+    };
+    before?.();
+    const router = build(worker);
+    await router.handle(msg("/pisa 加测试"));
+    await router.drainOnce();
+    const id = store.recentTasks()[0]!.id;
+    await router.handle(msg(`/pisa merge ${id}`));
+    return channel.sent.map((s) => s.text).join("\n");
+  }
+
+  test("验证子进程拿不到凭据，回执里也看不到 token 明文", async () => {
+    const supervised = process.env.PISA_SUPERVISED;
+    const token = `ghp_${"b".repeat(36)}`;
+    const previous = process.env.GH_TOKEN;
+    delete process.env.PISA_SUPERVISED;
+    process.env.GH_TOKEN = token;
+    try {
+      const receipt = await mergeWithTests({
+        "tests/env.test.ts": [
+          'import { expect, test } from "bun:test";',
+          'test("打印验证环境", () => {',
+          "  const env = JSON.stringify(process.env.GH_TOKEN ?? null);",
+          // 断言失败信息排在输出末尾，不会被回执的 600 字截断切掉
+          '  expect(`VERIFY_ENV_GH_TOKEN ${env} VERIFY_FAKE_TOKEN ghp_${"a".repeat(36)}`).toBe("never");',
+          "});",
+          "",
+        ].join("\n"),
+      });
+
+      expect(receipt).toContain("未合并");
+      expect(receipt).toContain("VERIFY_ENV_GH_TOKEN null");
+      expect(receipt).not.toContain(`ghp_${"a".repeat(36)}`);
+      expect(receipt).not.toContain(token);
+      expect(receipt).toContain("VERIFY_FAKE_TOKEN <redacted>");
+    } finally {
+      if (previous === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = previous;
+      if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+    }
+  });
+
+  test("白名单放行的变量真的传进验证子进程，回执仍脱敏", async () => {
+    const supervised = process.env.PISA_SUPERVISED;
+    const token = `ghp_${"b".repeat(36)}`;
+    const previous = process.env.GH_TOKEN;
+    delete process.env.PISA_SUPERVISED;
+    process.env.GH_TOKEN = token;
+    try {
+      const receipt = await mergeWithTests(
+        {
+          "tests/env.test.ts": [
+            'import { expect, test } from "bun:test";',
+            'test("打印放行变量", () => {',
+            '  const t = process.env.GH_TOKEN ?? "";',
+            '  expect(`VERIFY_TOKEN_LEN ${t.length} VERIFY_TOKEN_RAW ${t}`).toBe("never");',
+            "});",
+            "",
+          ].join("\n"),
+        },
+        () => {
+          cfg.worker.envAllow = [...DEFAULT_ENV_ALLOW, "GH_TOKEN"];
+        },
+      );
+
+      expect(receipt).toContain("VERIFY_TOKEN_LEN 40");
+      expect(receipt).toContain("VERIFY_TOKEN_RAW <redacted>");
+      expect(receipt).not.toContain(token);
+    } finally {
+      if (previous === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = previous;
       if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
     }
   });

@@ -2,14 +2,31 @@ export interface ExecResult {
   code: number;
   out: string;
   err: string;
+  /** 到点被杀：`code` 为 -1，`out` / `err` 可能为空 */
+  timedOut: boolean;
 }
 
-export function sh(args: string[], cwd?: string): ExecResult {
-  const p = Bun.spawnSync(args, { cwd, stdout: "pipe", stderr: "pipe" });
+export interface ShOptions {
+  /** 子进程环境；省略时继承 pisa 启动时的环境 */
+  env?: Record<string, string>;
+  /** 超时毫秒数；到点用 SIGKILL 杀掉直接子进程 */
+  timeoutMs?: number;
+}
+
+export function sh(args: string[], cwd?: string, opts: ShOptions = {}): ExecResult {
+  const p = Bun.spawnSync(args, {
+    cwd,
+    env: opts.env,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: opts.timeoutMs,
+    killSignal: "SIGKILL",
+  });
   return {
     code: p.exitCode ?? -1,
     out: (p.stdout?.toString() ?? "").trim(),
     err: (p.stderr?.toString() ?? "").trim(),
+    timedOut: opts.timeoutMs !== undefined && p.signalCode != null,
   };
 }
 
@@ -95,7 +112,7 @@ export function commitAll(workdir: string, message: string, name: string, email:
   if (add.code !== 0) return { ...add, files: [], blocked: [] };
 
   const staged = stagedFiles(workdir);
-  if (!staged) return { code: -1, out: "", err: "读取索引失败", files: [], blocked: [] };
+  if (!staged) return { code: -1, out: "", err: "读取索引失败", timedOut: false, files: [], blocked: [] };
   const blocked = staged.filter(isSensitivePath);
   if (blocked.length > 0) {
     // 按 pathspec 分拣而不是信任 .gitignore：agent 可以改 .gitignore 把敏感文件放进索引
@@ -104,7 +121,7 @@ export function commitAll(workdir: string, message: string, name: string, email:
   }
   const files = staged.filter((path) => !isSensitivePath(path));
   // 全被拦下时不产生空提交
-  if (files.length === 0) return { code: 0, out: "", err: "", files, blocked };
+  if (files.length === 0) return { code: 0, out: "", err: "", timedOut: false, files, blocked };
 
   const commit = sh([
     "git",

@@ -278,6 +278,8 @@ interface ChannelAdapter {
 | 推送失败 | `pushBranch` 抛错 | `failed` | effect 行随任务失败丢弃；worktree 删除后本地提交一并消失，远程无残留 | 修远程/凭据后重投 |
 | PR 创建失败 | `gh pr create` 无输出 | 任务仍 `succeeded` | 分支已推，`effect` 行留库退避重试 | 重试成功自动回填 `pr_url` 与账本；期间回执给 compare 链接 |
 | 回帖失败 | `gh` 退出码非 0 | 不影响状态 | `effect` 行留库退避重试 | 重试到发出去；隐藏标记保证重复执行也只发一条 |
+| 合并验证超时 | 验证副本的 `bun test` 超过 `worker.verifyTimeoutSec`（默认 600s）被 `SIGKILL` | 任务仍 `succeeded` | 主干不变；删验证 worktree 与 `verify/<id>` 分支 | 拆小测试或调大 `verifyTimeoutSec` 后重发 `/pisa merge` |
+| 合并验证失败 | 验证副本的 `bun test` 退出码非 0 | 任务仍 `succeeded` | 同上 | 让 agent 修测试后重发 `/pisa merge` |
 | 进程被杀 | `recoverInterrupted` | `cancelled`（已请求取消）/ `paused` / `failed` | worktree 一律保留 | 已取消不可 `resume`；`paused` 可 `resume` 或 `rewind` |
 | 重复投递 | `triggerByMessage` 命中同版本同载荷 | 只有一条任务 | — | 自动 |
 | 编辑已开跑任务的消息 | 版本不同但任务非 `queued` | 原任务不变 | 留一条 `kind=context` 触发记录 | 需要改需求就重新投递 |
@@ -287,7 +289,7 @@ interface ChannelAdapter {
 
 ### 5.2 已知限制
 
-1. **无沙箱**。agent 进程以当前用户身份运行，能读写工作副本之外的文件；环境变量只继承 `worker.envAllow` 白名单里的键（默认 `PATH`、`HOME`、`LANG`、`LC_ALL`、`TERM`、`TMPDIR`、`SHELL`、`USER`），其余不进子进程。`extensions/pisa-worker.ts` 的拦截是按 bash 命令文本首段匹配的正则 denylist（`git push`、`git reset --hard`、带 `f` 的 `git clean`、`rm -rf /`（`/tmp` 除外）、`sudo`、改 `/etc` 的 `chmod/chown`），`/usr/bin/git push`、`git -c … push`、脚本包装、非 bash 工具写文件都不在覆盖范围。worktree 只隔离同一仓库的分支，不是文件系统隔离。
+1. **无沙箱**。agent 进程以当前用户身份运行，能读写工作副本之外的文件；环境变量只继承 `worker.envAllow` 白名单里的键（默认 `PATH`、`HOME`、`LANG`、`LC_ALL`、`TERM`、`TMPDIR`、`SHELL`、`USER`），其余不进子进程。`/pisa merge` 在验证副本里跑的 `bun test` 同样按白名单裁剪环境，并有 `worker.verifyTimeoutSec`（默认 600s）上限，到点 `SIGKILL`；但验证副本仍以当前用户身份、带整机访问权限执行 agent 写的测试代码。`extensions/pisa-worker.ts` 的拦截是按 bash 命令文本首段匹配的正则 denylist（`git push`、`git reset --hard`、带 `f` 的 `git clean`、`rm -rf /`（`/tmp` 除外）、`sudo`、改 `/etc` 的 `chmod/chown`），`/usr/bin/git push`、`git -c … push`、脚本包装、非 bash 工具写文件都不在覆盖范围。worktree 只隔离同一仓库的分支，不是文件系统隔离。
 2. **单机**。SQLite、worktree、日志、agent 会话都在本机 `.pisa` 与 agent 自己的存储里。`supervise.sh` 在本机按 1→30s 退避重启，机器下线即系统下线；没有跨机器接管。
 3. **并发**。上限是 `worker.concurrency`（默认 2），以进程内活跃 Promise 计；多任务共享同一 `.git` 对象库，交付只 `git add -A` 自己的工作副本；同一分支不能有两个 worktree，续跑同一分支的第二个任务会直接失败；`merge` 要求主工作区停在 base 分支，并先 rebase 到最新主干（否则历史前进后快进必然失败）。
 4. **信号只到直接子进程**：超时与取消对 agent 进程 `SIGTERM`→`SIGKILL`，它派生的孙进程可能残留。

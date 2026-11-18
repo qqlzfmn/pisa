@@ -225,7 +225,7 @@ curl -X POST http://127.0.0.1:8799/event \
 不会。每任务一个 git worktree 与独立分支。同一分支被别的 worktree 占用时任务直接失败，不会另建同名分支顶替；续跑才会刻意共享父任务的分支。
 
 **Q：密钥会不会被 agent 读走？**
-Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、LANG、LC_ALL、TERM、TMPDIR、SHELL、USER），其余变量不进子进程。但 pisa 不是沙箱：进程能读写整台机器，别在不可信仓库上开自动推送。
+Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、LANG、LC_ALL、TERM、TMPDIR、SHELL、USER），其余变量不进子进程；`/pisa merge` 在验证副本里跑的 `bun test` 用同一份白名单，并有 `worker.verifyTimeoutSec`（默认 600 秒）上限。但 pisa 不是沙箱：进程能读写整台机器，别在不可信仓库上开自动推送。
 
 **Q：能跑在 Linux 服务器上吗？**
 代码里没有 macOS 专有依赖；常驻脚本只提供了 macOS launchd 版本（`scripts/install-launchd.sh`），Linux 用 systemd/pm2 之类托管 `bun run src/index.ts` 即可。

@@ -67,6 +67,8 @@ export interface Config {
     envAllow?: string[];
     /** 多久没有任何输出/进度就算卡死并杀掉，默认 900 秒 */
     idleTimeoutSec?: number;
+    /** 合并前在验证副本里跑 `bun test` 的上限，默认 600 秒 */
+    verifyTimeoutSec?: number;
   };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   /** 通知详细程度；progress=false 时只发接单/执行/完成等生命周期消息 */
@@ -122,6 +124,9 @@ export const DEFAULT_WEB: WebConfig = {
   chatId: "web",
 };
 
+/** 合并前验证的默认上限：10 分钟 */
+export const DEFAULT_VERIFY_TIMEOUT_SEC = 600;
+
 export const DEFAULT_CONFIG: Config = {
   trigger: "/pisa",
   dmWithoutTrigger: true,
@@ -135,6 +140,7 @@ export const DEFAULT_CONFIG: Config = {
     concurrency: 2,
     envAllow: [...DEFAULT_ENV_ALLOW],
     idleTimeoutSec: 900,
+    verifyTimeoutSec: DEFAULT_VERIFY_TIMEOUT_SEC,
   },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   notifications: { progress: false },

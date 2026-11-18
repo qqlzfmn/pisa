@@ -26,7 +26,7 @@ import type { WorkerRunner } from "../src/worker";
 const HEADER = "**pisa** 任务完成\n\n";
 
 function reply(code: number, out = "", err = ""): ExecResult {
-  return { code, out, err };
+  return { code, out, err, timedOut: false };
 }
 
 /** 按顺序返回预设结果；用完后重复最后一个 */

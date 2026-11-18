@@ -19,7 +19,7 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 | 看进度 | `/pisa status` | 运行中 / 排队 / 最近完成 三段，每行带阶段（在等谁、需要什么） |
 | 停掉任务 | `/pisa cancel t_xxx` | 2 秒内收口为「取消」，运行中的任务清理工作副本与自建分支 |
 | 撤销副作用 | `/pisa rewind t_xxx` → 加 `--yes` | 关 PR、删分支；已合并用 revert |
-| 合入主干 | `/pisa merge t_xxx` | 临时副本跑测试，通过后 `--ff-only` 合并 |
+| 合入主干 | `/pisa merge t_xxx` | 临时副本跑测试（白名单环境 + 超时上限），通过后 `--ff-only` 合并 |
 | CI 失败 | `POST /event` 带 `x-pisa-token` | 与 IM 相同的执行链路 |
 | PR 内派活 | PR 评论 `/pisa 把错误处理补上` | 接续原分支并更新原 PR |
 | 到点自动开单 | `schedules` 里的 cron | 队列与执行链路同 IM |
