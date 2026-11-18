@@ -24,6 +24,8 @@ export class TelegramChannel implements ChannelAdapter {
   name = "telegram";
   private offset = 0;
   private stopped = false;
+  /** 429 后静默到这个时间点 */
+  private sendAfter = 0;
 
   constructor(
     private token: string,
@@ -68,6 +70,8 @@ export class TelegramChannel implements ChannelAdapter {
   }
 
   async send(chatId: string, text: string): Promise<DeliveryReceipt> {
+    // 被 Telegram 限流时静默跳过，避免把 429 传染给调用方
+    if (Date.now() < this.sendAfter) return {};
     const limit = 3800;
     let last: DeliveryReceipt = {};
     for (let i = 0; i < text.length; i += limit) {
@@ -92,8 +96,12 @@ export class TelegramChannel implements ChannelAdapter {
       body: JSON.stringify(body),
       ...(this.proxy ? { proxy: this.proxy } : {}),
     } as RequestInit);
-    const json = (await res.json()) as { ok: boolean; result?: T; description?: string };
-    if (!json.ok) throw new Error(`Telegram ${method}: ${json.description ?? res.status}`);
+    const json = (await res.json()) as { ok: boolean; result?: T; description?: string; parameters?: { retry_after?: number } };
+    if (!json.ok) {
+      const retry = json.parameters?.retry_after;
+      if (typeof retry === "number") this.sendAfter = Date.now() + retry * 1000;
+      throw new Error(`Telegram ${method}: ${json.description ?? res.status}`);
+    }
     return json;
   }
 

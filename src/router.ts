@@ -427,7 +427,14 @@ export class Router {
 
   /** 统一发送；带 taskId 时记住消息 id，之后用户回复这条消息即可续跑 */
   private async reply(chatId: string, text: string, taskId?: string): Promise<void> {
-    const receipt = await this.deps.channel.send(chatId, text);
+    // 通知失败不能影响任务本身：Telegram 429/网络抖动时只记日志
+    let receipt: { messageId?: string } | void;
+    try {
+      receipt = await this.deps.channel.send(chatId, text);
+    } catch (err) {
+      console.error(`[pisa] 回复失败：${String(err).slice(0, 200)}`);
+      return;
+    }
     if (taskId && receipt && "messageId" in receipt && receipt.messageId) {
       this.deps.store.linkMessage(chatId, receipt.messageId, taskId);
     }
