@@ -247,6 +247,8 @@ describe("pisa continue", () => {
     expect(child.prUrl).toBe(parent.prUrl);
     expect(child.context).toContain(parent.id);
     expect(child.context).toContain("上一轮请求：种子任务");
+    // 人的追问：并发满时能用追问槽
+    expect(child.priority).toBe("human");
     store.close();
   });
 
@@ -264,6 +266,7 @@ describe("查询与操作", () => {
     seed({ prompt: "排队中" });
     const text = await cli(...base("status"));
     expect(text.code).toBe(0);
+    expect(text.out).toContain("槽位：工作 0/1 · 追问 +0/1");
     expect(text.out).toContain("排队（1）");
     expect(text.out).toContain("working/queued（等空闲槽位）");
     expect(text.out).toContain("最近 24h：无完成");

@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
-import type { Effect, EffectKind, Task, TaskStatus } from "./types";
+import type { Effect, EffectKind, Task, TaskPriority, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_issue      INTEGER,
   reply_repo       TEXT,
   mode             TEXT NOT NULL DEFAULT 'work',
+  priority         TEXT NOT NULL DEFAULT 'auto',
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -163,6 +164,7 @@ interface Row {
   reply_issue: number | null;
   reply_repo: string | null;
   mode: string | null;
+  priority: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -228,6 +230,7 @@ function toTask(r: Row): Task {
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
     mode: r.mode === "review" ? "review" : "work",
+    priority: r.priority === "human" ? "human" : "auto",
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -272,6 +275,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "mode")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'work'");
+    }
+    if (!cols.some((c) => c.name === "priority")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'auto'");
     }
     this.backfillTriggers();
   }
@@ -560,8 +566,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mode)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mode, priority)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -580,6 +586,7 @@ export class Store {
         t.replyIssue,
         t.replyRepo,
         t.mode ?? "work",
+        t.priority ?? "auto",
       ],
     );
   }
@@ -631,8 +638,15 @@ export class Store {
     return rows.map(toTask).find((t) => !repo || t.replyRepo === repo) ?? null;
   }
 
-  nextQueued(): Task | null {
-    const row = this.db.query("SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at LIMIT 1").get() as Row | null;
+  /** 最早的排队任务；给定 priority 时只在该类里取 */
+  nextQueued(priority?: TaskPriority): Task | null {
+    const row = (
+      priority
+        ? this.db
+            .query("SELECT * FROM tasks WHERE status = 'queued' AND priority = ? ORDER BY created_at LIMIT 1")
+            .get(priority)
+        : this.db.query("SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at LIMIT 1").get()
+    ) as Row | null;
     return row ? toTask(row) : null;
   }
 

@@ -57,6 +57,9 @@ export interface IncomingMessage {
 /** work：改代码并交付；review：只读评审，不建分支、不交付 */
 export type TaskMode = "work" | "review";
 
+/** human：人的追问与恢复，可用额外的追问槽；auto：新派的任务，只占工作槽 */
+export type TaskPriority = "auto" | "human";
+
 export interface Task {
   id: string;
   source: string;
@@ -81,6 +84,8 @@ export interface Task {
   replyRepo: string | null;
   /** 任务类型：review 只读评审，不建分支、不交付；缺省按 work 处理 */
   mode?: TaskMode;
+  /** 槽位类别：human 可用追问槽，缺省 auto */
+  priority?: TaskPriority;
   summary: string | null;
   error: string | null;
   createdAt: number;
