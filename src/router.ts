@@ -29,7 +29,7 @@ import {
   prStatus,
   type Runner,
 } from "./github";
-import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindPlan, type RewindProbes } from "./rewind";
 import {
   applyReconcile,
   formatReconcile,
@@ -218,9 +218,9 @@ export class Router {
     this.active.set(task.id, p);
   }
 
-  /** 按并发上限补位；不等待任务完成 */
+  /** 按并发上限补位；不等待任务完成。执行器暂停时只停止补位，运行中的任务照常收尾 */
   private async fill(): Promise<void> {
-    if (this.stopping) return;
+    if (this.stopping || this.deps.store.executorPaused()) return;
     const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
     while (this.active.size < limit) {
       const task = this.deps.store.nextQueued();
@@ -357,6 +357,11 @@ export class Router {
 
     if (cmd.kind === "cancel") {
       await this.handleCancel(msg, cmd.body);
+      return;
+    }
+
+    if (cmd.kind === "retry") {
+      await this.handleRetry(msg, cmd.body);
       return;
     }
 
@@ -878,6 +883,41 @@ export class Router {
   }
 
   /**
+   * 撤销预览：IM 命令与管理接口共用同一套校验与探测。
+   * code 供接口映射状态码；任务不存在、状态不允许、越权、仓库未配置都只回错误。
+   */
+  planRewindFor(
+    taskId: string,
+    msg: IncomingMessage,
+  ): { plan: RewindPlan } | { error: string; code: "notFound" | "notRunnable" | "forbidden" | "config" } {
+    const { cfg, store } = this.deps;
+    const task = store.get(taskId);
+    if (!task) return { error: `找不到任务 ${taskId}`, code: "notFound" };
+    if (!msg.admin && task.requester !== msg.userId) return { error: "只有原请求者可以撤销。", code: "forbidden" };
+    if (task.status === "rewound") return { error: `任务 ${taskId} 已撤销。`, code: "notRunnable" };
+    if (task.status === "queued" || task.status === "running" || task.status === "paused") {
+      return {
+        error: `任务 ${taskId} 还没结束（${task.status}），先 ${cfg.trigger} cancel ${taskId}。`,
+        code: "notRunnable",
+      };
+    }
+    const repo = repoByAlias(cfg, task.repo);
+    if (!repo) return { error: `仓库未配置：${task.repo}`, code: "config" };
+    const runner = this.deps.ghRunner ?? defaultRunner;
+    const plan = planRewind(task, store.effectsOf(taskId), {
+      repoPath: repo.path,
+      baseBranch: repo.baseBranch ?? "main",
+      probes: this.rewindProbes(runner),
+    });
+    return { plan };
+  }
+
+  /** 执行器当前在跑的任务数；暂停接口与自检用 */
+  activeCount(): number {
+    return this.active.size;
+  }
+
+  /**
    * `/pisa rewind <任务号> [--yes]`：先给预览，带 --yes 才执行。
    * 已合并的任务用 revert 提交回退；无法确认 PR 状态时不动分支，避免误删已合并成果。
    */
@@ -890,35 +930,13 @@ export class Router {
       await this.reply(msg.chatId, `用法：${cfg.trigger} rewind <任务号> [--yes]`);
       return;
     }
-    const task = store.get(id);
-    if (!task) {
-      await this.reply(msg.chatId, `找不到任务 ${id}`);
+    const planned = this.planRewindFor(id, msg);
+    if ("error" in planned) {
+      await this.reply(msg.chatId, planned.error);
       return;
     }
-    if (!msg.admin && task.requester !== msg.userId) {
-      await this.reply(msg.chatId, "只有原请求者可以撤销。");
-      return;
-    }
-    if (task.status === "rewound") {
-      await this.reply(msg.chatId, `任务 ${id} 已撤销。`);
-      return;
-    }
-    if (task.status === "queued" || task.status === "running" || task.status === "paused") {
-      await this.reply(msg.chatId, `任务 ${id} 还没结束（${task.status}），先 ${cfg.trigger} cancel ${id}。`);
-      return;
-    }
-    const repo = repoByAlias(cfg, task.repo);
-    if (!repo) {
-      await this.reply(msg.chatId, `仓库未配置：${task.repo}`);
-      return;
-    }
-
+    const plan = planned.plan;
     const runner = this.deps.ghRunner ?? defaultRunner;
-    const plan = planRewind(task, store.effectsOf(id), {
-      repoPath: repo.path,
-      baseBranch: repo.baseBranch ?? "main",
-      probes: this.rewindProbes(runner),
-    });
     if (!yes) {
       await this.reply(msg.chatId, formatRewindPlan(plan, cfg.trigger));
       return;
@@ -989,6 +1007,43 @@ export class Router {
     }
     store.requestCancel(id);
     await this.reply(msg.chatId, `取消中 · ${id}`);
+  }
+
+  /**
+   * `/pisa retry <任务号>`：失败或取消的任务重新排队。
+   * 有分支时按续跑处理，复用原分支、上下文与原 PR；没有分支按原需求新开一条。
+   * 沿用原消息的 eventId 作为触发键：同一条指令重复投递只重试一次，
+   * API 也能按 (threadKey, eventId) 反查新建的任务；历史任务与已发生的副作用都不改写。
+   */
+  private async handleRetry(msg: IncomingMessage, body: string): Promise<void> {
+    const { cfg, store } = this.deps;
+    const id = body.trim();
+    const task = id ? store.get(id) : null;
+    if (!task) {
+      await this.reply(msg.chatId, `找不到任务 ${id || ""}`);
+      return;
+    }
+    if (task.status !== "failed" && task.status !== "cancelled") {
+      await this.reply(msg.chatId, `任务 ${id} 状态是 ${task.status}，只有失败或取消的任务可以重试。`);
+      return;
+    }
+    const repo = repoByAlias(cfg, task.repo);
+    const denied = this.checkAccess(msg, repo);
+    if (denied) {
+      await this.reply(msg.chatId, denied);
+      return;
+    }
+    const text = task.branch
+      ? `${cfg.trigger} continue ${task.id} ${task.prompt}`
+      : `${cfg.trigger} ${task.prompt}`;
+    await this.handle({
+      ...msg,
+      text,
+      repo: task.repo,
+      admin: true,
+      replyToMessageId: undefined,
+      continueFrom: undefined,
+    });
   }
 
   /** 恢复被进程重启中断的任务：复用原工作副本与会话再次执行 */

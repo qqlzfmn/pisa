@@ -70,7 +70,9 @@ core 内部模块关系：
 | `reconcile.ts` | 资源对账：任务记录与分支/工作副本/PR 的差异（纯计划 + 执行） | `planReconcile`、`applyReconcile`、`formatReconcile` |
 | `stage.ts` / `status.ts` | 任务阶段规则表与对外投影：阶段、JSON 字段、看板文本 | `taskStage()`、`taskJson()`、`formatStatusBoard()` |
 | `metrics.ts` | 24h 指标聚合：成功率、耗时分位；看板、CLI 与 `/health` 共用 | `computeWindowMetrics()`、`windowMetrics()`、`percentile()` |
-| `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机 | `createWebApp()`、`startWebServer()`、`ReplyBus` |
+| `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机 | `createWebApp()`、`startWebServer()` |
+| `api.ts` / `manager.ts` | 管理接口：`/state`、`/tickets/*`、`/executor/*`；鉴权只认请求头，动作经 `manager.ts` 串行化后走同一条 `router.handle` | `handleApi()`、`Manager` |
+| `reply-bus.ts` / `api-client.ts` | Web 回执缓冲；CLI 的 HTTP 客户端与 `api.json` 发现 | `ReplyBus`、`ApiClient`、`apiTarget()` |
 | `log.ts` / `config.ts` / `types.ts` | 日志脱敏、配置加载与默认值、共享类型与状态机表 | — |
 
 ## 2. 任务状态机与恢复语义
@@ -148,6 +150,7 @@ cancelled ─┘
    - webhook：`Bun.serve` 只接 127.0.0.1 的 `POST /event`（`src/webhook.ts`），先做 token 常量时间比较（403）、`Content-Length` 与正文 64 KiB 上限（413），再校验 body `{prompt, repo?, eventId?, threadKey?, version?}`；`eventId` 必须是 `webhook:` 前缀（`events` 表跨通道共享，`cron:`/`github:comment:`/`telegram:` 归各自入口，越界 400），缺省为 `webhook:<ts>:<rand>`。校验全过后才交给 `router.handle`，被拒的请求不解析正文、不占事件号；带上 `threadKey`（业务单号）就能和别的入口命中同一个任务。
    - 通用触发适配层：`src/triggers/` 下的 `TriggerAdapter` 把外部协议归一成 `IncomingMessage`，`/github/actions`、`/feishu/event`、`/wecom/event` 共用 127.0.0.1 上的一个端口（默认 8790），文件监听不走 HTTP。验签、白名单与去重键都在适配器内部，任务仍由 `router.handle` 建，回执走配置的 `triggers.chatId`（见 4.2）。
    - Web 控制台：`Bun.serve` 只接 127.0.0.1 的 `/ui` 与 `/api/*`，token 鉴权通过后把派活/取消/合并拼成 `IncomingMessage`（`admin: true`）交给 `router.handle`，回执经 `ReplyBus` 收集后回给页面（`src/web.ts`）。`admin` 让 Router 跳过单英文词误触防护与原请求者校验——浏览器里的操作由 token 直接认证，没有可回 `confirm` 的聊天。
+   - 管理接口：同一 `Bun.serve` 上的 `/state`、`/tickets/*`、`/executor/*`，只认 `x-pisa-token` 或 `Authorization: Bearer`（`src/api.ts`）；动作由 `src/manager.ts` 串行化并拼成 `IncomingMessage`，CLI 只是它的一层客户端。
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由触发身份去重，编辑按 `updated_at` 区分）。
    - PR 自动评审：`github.review.enabled` 打开时，同一轮再列一次 open PR，对 `(仓库, PR, head SHA)` 没有触发器记录的版本拉 `gh pr diff`，投递 `mode: "review"` 的只读任务；去重键落在 `triggers` 表，diff 拉取失败不建任务。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
@@ -235,6 +238,7 @@ id = hex(sha256(source, threadKey, messageKey, version, payloadHash))[:32]
 | IM | 通道 → `handle` | telegram 论坛话题 `telegram:<chatId>:topic:<id>`，其余本条消息 | 平台消息 id / `edit_date` |
 | webhook | `src/index.ts` | body 的 `threadKey`，缺省本条消息 | `eventId` / body 的 `version` |
 | Web 控制台 | `src/web.ts` | 本次提交 | `web:<uuid>` |
+| 管理接口 | `src/manager.ts` | 本次动作 | `api:<uuid>` |
 | GitHub 评论 | `github-watcher.ts` | `github:<repo>:issue:<n>` | 评论 id / `updated_at` |
 | PR 自动评审 | `github-watcher.ts` | `github:<repo>:pull:<n>:review` | head SHA / head SHA |
 | cron | `scheduler.ts` | 本条消息 | 分钟键 |

@@ -49,7 +49,7 @@ pisa 的入口只有聊天、webhook 与 GitHub 评论，都是为「人」设�
 | FR-010 | `list` 支持 `--repo`、`--status`、`--limit`、`--pr`、`--github-repo`；先筛后限 |
 | FR-011 | `cancel`：queued/paused 直接取消，running 只登记取消请求，终态拒绝 |
 | FR-012 | `logs` 读取 `<stateDir>/logs/<id>.log` 尾部，默认 80 行 |
-| FR-013 | 退出码：0 成功、1 任务失败、2 用法/配置、3 找不到、4 不可运行、5 等待超时 |
+| FR-013 | 退出码在 021 中重新分配：0 正常、1 需重启、2 部件错误、3 待配置、4 用法、5 找不到、6 不可运行、7 等待超时；本规格原映射作废 |
 | FR-014 | `loadConfig` 把相对 `stateDir` 与仓库路径锚定到配置文件目录，保证不同 cwd 指向同一状态 |
 | FR-015 | `package.json` 暴露 `bin.pisa`；skill 包位于 `skills/pisa/`，只依赖 shell、`pisa`、`gh` |
 

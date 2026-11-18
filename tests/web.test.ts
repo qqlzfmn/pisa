@@ -6,7 +6,8 @@ import { DEFAULT_WEB, type Config } from "../src/config";
 import { Store } from "../src/store";
 import { Router } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
-import { ReplyBus, createWebApp, type WebDeps } from "../src/web";
+import { createWebApp, type WebDeps } from "../src/web";
+import { ReplyBus } from "../src/reply-bus";
 import type { ChannelAdapter, DeliveryReceipt, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh } from "../src/git";
@@ -404,10 +405,10 @@ describe("web 控制台", () => {
       expect(store.get("t_other_user")!.status).toBe("cancelled");
     });
 
-    test("任务不存在返回冲突", async () => {
+    test("任务不存在返回 404", async () => {
       const res = await post("/api/tasks/t_missing/cancel");
       const body = (await res.json()) as ActionResponse;
-      expect(res.status).toBe(409);
+      expect(res.status).toBe(404);
       expect(body.ok).toBe(false);
       expect(body.message).toContain("找不到任务");
     });

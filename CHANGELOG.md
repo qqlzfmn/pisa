@@ -6,6 +6,9 @@
 
 ### 新增
 
+- 管理接口：守护进程在 `127.0.0.1:<web.port>` 上提供 `GET /state`、`GET /tickets/:id` 与 `POST /tickets/:id/stop|retry|merge|rewind`、`POST /executor/pause|resume`，与 Web 控制台共用服务与 token；路由只认请求头 token（查询参数与 cookie 无效），非本机 `Host` 返回 403，地址与 token 写入 `<stateDir>/api.json`（0600）
+- 脚本化 CLI：`pisa status|show|logs|run|pause|stop|retry|merge|rewind` 改为调用管理接口，`run` 提交后阻塞到终态；新增 `retry` 命令（IM `/pisa retry` 同源），失败任务有分支时续跑原分支，否则按原需求新开
+- 执行器暂停：`pisa pause` / `POST /executor/pause` 停止补位，运行中的任务照常收尾；开关落 `meta` 表，跨重启保留
 - PR 自动评审：`github.review.enabled` 打开后，`GithubWatcher` 每轮列出 open PR，对未评审的 head SHA 拉取 diff 并投递只读评审任务（不建分支/worktree、不交付）；结论以评论回帖到 PR，同一 PR 同一 head SHA 只评审一次，新提交重新评审（`src/pr-review.ts`、`tests/github-review.test.ts`）
 - 通用触发适配层：`src/triggers/` 下定义 `TriggerAdapter`（验证、归一化、去重键）与 `dispatch`，新增 GitHub Actions（`X-Hub-Signature-256`）、飞书（`X-Lark-Signature` + 时间窗口）、企业微信（`msg_signature` + AES-256-CBC）三个 HTTP 入口与 `fs.watch` 文件监听，四个入口分别按仓库、群/发送者、发送者、路径白名单过滤；`triggers` 配置项控制启用、端口与密钥环境变量，密钥缺失时入口回 503 而不是退化免签
 - 健康与任务指标：`GET /health` 返回 `ok`、`uptimeSec`、队列深度、running 数与最近 24h 成功率/耗时分位/每仓库任务数；`ok` 取守护进程心跳，心跳停止时返回 503。看板与 `pisa status --json` 附带同一口径的 24h 汇总（`src/metrics.ts`）
@@ -26,6 +29,8 @@
 
 ### 变更
 
+- CLI 退出码重新分配：`0` 正常、`1` 需重启（接口不可达或心跳过期）、`2` 部件错误（任务失败、5xx、合并/撤销未成功）、`3` 待配置（没有 `api.json`/token、401/403）、`4` 用法、`5` 找不到、`6` 不可运行、`7` 等待超时；原 `1` 任务失败与 `4` 不可运行的语义不再保留
+- CLI 的 `cancel` 重命名为 `stop`，旧名不保留；聊天命令 `/pisa cancel` 不变。`pisa task|continue|wait|list|repos` 仍直连 SQLite，守护进程没起时可用
 - 交付提交按路径拦截敏感文件：`.github/workflows/**`、`.github/actions/**`、`.env*`、`*.pem`、`*.key`、`id_*`、`.npmrc`、`.netrc`、`**/secrets*` 用 `git reset` 剔出索引，回执列出未提交路径；全部被拦时不产生空提交
 - 推送、建 PR、回帖改为经 outbox 执行：失败不再只记日志，退避到期后自动补发；建 PR 失败仍退回 `compare` 链接，任务终态不变
 - README 从配置说明改为产品首页：一句话定位、三类读者路径、30 秒上手、架构图与分层表、三个带预期输出的场景、与 CNB NPC / Copilot cloud agent 的边界对比、FAQ、已知限制、演示 GIF（`docs/assets/demo.gif`）

@@ -10,7 +10,8 @@ import { Scheduler } from "./scheduler";
 import { Retention } from "./retention";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
-import { ReplyBus, startWebServer, type WebServer } from "./web";
+import { ReplyBus } from "./reply-bus";
+import { startWebServer, type WebServer } from "./web";
 import { webhookHandler } from "./webhook";
 import { startTriggers, type TriggersRuntime } from "./triggers";
 import type { ChannelAdapter } from "./types";
@@ -33,11 +34,9 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     channel = new TelegramChannel(token, process.env.PISA_TELEGRAM_PROXY ?? cfg.channels.telegram.proxy);
-  } else if (cfg.channels.cli || web.enabled) {
-    channel = new CliChannel();
   } else {
-    console.error("[pisa] 没有启用的通道");
-    process.exit(1);
+    // 没有外部通道也能跑：管理接口与调度不依赖 IM，CLI 通道只当服务宿主
+    channel = new CliChannel();
   }
   const activeChannel = channel;
 
@@ -56,31 +55,20 @@ async function main(): Promise<void> {
     const token = process.env[gh.tokenEnv];
     if (token) process.env.GH_TOKEN = token;
   }
-  let router: Router;
-  let webServer: WebServer | null = null;
-  if (web.enabled) {
-    // 控制台的写操作共用 Router，回执由总线收集；其它 chatId 的回执转发给真实通道
-    const bus = new ReplyBus(web.chatId, channel);
-    router = new Router({
-      cfg,
-      store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
-      deliverer: new GitDeliverer(cfg),
-      channel: bus,
-    });
-    if (!cfg.whitelist.users.includes(web.userId)) {
-      console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
-    }
-    webServer = startWebServer({ cfg, store, router, bus }, web);
-  } else {
-    router = new Router({
-      cfg,
-      store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
-      deliverer: new GitDeliverer(cfg),
-      channel,
-    });
+  // 控制面的写操作共用 Router，回执由总线收集；其它 chatId 的回执转发给真实通道
+  const bus = new ReplyBus(web.chatId, channel);
+  const router = new Router({
+    cfg,
+    store,
+    worker: new Worker(cfg.worker, cfg.stateDir),
+    deliverer: new GitDeliverer(cfg),
+    channel: bus,
+  });
+  if (web.enabled && !cfg.whitelist.users.includes(web.userId)) {
+    console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
   }
+  // 管理接口常驻：CLI 与脚本不依赖控制台开关，端口与 token 落盘给它们读
+  const webServer = startWebServer({ cfg, store, router, bus }, web);
 
   const recovered = router.recoverInterrupted();
   if (recovered.paused > 0 || recovered.failed > 0 || recovered.cancelled > 0) {
@@ -162,7 +150,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    if (webServer) await webServer.stop();
+    await webServer.stop();
     await router.stop(3000);
     proactive.stop();
     triggers?.stop();

@@ -9,100 +9,28 @@ import type { Task, TaskStatus } from "./types";
 import { newTaskId } from "./ids";
 import { makeTrigger } from "./trigger";
 import { continuationContext } from "./task-context";
-import { readTail, tailLines } from "./log";
-import { daemonState, formatDuration, formatStatusBoard, preview, statusSnapshot, taskJson } from "./status";
-import { windowMetrics } from "./metrics";
-import { stageText } from "./stage";
+import { daemonState, preview, taskJson } from "./status";
+import { ApiUnreachable } from "./api-client";
+import {
+  EXIT,
+  STATUSES,
+  TERMINAL,
+  ConfigError,
+  NotFoundError,
+  NotRunnableError,
+  RestartError,
+  UsageError,
+  defaultIo,
+  flagNumber,
+  flagString,
+  json,
+  parseArgs,
+  type Io,
+  type ParsedArgs,
+} from "./cli-args";
+import { runRemote } from "./cli-manage";
 
-/** 退出码：脚本据此分支，不要在版本间随意改语义 */
-const EXIT = {
-  ok: 0,
-  taskFailed: 1,
-  usage: 2,
-  notFound: 3,
-  notRunnable: 4,
-  timeout: 5,
-} as const;
 
-const STATUSES: readonly TaskStatus[] = ["queued", "running", "paused", "succeeded", "failed", "cancelled", "rewound"];
-const TERMINAL: readonly TaskStatus[] = ["succeeded", "failed", "cancelled", "rewound"];
-
-interface Io {
-  out: (text: string) => void;
-  err: (text: string) => void;
-}
-
-const defaultIo: Io = {
-  out: (text) => console.log(text),
-  err: (text) => console.error(text),
-};
-
-class UsageError extends Error {}
-
-interface ParsedArgs {
-  positional: string[];
-  flags: Map<string, string | true>;
-}
-
-const BOOL_FLAGS = new Set(["json", "wait", "help"]);
-const VALUE_FLAGS = new Set([
-  "config",
-  "repo",
-  "event-id",
-  "requester",
-  "timeout",
-  "interval",
-  "status",
-  "limit",
-  "pr",
-  "github-repo",
-  "tail",
-]);
-
-function parseArgs(argv: string[]): ParsedArgs {
-  const positional: string[] = [];
-  const flags = new Map<string, string | true>();
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i]!;
-    if (arg === "--") {
-      positional.push(...argv.slice(i + 1));
-      break;
-    }
-    if (!arg.startsWith("--")) {
-      positional.push(arg);
-      continue;
-    }
-    const eq = arg.indexOf("=");
-    const name = arg.slice(2, eq === -1 ? undefined : eq);
-    if (BOOL_FLAGS.has(name)) {
-      if (eq !== -1) throw new UsageError(`--${name} 不接受取值`);
-      flags.set(name, true);
-      continue;
-    }
-    if (!VALUE_FLAGS.has(name)) throw new UsageError(`未知选项 --${name}`);
-    const value = eq !== -1 ? arg.slice(eq + 1) : argv[++i];
-    if (value === undefined || value.startsWith("--")) throw new UsageError(`--${name} 缺少取值`);
-    flags.set(name, value);
-  }
-  return { positional, flags };
-}
-
-function flagString(args: ParsedArgs, name: string): string | undefined {
-  const v = args.flags.get(name);
-  return typeof v === "string" ? v : undefined;
-}
-
-function flagNumber(args: ParsedArgs, name: string): number | undefined {
-  const raw = flagString(args, name);
-  if (raw === undefined) return undefined;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) throw new UsageError(`--${name} 需要数字，收到 ${raw}`);
-  return Math.floor(n);
-}
-
-function json(io: Io, value: unknown): void {
-  io.out(JSON.stringify(value, null, 2));
-}
 
 function openState(configPath: string): { cfg: Config; store: Store } {
   const cfg = loadConfig(configPath);
@@ -115,11 +43,11 @@ function resolveConfigPath(args: ParsedArgs): string {
 
 function repoForTask(cfg: Config, alias: string | undefined) {
   const repo = repoByAlias(cfg, alias);
-  if (!repo) throw new UsageError(alias ? `未知仓库别名：${alias}` : "配置里没有仓库，请先设置 repos");
+  if (!repo) throw new ConfigError(alias ? `未知仓库别名：${alias}` : "配置里没有仓库，请先设置 repos");
   if (cfg.whitelist.repos.length > 0 && !cfg.whitelist.repos.includes(repo.alias)) {
-    throw new UsageError(`无权限：仓库 ${repo.alias} 不在 whitelist.repos`);
+    throw new ConfigError(`无权限：仓库 ${repo.alias} 不在 whitelist.repos`);
   }
-  if (!isGitRepo(repo.path)) throw new UsageError(`仓库路径不是 git 仓库：${repo.path}`);
+  if (!isGitRepo(repo.path)) throw new ConfigError(`仓库路径不是 git 仓库：${repo.path}`);
   return repo;
 }
 
@@ -209,7 +137,7 @@ async function waitTask(io: Io, store: Store, args: ParsedArgs, id: string): Pro
         if (task.error) io.err(task.error);
         if (task.prUrl) io.out(task.prUrl);
       }
-      return task.status === "succeeded" ? EXIT.ok : task.status === "failed" ? EXIT.taskFailed : EXIT.notRunnable;
+      return task.status === "succeeded" ? EXIT.ok : task.status === "failed" ? EXIT.component : EXIT.notRunnable;
     }
     if (task.status === "paused") {
       if (args.flags.get("json")) json(io, taskJson(task));
@@ -225,28 +153,11 @@ async function waitTask(io: Io, store: Store, args: ParsedArgs, id: string): Pro
   }
 }
 
-function taskHuman(io: Io, task: Task, logPath: string): void {
-  const rows: Array<[string, string]> = [
-    ["任务", task.id],
-    ["状态", task.status],
-    ["阶段", stageText(task)],
-    ["仓库", task.repo],
-    ["需求", preview(task.prompt, 120)],
-    ["分支", task.branch ?? "(未创建)"],
-    ["PR", task.prUrl ?? "(无)"],
-    ["创建", new Date(task.createdAt).toISOString()],
-    ["耗时", task.startedAt ? formatDuration((task.endedAt ?? Date.now()) - task.startedAt) : "-"],
-    ["日志", logPath],
-  ];
-  if (task.summary) rows.push(["摘要", task.summary]);
-  if (task.error) rows.push(["错误", task.error]);
-  for (const [k, v] of rows) io.out(`${k}：${v}`);
-}
-
 export function helpText(): string {
   return `pisa CLI：向本地 pisa 守护进程提交任务并查询结果
 
 用法：
+  pisa run <需求> [--repo 别名] [--timeout 秒] [--json]
   pisa task <需求> [--repo 别名] [--wait] [--json]
   pisa continue <任务号> <新要求> [--wait] [--json]
   pisa wait <任务号> [--timeout 秒] [--json]
@@ -254,15 +165,19 @@ export function helpText(): string {
   pisa list [--repo 别名] [--status 状态] [--limit N] [--pr 编号] [--json]
   pisa show <任务号> [--json]
   pisa logs <任务号> [--tail N]
-  pisa cancel <任务号>
+  pisa stop <任务号> | retry <任务号> | merge <任务号> | rewind <任务号> [--yes]
+  pisa pause | resume
   pisa repos [--json]
 
 全局选项：
   --config <path>   配置文件；默认 PISA_CONFIG，否则从当前目录向上找 pisa.config.json
 
+管理接口：
+  地址与 token 由守护进程写入 stateDir/api.json；PISA_API_URL / PISA_API_TOKEN 可覆盖
+
 退出码：
-  0 成功    1 任务失败或命令被拒    2 用法/配置错误
-  3 找不到任务    4 任务不可运行（暂停/取消/撤销）    5 等待超时
+  0 正常    1 需重启    2 部件错误    3 待配置
+  4 用法    5 找不到    6 不可运行    7 等待超时
 `;
 }
 
@@ -276,11 +191,26 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
 
   const configPath = resolveConfigPath(args);
   if (!existsSync(configPath)) {
-    throw new UsageError(`找不到配置文件：${configPath}；可用 --config 指定`);
+    throw new ConfigError(`找不到配置文件：${configPath}；可用 --config 指定`);
   }
   const { cfg, store } = openState(configPath);
   try {
     switch (command) {
+      case "run":
+      case "status":
+      case "show":
+      case "logs":
+      case "stop":
+      case "retry":
+      case "merge":
+      case "rewind":
+      case "pause":
+      case "resume": {
+        const code = await runRemote(command, io, cfg, args);
+        if (code === null) throw new UsageError(`未知命令：${command}`);
+        return code;
+      }
+
       case "task": {
         const brief = args.positional.slice(1).join(" ").trim();
         if (!brief) throw new UsageError("task 需要需求正文");
@@ -324,27 +254,6 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
         return await waitTask(io, store, args, id);
       }
 
-      case "status": {
-        const daemon = daemonState(store);
-        if (args.flags.get("json")) {
-          const snapshot = statusSnapshot(store);
-          json(io, {
-            daemon,
-            counts: snapshot.counts,
-            total: snapshot.total,
-            running: snapshot.running.map(taskJson),
-            queued: snapshot.queued.map(taskJson),
-            finished: snapshot.finished.map(taskJson),
-            last24h: windowMetrics(store),
-          });
-          return EXIT.ok;
-        }
-        io.out(formatStatusBoard(store));
-        const beat = daemon.ageMs === null ? "无心跳记录" : `最后心跳 ${formatDuration(daemon.ageMs)} 前`;
-        io.out(`守护进程：${daemon.alive ? "运行中" : "未运行"}（${beat}）`);
-        return EXIT.ok;
-      }
-
       case "list": {
         const status = flagString(args, "status");
         if (status && !STATUSES.includes(status as TaskStatus)) {
@@ -364,47 +273,6 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
           const extra = t.prUrl ? ` · ${t.prUrl}` : "";
           io.out(`${t.id} · ${t.status} · ${t.repo} · ${preview(t.prompt, 60)}${extra}`);
         }
-        return EXIT.ok;
-      }
-
-      case "show": {
-        const id = args.positional[1];
-        if (!id) throw new UsageError("用法：pisa show <任务号>");
-        const task = store.get(id);
-        if (!task) throw new NotFoundError(`找不到任务 ${id}`);
-        if (args.flags.get("json")) json(io, taskJson(task));
-        else taskHuman(io, task, join(cfg.stateDir, "logs", `${task.id}.log`));
-        return EXIT.ok;
-      }
-
-      case "logs": {
-        const id = args.positional[1];
-        if (!id) throw new UsageError("用法：pisa logs <任务号> [--tail N]");
-        const path = join(cfg.stateDir, "logs", `${id}.log`);
-        if (!existsSync(path)) throw new NotFoundError(`任务 ${id} 还没有日志：${path}`);
-        const count = Math.max(1, Math.floor(flagNumber(args, "tail") ?? 80));
-        const lines = tailLines(readTail(path), Math.max(1, count));
-        io.out(lines.length > 0 ? lines.join("\n") : "(日志为空)");
-        return EXIT.ok;
-      }
-
-      case "cancel": {
-        const id = args.positional[1];
-        if (!id) throw new UsageError("用法：pisa cancel <任务号>");
-        const task = store.get(id);
-        if (!task) throw new NotFoundError(`找不到任务 ${id}`);
-        if (task.status === "running") {
-          store.requestCancel(id);
-          io.out(`已请求取消：${id}（Worker 在下一个检查点退出）`);
-          return EXIT.ok;
-        }
-        if (task.status !== "queued" && task.status !== "paused") {
-          throw new NotRunnableError(`任务已处于 ${task.status}，无法取消`);
-        }
-        if (!store.transition(id, "cancelled", { endedAt: Date.now() })) {
-          throw new NotRunnableError(`任务状态已变化，取消失败：${id}`);
-        }
-        io.out(`已取消：${id}`);
         return EXIT.ok;
       }
 
@@ -430,14 +298,23 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
   }
 }
 
-class NotFoundError extends Error {}
-class NotRunnableError extends Error {}
-
 export async function runCli(argv: string[], io: Partial<Io> = {}): Promise<number> {
   const merged: Io = { ...defaultIo, ...io };
   try {
     return await dispatch(merged, argv);
   } catch (err) {
+    if (err instanceof ApiUnreachable) {
+      merged.err(err.message);
+      return EXIT.restart;
+    }
+    if (err instanceof RestartError) {
+      merged.err(err.message);
+      return EXIT.restart;
+    }
+    if (err instanceof ConfigError) {
+      merged.err(err.message);
+      return EXIT.config;
+    }
     if (err instanceof NotFoundError) {
       merged.err(err.message);
       return EXIT.notFound;
@@ -451,7 +328,7 @@ export async function runCli(argv: string[], io: Partial<Io> = {}): Promise<numb
       return EXIT.usage;
     }
     merged.err(err instanceof Error ? err.message : String(err));
-    return EXIT.usage;
+    return EXIT.component;
   }
 }
 

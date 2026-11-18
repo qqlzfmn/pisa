@@ -64,7 +64,7 @@
 
 看板分组沿用 010：运行中 / 排队 / 最近完成，暂停任务仍只在汇总里计数。暂停任务的 `person/answer` 阶段通过 `pisa show <id>` 或 `/api/tasks/<id>` 查看；本次不新增看板分组。
 
-本文所称「state」指任务 JSON 投影 `TaskJson`：CLI 的 `status --json` / `show --json` / `list --json`，以及 Web 的 `/api/tasks`、`/api/tasks/<id>`。pisa 没有独立的 `/state` 路由。
+本文所称「state」指任务 JSON 投影 `TaskJson`：CLI 的 `status --json` / `show --json` / `list --json`，以及 Web 的 `/api/tasks`、`/api/tasks/<id>`。管理接口（021）另有 `GET /state`，返回同一投影；Web 控制台没有独立的 `/state` 路由。
 
 ## 5. 验收
 

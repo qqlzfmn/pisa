@@ -428,6 +428,16 @@ export class Store {
     return Number.isSafeInteger(n) ? n : null;
   }
 
+  /** 执行器暂停开关：跨重启保留，调度循环每 tick 读一次 */
+  executorPaused(): boolean {
+    return this.getMeta("executor.paused") === "1";
+  }
+
+  setExecutorPaused(paused: boolean): void {
+    if (paused) this.setMeta("executor.paused", "1");
+    else this.setMeta("executor.paused", "0");
+  }
+
   /** 线程里某条消息最新的触发记录：重复投递与编辑都靠它认出原任务 */
   triggerByMessage(threadKey: string, messageKey: string): TriggerRecord | null {
     const row = this.db

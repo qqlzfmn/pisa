@@ -11,6 +11,9 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
 /** 单个任务日志的上限：超过即轮转出一代 .1 备份 */
 export const LOG_MAX_BYTES = 10 * 1024 * 1024;
 
+/** 控制台与 `pisa logs` 默认展示的尾部行数 */
+export const TAIL_LINES = 200;
+
 export function redact(line: string): string {
   let out = line;
   for (const [re, rep] of SECRET_PATTERNS) out = out.replace(re, rep);

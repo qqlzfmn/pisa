@@ -51,6 +51,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 /pisa continue <任务号> <新要求>   从上一轮的分支和上下文继续做
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
+/pisa retry <任务号>              重试失败或取消的任务（私聊可用 /retry）
 /pisa status                     任务看板（私聊可用 /status）
 ```
 
@@ -154,22 +155,29 @@ curl -X POST http://127.0.0.1:8799/event \
 
 ## Agent CLI 与 skill
 
-不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 只读写 `pisa.config.json` 与同一个 `pisa.db`，执行仍由守护进程负责。
+不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 读 `pisa.config.json`；状态与操作走守护进程的本机管理接口，不再直接读表。`task` / `continue` / `wait` / `list` / `repos` 仍直连同一个 `pisa.db`，守护进程没起时也能用。
 
 ```bash
 bun link                 # 把 pisa 命令链到 PATH；也可直接用 bun run src/cli.ts
 pisa task "修 CI：test 失败日志见 ci.log" --repo demo --json
 pisa wait <任务号> --timeout 900 --json
+pisa run "改完并跑 bun test" --json      # 提交并阻塞到终态
 pisa status --json
 pisa show <任务号>
 pisa logs <任务号> --tail 100
-pisa cancel <任务号>
+pisa stop <任务号>
+pisa retry <任务号> --json
 pisa continue <任务号> "按 PR 评论再改"
+pisa merge <任务号>
+pisa rewind <任务号>          # 只打印计划；加 --yes 执行
+pisa pause                    # 停止补位，运行中的任务照常收尾
+pisa resume                   # 恢复补位
 ```
 
 - `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省从当前目录向上找 `pisa.config.json`
 - 相对 `stateDir` 与仓库路径以配置文件目录为基准，从子目录调用也指向同一份状态
-- 退出码：`0` 成功、`1` 任务失败、`2` 用法/配置、`3` 找不到、`4` 不可运行、`5` 等待超时
+- 管理接口地址与 token 在 `<stateDir>/api.json`（0600），CLI 自动发现；`PISA_API_URL` + `PISA_API_TOKEN` 可覆盖
+- 退出码：`0` 正常、`1` 需重启（接口不可达或心跳过期）、`2` 部件错误（任务失败、5xx、合并/撤销未成功）、`3` 待配置（没有 `api.json`/token、401/403）、`4` 用法、`5` 找不到、`6` 不可运行、`7` 等待超时
 - 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
 
 给 agent 的可复用说明在 [`skills/pisa/`](../skills/pisa/)：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
@@ -190,6 +198,9 @@ PISA_WEB_TOKEN=<自定义 token> bun run web
 - 支持派活、取消、合并（浏览器二次确认）与复制任务号
 - 没配 `${web.tokenEnv}` 时启动生成一次性 token，只打印到日志，不落盘
 - 写操作走同一个 `Router`：白名单、状态机、合并前的验证与快进逻辑与 IM 完全一致
+- 同一服务上还有管理接口：`GET /state`、`GET /tickets/<id>`、`POST /tickets/<id>/stop|retry|merge|rewind`、`POST /executor/pause|resume`。这些路由只认请求头 token（`x-pisa-token` 或 `Authorization: Bearer`），查询参数与 cookie 无效，`Host` 不是本机时 403；`web.enabled` 只影响 `/ui`，管理接口始终可用
+- 端口冲突：控制台关闭时，管理接口退回系统分配的端口并且仍然可用，实际地址读 `api.json`；控制台开启时端口被占用会直接报错，避免页面地址悄悄变化
+- 例子：`curl -s -H "x-pisa-token: $(jq -r .token .pisa/api.json)" http://127.0.0.1:8787/state | jq .counts`
 
 ### 健康采集
 

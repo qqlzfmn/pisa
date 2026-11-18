@@ -324,6 +324,7 @@ export type CommandKind =
   | "examples"
   | "continue"
   | "merge"
+  | "retry"
   | "resume"
   | "rewind"
   | "confirm"
@@ -360,6 +361,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { command: "reconcile", alias: "对账", description: "对比任务记录与分支/工作副本/PR", args: "[任务号] [--fix]", group: "维护", menu: true },
   { command: "help", alias: "帮助", description: "查看命令帮助", group: "查询", menu: true },
   { command: "cancel", alias: "取消", description: "取消任务", args: "[任务号]", group: "维护", menu: true },
+  { command: "retry", alias: "重试", description: "重试失败或取消的任务", args: "<任务号>", group: "维护", menu: true },
   { command: "resume", alias: "恢复", description: "恢复被中断的任务", args: "<任务号>", group: "维护", menu: true },
   { command: "rewind", alias: "撤销", description: "预览任务副作用，--yes 执行撤销", args: "<任务号> [--yes]", group: "维护", menu: true },
   { command: "merge", alias: "合并", description: "验证后把已完成任务合入主干", args: "<任务号>", group: "维护", menu: true },
