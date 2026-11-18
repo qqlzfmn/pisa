@@ -54,6 +54,8 @@ export interface Config {
     concurrency: number;
     /** Worker 子进程从 process.env 继承的变量白名单；缺省见 DEFAULT_ENV_ALLOW */
     envAllow?: string[];
+    /** 多久没有任何输出/进度就算卡死并杀掉，默认 900 秒 */
+    idleTimeoutSec?: number;
   };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   channels: { cli?: boolean; telegram?: { enabled: boolean; tokenEnv: string; proxy?: string } };
@@ -108,6 +110,7 @@ export const DEFAULT_CONFIG: Config = {
     extraArgs: [],
     concurrency: 2,
     envAllow: [...DEFAULT_ENV_ALLOW],
+    idleTimeoutSec: 900,
   },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   channels: { cli: true, telegram: { enabled: false, tokenEnv: "PISA_TELEGRAM_TOKEN", proxy: process.env.PISA_TELEGRAM_PROXY } },

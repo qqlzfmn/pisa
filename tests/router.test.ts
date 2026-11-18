@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store";
@@ -836,6 +836,72 @@ describe("状态机", () => {
     expect(store.transition("t_pause", "paused")).toBe(true);
     expect(store.transition("t_pause", "cancelled")).toBe(true);
     expect(store.get("t_pause")?.status).toBe("cancelled");
+    store.close();
+  });
+});
+
+describe("执行器丢失与合并门禁", () => {
+  const base = (id: string): Task => ({
+    id,
+    source: `seed:${id}`,
+    channel: "fake",
+    chatId: "c1",
+    requester: "u1",
+    repo: "demo",
+    prompt: "x",
+    status: "queued",
+    branch: null,
+    prUrl: null,
+    sessionId: null,
+    baseRef: null,
+    context: null,
+    replyPr: null,
+    replyIssue: null,
+    replyRepo: null,
+    summary: null,
+    error: null,
+    createdAt: 0,
+    startedAt: null,
+    endedAt: null,
+    cancelRequested: false,
+  });
+
+  function mk() {
+    const repo = makeRepo();
+    const stateDir = mkdtempSync(join(tmpdir(), "pisa-state-"));
+    const cfg = makeCfg(repo, stateDir);
+    const store = new Store(":memory:");
+    const channel = new FakeChannel();
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    return { store, channel, router, stateDir };
+  }
+
+  test("running 但没有执行器 → failed", () => {
+    const { store, router } = mk();
+    store.insertTask(base("t_orphan"));
+    expect(store.claimQueued("t_orphan", Date.now() - 60_000, "pisa/t_orphan")).toBe(true);
+    expect(router.reconcileOrphans()).toBe(1);
+    expect(store.get("t_orphan")!.status).toBe("failed");
+    store.close();
+  });
+
+  test("有 worktree 与会话 → paused", () => {
+    const { store, router, stateDir } = mk();
+    mkdirSync(join(stateDir, "worktrees", "t_resume"), { recursive: true });
+    store.insertTask({ ...base("t_resume") });
+    expect(store.claimQueued("t_resume", Date.now() - 60_000, "pisa/t_resume")).toBe(true);
+    store.setSessionId("t_resume", "s1");
+    expect(router.reconcileOrphans()).toBe(1);
+    expect(store.get("t_resume")!.status).toBe("paused");
+    store.close();
+  });
+
+  test("有任务在跑时拒绝合并", async () => {
+    const { store, router, channel } = mk();
+    store.insertTask({ ...base("t_done"), status: "succeeded", branch: "pisa/t_done", startedAt: 1, endedAt: 2 });
+    (router as unknown as { active: Map<string, Promise<void>> }).active.set("busy", Promise.resolve());
+    await router.handle(msg("/pisa merge t_done"));
+    expect(channel.sent.at(-1)!.text).toContain("还有 1 个任务在执行");
     store.close();
   });
 });

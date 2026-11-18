@@ -52,6 +52,8 @@ export class Router {
   /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
   private stopping = false;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** 上次孤儿任务巡检时间 */
+  private lastReconcile = 0;
   private readonly now: () => number;
   /** 拒绝提示节流：同一用户 24h 只提示一次 */
   private deniedAt = new Map<string, number>();
@@ -67,6 +69,10 @@ export class Router {
     this.deps.store.beat();
     this.timer = setInterval(() => {
       this.deps.store.beat();
+      if (this.now() - this.lastReconcile > 5000) {
+        this.lastReconcile = this.now();
+        this.reconcileOrphans();
+      }
       void this.fill();
     }, intervalMs);
   }
@@ -102,6 +108,28 @@ export class Router {
       }
     }
     return result;
+  }
+
+  /**
+   * 运行期兜底：DB 里是 running 但本进程没有执行器的行（上一次进程崩溃/被 kill 的遗留），
+   * 按 worktree + sessionId 分流为 paused / failed，避免永久卡在 running。
+   * 只处理启动超过 30 秒的任务，避开 claimQueued 到 launch 之间的瞬间。
+   */
+  reconcileOrphans(): number {
+    const { cfg, store } = this.deps;
+    const cutoff = this.now() - 30_000;
+    let n = 0;
+    for (const task of store.runningTasks()) {
+      if (this.active.has(task.id)) continue;
+      if (task.startedAt !== null && task.startedAt > cutoff) continue;
+      const workdir = resolve(cfg.stateDir, "worktrees", task.id);
+      if (task.sessionId && existsSync(workdir)) {
+        if (store.transition(task.id, "paused", { error: "执行器丢失，任务暂停" })) n += 1;
+      } else if (store.transition(task.id, "failed", { error: "执行器丢失，任务中断", endedAt: this.now() })) {
+        n += 1;
+      }
+    }
+    return n;
   }
 
   /** 立即执行一个已进入 running 的任务；不等待完成 */
@@ -411,7 +439,8 @@ export class Router {
   /** 自举：把已完成任务的分支验证后合入主干 */
   private async handleMerge(msg: IncomingMessage, body: string): Promise<void> {
     const { cfg, store, channel } = this.deps;
-    const id = body.trim();
+    const force = /(^|\s)--force\s*$/.test(body);
+    const id = body.replace(/(^|\s)--force\s*$/, "").trim();
     const task = id ? store.get(id) : null;
     if (!task) {
       await this.reply(msg.chatId, `找不到任务 ${id || ""}`);
@@ -419,6 +448,14 @@ export class Router {
     }
     if (task.requester !== msg.userId) {
       await this.reply(msg.chatId, "只有原请求者可以合并。");
+      return;
+    }
+    // 合并会重启服务；有任务在跑时先拒绝，避免把 worker 打断成 paused
+    if (!force && this.active.size > 0) {
+      await this.reply(
+        msg.chatId,
+        `还有 ${this.active.size} 个任务在执行，合并会重启服务并打断它们。等结束后再合并，或加 --force。`,
+      );
       return;
     }
     if (task.status !== "succeeded" || !task.branch) {

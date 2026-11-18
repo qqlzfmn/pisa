@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { DEFAULT_ENV_ALLOW, type Config } from "./config";
 import type { Task, WorkerResult } from "./types";
 import { redact } from "./log";
@@ -74,12 +74,31 @@ export class Worker implements WorkerRunner {
     });
 
     let timedOut = false;
+    let idleTimedOut = false;
     let cancelled = false;
+    let lastActivity = Date.now();
+    const idleMs = Math.max(60, this.cfg.idleTimeoutSec ?? 900) * 1000;
     const killTimer = setTimeout(() => {
       timedOut = true;
       proc.kill("SIGTERM");
       setTimeout(() => proc.kill("SIGKILL"), 10_000);
     }, Math.max(1, this.cfg.timeoutSec) * 1000);
+
+    // 卡死检测：进度文件与输出都长时间没变化就杀掉，避免任务永久 running
+    const idleTimer = setInterval(() => {
+      try {
+        const m = statSync(input.progressFile).mtimeMs;
+        if (m > lastActivity) lastActivity = m;
+      } catch {
+        /* 进度文件还没生成 */
+      }
+      if (Date.now() - lastActivity > idleMs) {
+        idleTimedOut = true;
+        proc.kill("SIGTERM");
+        setTimeout(() => proc.kill("SIGKILL"), 10_000);
+        clearInterval(idleTimer);
+      }
+    }, 30_000);
 
     const cancelPoll = setInterval(() => {
       if (isCancelled() && !cancelled) {
@@ -104,6 +123,7 @@ export class Worker implements WorkerRunner {
         buf = lines.pop() ?? "";
         for (const line of lines) {
           if (!line.trim()) continue;
+          lastActivity = Date.now();
           if (kind === "err") {
             const clean = line.trim();
             rawTail.push(clean);
@@ -126,9 +146,13 @@ export class Worker implements WorkerRunner {
     ]);
 
     clearTimeout(killTimer);
+    clearInterval(idleTimer);
     clearInterval(cancelPoll);
 
     if (cancelled) return { ok: false, summary: "", error: "任务已取消", exitCode };
+    if (idleTimedOut) {
+      return { ok: false, summary: "", error: `卡死：超过 ${Math.round(idleMs / 1000)} 秒没有任何输出或进度`, exitCode };
+    }
     if (timedOut) return { ok: false, summary: "", error: `执行超时（${this.cfg.timeoutSec}s）`, exitCode };
 
     const summary = redact((texts.join("\n\n") || rawTail.slice(-40).join("\n")).trim()).slice(0, 4000);

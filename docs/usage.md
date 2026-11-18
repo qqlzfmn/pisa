@@ -61,6 +61,17 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 - **定时、探针、关键词**：都用配置里的身份开单，同样走白名单；触发不了的根因通常是身份不在白名单或缺少 `scheduler` 配置。
 - **密钥**：Telegram bot token、webhook token 只从环境变量或 `~/.pisa/` 下的文件读取，不写入配置文件与 launchd plist。
 
+## 任务卡住了怎么办
+
+pisa 自己兜底，不需要手工改数据库：
+
+1. **卡死检测**：worker 超过 `worker.idleTimeoutSec`（默认 900 秒）没有任何 stdout 或进度事件，进程被 SIGTERM→SIGKILL，任务转 `failed`，原因写进回执。
+2. **孤儿对账**：每 5 秒比对数据库里的 `running` 行与进程内执行器。进程被 kill 但服务没重启时，有会话与工作副本的转 `paused`，其余转 `failed`，不会永久挂着。
+3. **取消兜底**：`/pisa cancel <id>` 对没有执行器的 `running` 行直接结束，不会停在“取消中”。
+4. **合并门禁**：有任务在跑时 `/pisa merge` 会拒绝并说明原因；确实要打断就加 `--force`。
+
+排查顺序：`/pisa status` 看 `error` → `ps` 看 agent 进程是否还在 → `paused` 用 `/pisa resume <id>`，`failed` 重新投递。日志在 `stateDir/logs/<taskId>.log`。
+
 ## 不该交给它
 
 - 开放问答、查资料、闲聊——没有对应入口

@@ -235,7 +235,9 @@ interface ChannelAdapter {
 | 工作副本创建失败（分支被占用） | `createWorktree` 报 `already checked out` | `failed` | 无 | 先 `cancel` 占用它的任务 |
 | Worker 非零退出 | 退出码 + 最后 20 行 | `failed` | 删 worktree 与 `pisa/<id>` 分支 | 重新投递 |
 | 执行超时 | `worker.timeoutSec` | `failed`（`执行超时`） | 同上 | 拆小任务 |
-| 请求者取消 | 每 2s 轮询 `cancelRequested`；`queued`/`paused` 直接改状态 | `cancelled` | `running`：删 worktree 与 `pisa/<id>` 分支；`queued`/`paused`：worktree（若有）保留 | — |
+| 卡死（长时间无输出/无进度） | 每 30s 看进度文件与 stdout，超过 `worker.idleTimeoutSec`（默认 900s） | `failed`（`卡死：…`） | 同上 | 重投；调大 `idleTimeoutSec` 或拆小任务 |
+| 执行器丢失（进程被 kill，但服务没重启） | `reconcileOrphans` 每 5s 对账 `running` 行与进程内 active 表 | 有 session+worktree → `paused`；否则 `failed` | worktree 保留（paused） | `resume` 或重投 |
+| 请求者取消 | 每 2s 轮询 `cancelRequested`；`queued`/`paused` 直接改状态；`running` 但没有执行器时立即结束 | `cancelled` | `running`：删 worktree 与 `pisa/<id>` 分支；`queued`/`paused`：worktree（若有）保留 | — |
 | 推送失败 | `pushBranch` 抛错 | `failed` | worktree 删除后本地提交一并消失，远程无残留 | 修远程/凭据后重投 |
 | PR 创建失败 | `gh pr create` 无输出 | 任务仍 `succeeded` | 分支已推 | 手动开 PR，或按回执里的 compare 链接 |
 | 回帖失败 | 抓异常写日志 | 不影响状态 | 无 | 手动补，标记保证不重复 |
