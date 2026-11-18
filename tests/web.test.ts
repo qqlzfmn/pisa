@@ -143,6 +143,7 @@ describe("web 控制台", () => {
       repo: "demo",
       prompt: "既有任务",
       status: "queued",
+      priority: "normal",
       branch: null,
       prUrl: null,
       sessionId: null,

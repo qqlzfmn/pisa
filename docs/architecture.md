@@ -150,7 +150,7 @@ cancelled ─┘
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 线程解析（`threadKeyOf`：入口声明 > 被回复任务 > 本条消息）→ 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
 3. **去重与鉴权**（`src/trigger.ts` 与 `checkAccess`，`src/router.ts`）。先 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库，再校验仓库与需求：被拦下的消息不写触发器，改完配置重发同一条即可。通过后 `makeTrigger` 算出触发身份，`store.triggerByMessage(threadKey, messageKey)` 命中同一条消息时，同版本同载荷即重复投递直接丢弃，版本不同即编辑（见 4.2）。
 4. **落库与回执**（`Router.handle`，`src/router.ts`）。`store.createTaskFromTrigger` 在同一事务里写触发器与任务（`status=queued`），立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
-5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
+5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：两条槽位独立补位——先补任务槽到 `worker.concurrency`（默认 2），再补人类追问槽到 `worker.humanConcurrency`（默认 1）。任务槽只取 `priority=normal`，人类槽只取 `priority=human`；`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
 7. **执行**（`Worker.run`，`src/worker.ts`）。`adapter.buildArgs` 生成命令行（omp：`-e <extension> [-r <sessionId>] --mode=json -p <prompt> --cwd <workdir>`），`Bun.spawn` 的 cwd 就是工作副本，环境变量附带 `PISA_WORKDIR`、`PISA_PROGRESS_FILE`。超时按 `worker.timeoutSec`（默认 3600s）`SIGTERM`，10s 后 `SIGKILL`；取消每 2s 轮询一次，同样先礼后兵。stdout 按行交给 `adapter.parseLine`，最终 `summary` 与 `error` 都过 `redact`。
 8. **进度回传**。skill 把 `session`/`tool`/`blocked`/`done` 追加进 `.pisa/progress/<taskId>.jsonl`；`watchProgress`（`src/router.ts`）每 2s 读增量，节流 6s，转成 `🛠`/`✏️`/`⛔` 消息发到原对话。progress 只是旁路，丢了不影响任务结果。
@@ -289,7 +289,7 @@ interface ChannelAdapter {
 
 1. **无沙箱**。agent 进程以当前用户身份运行，能读写工作副本之外的文件；环境变量只继承 `worker.envAllow` 白名单里的键（默认 `PATH`、`HOME`、`LANG`、`LC_ALL`、`TERM`、`TMPDIR`、`SHELL`、`USER`），其余不进子进程。`extensions/pisa-worker.ts` 的拦截是按 bash 命令文本首段匹配的正则 denylist（`git push`、`git reset --hard`、带 `f` 的 `git clean`、`rm -rf /`（`/tmp` 除外）、`sudo`、改 `/etc` 的 `chmod/chown`），`/usr/bin/git push`、`git -c … push`、脚本包装、非 bash 工具写文件都不在覆盖范围。worktree 只隔离同一仓库的分支，不是文件系统隔离。
 2. **单机**。SQLite、worktree、日志、agent 会话都在本机 `.pisa` 与 agent 自己的存储里。`supervise.sh` 在本机按 1→30s 退避重启，机器下线即系统下线；没有跨机器接管。
-3. **并发**。上限是 `worker.concurrency`（默认 2），以进程内活跃 Promise 计；多任务共享同一 `.git` 对象库，交付只 `git add -A` 自己的工作副本；同一分支不能有两个 worktree，续跑同一分支的第二个任务会直接失败；`merge` 要求主工作区停在 base 分支，并先 rebase 到最新主干（否则历史前进后快进必然失败）。
+3. **并发**。上限分两条槽位：任务槽是 `worker.concurrency`（默认 2）、人类追问槽是 `worker.humanConcurrency`（默认 1），都以进程内活跃 Promise 计；`continue` 走人类槽，新任务只走任务槽，槽满时排队且看板标出原因。多任务共享同一 `.git` 对象库，交付只 `git add -A` 自己的工作副本；同一分支不能有两个 worktree，续跑同一分支的第二个任务会直接失败；`merge` 要求主工作区停在 base 分支，并先 rebase 到最新主干（否则历史前进后快进必然失败）。
 4. **信号只到直接子进程**：超时与取消对 agent 进程 `SIGTERM`→`SIGKILL`，它派生的孙进程可能残留。
 5. **去重按触发身份**：鉴权与参数校验通过才写 `triggers`，同一触发身份只会有一个任务；载荷指纹取解析后的需求正文，同一条消息换入口包装（`/pisa X` 与裸 `X`）仍命中同一个触发。旧库升级时 `Store` 构造会按任务自身信息补齐触发器，重放旧事件不会重复建任务。
 6. **内存态丢失**：24h 拒绝提示节流、单字确认的 10 分钟待确认态、主动发现冷却都在内存。重启后这些窗口归零（去重靠 `triggers` 表长期有效；GitHub 评论游标已落库，停机期间的评论会补拉）。
@@ -308,7 +308,7 @@ interface ChannelAdapter {
 | 事件过滤 | 两级：程序层 Fast Path 准入 + LLM 语义 Slow Path | 单级程序过滤（触发词、白名单、关键词、探针退出码） | 单机单人场景噪音可控；语义过滤要额外成本与延迟，收益不足 |
 | 事件路由 | Thread 订阅直通 Worker，Router 只看未订阅事件；去掉直通后 Router 决策数 +30%、token +37% | 事件级去重 + `chatId+messageId → taskId` 映射，回复即续跑；所有事件仍经 `handle` | 直通省的是 Router 的模型 token，pisa 的 Router 不花 token；保留统一入口换来实现简单、状态集中 |
 | 上下文组织 | Inline & Spill + 链式召回，把上下文窗口当 cache，对象间靠 id 图按需展开 | 分支续跑 + 显式注入上一轮请求/结果/分支摘要 | 会话与工作目录都随任务清理，恢复会话必然失败（003 已记录）；代码状态比对话状态更可靠 |
-| 并发 | 每任务一个 Worker 会话，Router 层内可再分片 | 进程级并发上限 2，每任务一个 worktree，同层任务互不通信 | 共享仓库的写冲突用独立 worktree 解决；Worker 间通信在单人场景没有消费者 |
+| 并发 | 每任务一个 Worker 会话，Router 层内可再分片 | 任务槽默认 2 加人类追问槽默认 1，每任务一个 worktree，同层任务互不通信 | 共享仓库的写冲突用独立 worktree 解决；Worker 间通信在单人场景没有消费者 |
 | 持久 | 云端无状态计算 + 数据库存会话状态；端侧只放无状态 daemon（BYOM） | 单机 SQLite + 本地 worktree + supervisor 重启 | 目标是「一台常驻机器上的个人系统」，分布式带来的状态迁移与安全成本大于收益 |
 | 自愈 | 外部 Watchdog 会话，由模型判断 Worker 是否真有进展/偏航 | `supervise.sh` 按退出码退避重启 + 启动时遗留任务分流 + 任务级超时 | 退出码与超时是确定信号，覆盖了 pisa 当前绝大部分故障；「进展是否有效」暂不做判断 |
 | 主动 | 两级过滤 + 投机执行（后台先做，有价值才交付） | 群聊关键词 + 定时探针，命中即开单 | 投机执行需要「先做再判断价值」，成本与判废机制都还没建 |

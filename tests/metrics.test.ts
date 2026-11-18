@@ -13,6 +13,7 @@ function task(id: string, status: TaskStatus, startedAt: number | null, endedAt:
     repo: "demo",
     prompt: "样本",
     status,
+    priority: "normal",
     branch: null,
     prUrl: null,
     sessionId: null,

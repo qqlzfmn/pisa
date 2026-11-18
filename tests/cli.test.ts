@@ -87,6 +87,7 @@ function seed(over: Partial<Task> = {}): Task {
     repo: "demo",
     prompt: "种子任务",
     status: "queued",
+    priority: "normal",
     branch: null,
     prUrl: null,
     sessionId: null,
@@ -266,16 +267,22 @@ describe("查询与操作", () => {
     expect(text.code).toBe(0);
     expect(text.out).toContain("排队（1）");
     expect(text.out).toContain("working/queued（等空闲槽位）");
+    expect(text.out).toContain("槽位：任务 0/1 · 人类追问 0/1");
     expect(text.out).toContain("最近 24h：无完成");
     expect(text.out).toContain("守护进程：未运行");
 
     const store = new Store(join(stateDir, "pisa.db"));
     store.beat();
     store.close();
-    const body = parse<{ daemon: { alive: boolean }; total: number; queued: TaskJson[]; last24h: WindowMetrics }>(
-      await cli(...base("status", "--json")),
-    );
+    const body = parse<{
+      daemon: { alive: boolean };
+      total: number;
+      queued: TaskJson[];
+      last24h: WindowMetrics;
+      slots: { task: { used: number; limit: number }; human: { used: number; limit: number } };
+    }>(await cli(...base("status", "--json")));
     expect(body.daemon.alive).toBe(true);
+    expect(body.slots).toEqual({ task: { used: 0, limit: 1 }, human: { used: 0, limit: 1 } });
     expect(body.last24h).toEqual({ finished: 0, succeeded: 0, failed: 0, successRate: null, durationSamples: 0, p50Ms: null, p95Ms: null });
     expect(body.total).toBe(1);
     expect(body.queued[0]!.prompt).toBe("排队中");

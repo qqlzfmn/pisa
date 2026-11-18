@@ -154,6 +154,7 @@ describe("Router.rewind", () => {
       repo: "demo",
       prompt: "做点事",
       status: "queued",
+      priority: "normal",
       branch: null,
       prUrl: null,
       sessionId: null,

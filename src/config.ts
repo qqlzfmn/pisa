@@ -51,6 +51,9 @@ export interface WebConfig {
 /** events 与 progress 的默认保留天数 */
 export const DEFAULT_RETENTION_DAYS = 30;
 
+/** 人类追问（continue）的默认额外槽位数 */
+export const DEFAULT_HUMAN_CONCURRENCY = 1;
+
 export interface Config {
   trigger: string;
   /** 私聊里不带触发词也当成任务 */
@@ -63,6 +66,8 @@ export interface Config {
     timeoutSec: number;
     extraArgs: string[];
     concurrency: number;
+    /** 人类追问（continue）的额外槽位数，默认 1，最小 0；普通任务不能用 */
+    humanConcurrency?: number;
     /** Worker 子进程从 process.env 继承的变量白名单；缺省见 DEFAULT_ENV_ALLOW */
     envAllow?: string[];
     /** 多久没有任何输出/进度就算卡死并杀掉，默认 900 秒 */
@@ -133,6 +138,7 @@ export const DEFAULT_CONFIG: Config = {
     timeoutSec: 3600,
     extraArgs: [],
     concurrency: 2,
+    humanConcurrency: DEFAULT_HUMAN_CONCURRENCY,
     envAllow: [...DEFAULT_ENV_ALLOW],
     idleTimeoutSec: 900,
   },

@@ -124,6 +124,7 @@ const baseTask: Task = {
   repo: "demo",
   prompt: "上一轮",
   status: "queued",
+  priority: "normal",
   branch: null,
   prUrl: null,
   sessionId: null,

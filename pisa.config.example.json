@@ -22,6 +22,7 @@
     "timeoutSec": 3600,
     "extraArgs": [],
     "concurrency": 2,
+    "humanConcurrency": 1,
     "envAllow": [
       "PATH",
       "HOME",

@@ -20,6 +20,7 @@ const baseTask: Task = {
   repo: "demo",
   prompt: "敏感路径",
   status: "queued",
+  priority: "normal",
   branch: null,
   prUrl: null,
   sessionId: null,

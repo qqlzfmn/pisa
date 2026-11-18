@@ -1,5 +1,13 @@
 import { join } from "node:path";
-import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, DEFAULT_WEB, githubRepos, loadConfig, type WebConfig } from "./config";
+import {
+  BOT_COMMANDS,
+  DEFAULT_ENV_ALLOW,
+  DEFAULT_HUMAN_CONCURRENCY,
+  DEFAULT_WEB,
+  githubRepos,
+  loadConfig,
+  type WebConfig,
+} from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker, workerEnv } from "./worker";
@@ -130,7 +138,9 @@ async function main(): Promise<void> {
   }
   const allowedEnv = Object.keys(workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env));
   console.log(`[pisa] Worker 环境白名单 · ${allowedEnv.join(",") || "(空)"}`);
-  console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
+  console.log(
+    `[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}+${cfg.worker.humanConcurrency ?? DEFAULT_HUMAN_CONCURRENCY}`,
+  );
 
   // 通道放在最后启动：CLI 通道会一直等 stdin 结束，放前面会堵住调度、HTTP 入口与 ready 日志
   await channel.start((m) => {

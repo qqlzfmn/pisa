@@ -34,6 +34,7 @@ function seed(store: Store, id: string, status: TaskStatus, endedAt: number | nu
     repo: "demo",
     prompt: "保留测试",
     status,
+    priority: "normal",
     branch: null,
     prUrl: null,
     sessionId: null,

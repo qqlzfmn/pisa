@@ -1,5 +1,8 @@
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
+/** 任务槽位：human 是人对已交付任务的追问，走独立的额外槽位 */
+export type TaskPriority = "normal" | "human";
+
 /** 任务对外产生的副作用种类：rewind 的依据 */
 export type EffectKind = "branch" | "push" | "pr" | "comment" | "worktree" | "merge";
 
@@ -61,6 +64,7 @@ export interface Task {
   repo: string;
   prompt: string;
   status: TaskStatus;
+  priority: TaskPriority;
   branch: string | null;
   prUrl: string | null;
   sessionId: string | null;

@@ -1,7 +1,52 @@
-import type { Task, TaskStatus } from "./types";
+import type { Task, TaskPriority, TaskStatus } from "./types";
 import type { Store } from "./store";
+import { DEFAULT_HUMAN_CONCURRENCY } from "./config";
 import { STAGE_LABEL, stageText, taskStage, type TaskStage } from "./stage";
 import { windowMetrics, type WindowMetrics } from "./metrics";
+
+/** 两条槽位的上限：普通任务槽与人类追问槽各自独立 */
+export interface SlotLimits {
+  task: number;
+  human: number;
+}
+
+export interface SlotLane {
+  used: number;
+  limit: number;
+}
+
+/** 槽位占用：调度补位与看板共用同一份计数口径 */
+export interface SlotState {
+  task: SlotLane;
+  human: SlotLane;
+}
+
+export function slotLimits(worker: { concurrency?: number; humanConcurrency?: number }): SlotLimits {
+  return {
+    task: Math.max(1, worker.concurrency ?? 1),
+    human: Math.max(0, worker.humanConcurrency ?? DEFAULT_HUMAN_CONCURRENCY),
+  };
+}
+
+export function countSlots(priorities: readonly TaskPriority[], limits: SlotLimits): SlotState {
+  const human = priorities.filter((p) => p === "human").length;
+  return {
+    task: { used: priorities.length - human, limit: limits.task },
+    human: { used: human, limit: limits.human },
+  };
+}
+
+/** 排队任务在等哪个槽位；槽位没满时返回 null（任务可能还没轮到下一轮 fill） */
+export function queueReason(priority: TaskPriority, slots: SlotState): string | null {
+  const lane = priority === "human" ? slots.human : slots.task;
+  if (lane.used < lane.limit) return null;
+  const name = priority === "human" ? "人类追问槽位" : "任务槽位";
+  return `${name}已满（${lane.used}/${lane.limit}）`;
+}
+
+export function formatSlots(slots: SlotState): string {
+  return `槽位：任务 ${slots.task.used}/${slots.task.limit} · 人类追问 ${slots.human.used}/${slots.human.limit}`;
+}
 
 /** 毫秒 → 人类可读时长：不足 1 分钟给秒，不足 1 小时给 XmYs，其余 XhYm */
 export function formatDuration(ms: number): string {
@@ -85,11 +130,14 @@ export function statusSnapshot(store: Store): StatusSnapshot {
   };
 }
 
-/** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
-export function formatStatusBoard(store: Store, now = Date.now()): string {
+/** 任务看板：槽位 / 运行中 / 排队 / 最近完成，末尾汇总 */
+export function formatStatusBoard(store: Store, now = Date.now(), limits?: SlotLimits): string {
   const { running, queued, finished, counts, total } = statusSnapshot(store);
+  const slots = limits ? countSlots(running.map((t) => t.priority), limits) : null;
 
-  const lines = ["运行中"];
+  const lines: string[] = [];
+  if (slots) lines.push(formatSlots(slots), "");
+  lines.push("运行中");
   if (running.length === 0) lines.push("(无)");
   for (const t of running) {
     const elapsed = formatDuration(now - (t.startedAt ?? t.createdAt));
@@ -98,7 +146,10 @@ export function formatStatusBoard(store: Store, now = Date.now()): string {
 
   lines.push("", `排队（${queued.length}）`);
   if (queued.length === 0) lines.push("(无)");
-  for (const t of queued.slice(0, 5)) lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · ${preview(t.prompt, 40)}`);
+  for (const t of queued.slice(0, 5)) {
+    const reason = slots ? queueReason(t.priority, slots) : null;
+    lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · ${preview(t.prompt, 40)}${reason ? ` · 原因：${reason}` : ""}`);
+  }
 
   lines.push("", "最近完成");
   if (finished.length === 0) lines.push("(无)");

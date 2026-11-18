@@ -15,6 +15,7 @@ const task: Task = {
   repo: "demo",
   prompt: "读一下环境变量",
   status: "queued",
+  priority: "normal",
   branch: null,
   prUrl: null,
   sessionId: null,

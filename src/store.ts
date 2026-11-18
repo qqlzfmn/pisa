@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
-import type { Effect, EffectKind, Task, TaskStatus } from "./types";
+import type { Effect, EffectKind, Task, TaskPriority, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   repo             TEXT NOT NULL,
   prompt           TEXT NOT NULL,
   status           TEXT NOT NULL,
+  priority         TEXT NOT NULL DEFAULT 'normal',
   branch           TEXT,
   pr_url           TEXT,
   session_id       TEXT,
@@ -153,6 +154,7 @@ interface Row {
   repo: string;
   prompt: string;
   status: TaskStatus;
+  priority: TaskPriority;
   branch: string | null;
   pr_url: string | null;
   session_id: string | null;
@@ -217,6 +219,7 @@ function toTask(r: Row): Task {
     repo: r.repo,
     prompt: r.prompt,
     status: r.status,
+    priority: r.priority,
     branch: r.branch,
     prUrl: r.pr_url,
     sessionId: r.session_id,
@@ -266,6 +269,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "priority")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'");
     }
     this.backfillTriggers();
   }
@@ -554,8 +560,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, priority, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -565,6 +571,7 @@ export class Store {
         t.repo,
         t.prompt,
         t.status,
+        t.priority,
         t.branch,
         t.prUrl,
         t.createdAt,
@@ -611,8 +618,13 @@ export class Store {
     );
   }
 
-  nextQueued(): Task | null {
-    const row = this.db.query("SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at LIMIT 1").get() as Row | null;
+  /** 取下一条排队任务；给定 priority 时只取该槽位的任务 */
+  nextQueued(priority?: TaskPriority): Task | null {
+    const row = priority
+      ? (this.db
+          .query("SELECT * FROM tasks WHERE status = 'queued' AND priority = ? ORDER BY created_at LIMIT 1")
+          .get(priority) as Row | null)
+      : (this.db.query("SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at LIMIT 1").get() as Row | null);
     return row ? toTask(row) : null;
   }
 

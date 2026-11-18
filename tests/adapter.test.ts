@@ -11,6 +11,7 @@ const task: Task = {
   repo: "demo",
   prompt: "修一下登录",
   status: "queued",
+  priority: "normal",
   branch: null,
   prUrl: null,
   sessionId: null,

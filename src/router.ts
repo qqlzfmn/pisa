@@ -2,7 +2,7 @@ import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
-import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
+import type { ChannelAdapter, IncomingMessage, Task, TaskPriority, WorkerResult } from "./types";
 import type { EffectRow, Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
@@ -24,7 +24,7 @@ import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
-import { formatStatusBoard } from "./status";
+import { countSlots, formatStatusBoard, slotLimits, type SlotState } from "./status";
 
 export { formatDuration } from "./status";
 
@@ -52,7 +52,7 @@ interface PendingTask {
 }
 
 export class Router {
-  private active = new Map<string, Promise<void>>();
+  private active = new Map<string, { priority: TaskPriority; promise: Promise<void> }>();
   /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
   private stopping = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -137,7 +137,7 @@ export class Router {
     this.timer = null;
     const cap = Promise.withResolvers<void>();
     const capTimer = setTimeout(cap.resolve, timeoutMs);
-    await Promise.race([Promise.all([...this.active.values()]), cap.promise]);
+    await Promise.race([Promise.all([...this.active.values()].map((e) => e.promise)), cap.promise]);
     clearTimeout(capTimer);
   }
 
@@ -197,20 +197,41 @@ export class Router {
     const p = this.runTask(task, branch)
       .catch(() => {})
       .finally(() => this.active.delete(task.id));
-    this.active.set(task.id, p);
+    this.active.set(task.id, { priority: task.priority, promise: p });
   }
 
-  /** 按并发上限补位；不等待任务完成 */
-  private async fill(): Promise<void> {
+  /** 当前槽位占用：调度判断与 status 共用 */
+  slots(): SlotState {
+    return countSlots(
+      [...this.active.values()].map((e) => e.priority),
+      slotLimits(this.deps.cfg.worker),
+    );
+  }
+
+  /** 按槽位补位；不等待任务完成。普通任务只进任务槽，人类追问只进人类槽 */
+  fill(): void {
     if (this.stopping) return;
-    const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
-    while (this.active.size < limit) {
-      const task = this.deps.store.nextQueued();
+    const limits = slotLimits(this.deps.cfg.worker);
+    this.fillLane("normal", limits.task);
+    this.fillLane("human", limits.human);
+  }
+
+  private fillLane(priority: TaskPriority, limit: number): void {
+    let used = this.countActive(priority);
+    while (used < limit) {
+      const task = this.deps.store.nextQueued(priority);
       if (!task) break;
       const branch = task.branch ?? `pisa/${task.id}`;
       if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
       this.launch({ ...task, branch, status: "running" });
+      used += 1;
     }
+  }
+
+  private countActive(priority: TaskPriority): number {
+    let used = 0;
+    for (const entry of this.active.values()) if (entry.priority === priority) used += 1;
+    return used;
   }
 
   /**
@@ -391,7 +412,7 @@ export class Router {
     }
 
     if (cmd.kind === "status") {
-      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now()));
+      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now(), slotLimits(cfg.worker)));
       return;
     }
 
@@ -476,6 +497,7 @@ export class Router {
       repo: repo.alias,
       prompt,
       status: "queued",
+      priority: cmd.kind === "continue" ? "human" : "normal",
       branch,
       prUrl,
       sessionId: null,
@@ -891,9 +913,11 @@ export class Router {
       await this.reply(msg.chatId, `任务 ${id} 的工作副本已不存在，无法恢复。`);
       return;
     }
-    const limit = Math.max(1, cfg.worker.concurrency ?? 1);
-    if (this.active.size >= limit) {
-      await this.reply(msg.chatId, `当前并发已满（${limit}），稍后再恢复 ${id}。`);
+    const slots = this.slots();
+    const lane = task.priority === "human" ? slots.human : slots.task;
+    if (lane.used >= lane.limit) {
+      const name = task.priority === "human" ? "人类追问槽位" : "任务槽位";
+      await this.reply(msg.chatId, `${name}已满（${lane.used}/${lane.limit}），稍后再恢复 ${id}。`);
       return;
     }
 
@@ -911,10 +935,10 @@ export class Router {
     if (this.stopping) return false;
     let started = false;
     while (true) {
-      await this.fill();
+      this.fill();
       if (this.active.size === 0) break;
       started = true;
-      await Promise.all([...this.active.values()]);
+      await Promise.all([...this.active.values()].map((e) => e.promise));
       if (!this.deps.store.nextQueued()) break;
     }
     return started;
