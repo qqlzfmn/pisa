@@ -127,8 +127,9 @@ bun run src/index.ts
 
 ```
 /pisa <需求>            接一个任务
+/pisa examples          可直接照抄的场景（触发方式 + 预期产出）
 /pisa cancel [任务号]   取消
-/pisa help              帮助
+/pisa help              按用途分组的命令帮助
 
 私聊里可以直接说需求，不用加 /pisa；群聊仍需触发词。
 /status、/cancel、/help 在私聊可直接用。
@@ -138,6 +139,8 @@ bun run src/index.ts
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
 /pisa status                     任务看板（私聊可用 /status）
 ```
+
+场景说明、最佳实践与能力边界（无沙箱、回滚范围、单机、并发、鉴权面）见 [docs/usage.md](./docs/usage.md)。
 
 撤销：
 
