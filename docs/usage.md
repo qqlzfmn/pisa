@@ -17,6 +17,7 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 | 多仓库 | `/pisa @family 把首页文案改成中文` | 落在 `family`，回执写明仓库 |
 | 接着上一轮 | `/pisa continue t_xxx 错误提示改成中文`，或直接回复任务消息 | 原分支追加提交，上下文带上一轮摘要 |
 | 看进度 | `/pisa status` | 运行中 / 排队 / 最近完成 三段，每行带阶段（在等谁、需要什么） |
+| 看准入规则 | `/pisa policy` | 每个来源的名单、四格判定与策略版本，附未结束任务的版本分布 |
 | 停掉任务 | `/pisa cancel t_xxx` | 2 秒内收口为「取消」，运行中的任务清理工作副本与自建分支 |
 | 撤销副作用 | `/pisa rewind t_xxx` → 加 `--yes` | 关 PR、删分支；已合并用 revert |
 | 对账清残留 | `/pisa reconcile [任务号]` → 加 `--fix` | 列出分支/工作副本/PR 与任务记录的差异；只清已结束任务与孤儿 |
@@ -59,7 +60,8 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 - **IM**：`whitelist.users` 与 `whitelist.repos` 双重白名单，未授权用户不建任务（24 小时内只提示一次）。群里仍需要触发词；私聊可直接说需求。
 - **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，所以它也必须进白名单。要从外网调用，自己加反向代理与 TLS。
 - **Web 控制台**：只监听 `127.0.0.1`，`/ui` 与 `/api/*` 全部要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、`HttpOnly` cookie 任一），否则 401。页面派出的任务归 `web.userId`，同样要进白名单；取消与合并不再校验原请求者，因为浏览器里的操作由 token 直接认证。
-- **GitHub**：只处理正文以 `/pisa ` 开头的评论；评论作者不参与鉴权，任务归属由各仓库条目配置的 `chatId` / `userId` 决定。`gh` token 从 `tokenEnv` 指定的环境变量读取。
+- **GitHub**：只处理正文以 `/pisa ` 开头的评论；评论作者默认不鉴权，任务归属由各仓库条目配置的 `chatId` / `userId` 决定；把 login 写进 `policy.sources.github.allowed` 后名单外评论被拒。`gh` token 从 `tokenEnv` 指定的环境变量读取。
+- **策略**：`policy.sources.<来源>` 声明名单、名单内外 × 是否 @ 的判定与接单方式（`auto`/`observe`/`off`），版本在任务上留痕；`/pisa resume` 前按当前策略重校验，降权后旧任务拉不起来。
 - **定时、探针、关键词**：都用配置里的身份开单，同样走白名单；触发不了的根因通常是身份不在白名单或缺少 `scheduler` 配置。
 - **密钥**：Telegram bot token、webhook token 只从环境变量或 `~/.pisa/` 下的文件读取，不写入配置文件与 launchd plist。
 

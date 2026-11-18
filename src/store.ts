@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_issue      INTEGER,
   reply_repo       TEXT,
   mode             TEXT NOT NULL DEFAULT 'work',
+  mandate          TEXT,
+  policy_version   TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -163,6 +165,8 @@ interface Row {
   reply_issue: number | null;
   reply_repo: string | null;
   mode: string | null;
+  mandate: string | null;
+  policy_version: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -209,6 +213,16 @@ function toTrigger(r: TriggerRow): TriggerRecord {
   };
 }
 
+/** 准入凭据是自由 JSON：读不出来就当没有，不让坏数据卡住整张看板 */
+function parseMandate(raw: string | null): Task["mandate"] {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Task["mandate"];
+  } catch {
+    return null;
+  }
+}
+
 function toTask(r: Row): Task {
   return {
     id: r.id,
@@ -228,6 +242,8 @@ function toTask(r: Row): Task {
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
     mode: r.mode === "review" ? "review" : "work",
+    mandate: parseMandate(r.mandate),
+    policyVersion: r.policy_version,
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -272,6 +288,12 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "mode")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'work'");
+    }
+    if (!cols.some((c) => c.name === "mandate")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN mandate TEXT");
+    }
+    if (!cols.some((c) => c.name === "policy_version")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN policy_version TEXT");
     }
     this.backfillTriggers();
   }
@@ -560,8 +582,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mode)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, mode, mandate, policy_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -580,6 +602,8 @@ export class Store {
         t.replyIssue,
         t.replyRepo,
         t.mode ?? "work",
+        t.mandate ? JSON.stringify(t.mandate) : null,
+        t.policyVersion ?? null,
       ],
     );
   }
@@ -788,6 +812,18 @@ export class Store {
     }>;
     const counts = zeroCounts();
     for (const r of rows) counts[r.status] = r.n;
+    return counts;
+  }
+
+  /** 未结束任务按派活时的策略版本计数；`/pisa policy` 用来看改规则前开的单还剩多少 */
+  countActiveByPolicyVersion(): Record<string, number> {
+    const rows = this.db
+      .query(
+        "SELECT COALESCE(policy_version, '-') AS version, COUNT(*) AS n FROM tasks WHERE status IN ('queued','running','paused') GROUP BY version",
+      )
+      .all() as Array<{ version: string; n: number }>;
+    const counts: Record<string, number> = {};
+    for (const r of rows) counts[r.version] = r.n;
     return counts;
   }
 

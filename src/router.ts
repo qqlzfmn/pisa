@@ -53,6 +53,7 @@ import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
 import { formatStatusBoard } from "./status";
+import { decide, formatPolicy, resolvePolicy, type Policy } from "./policy";
 
 export { formatDuration } from "./status";
 
@@ -95,11 +96,14 @@ export class Router {
   private pending = new Map<string, PendingTask>();
   /** 外部动作的 outbox：推送、建 PR、回帖都先落库再执行 */
   private readonly effects: EffectQueue;
+  /** 启动时解析一次的准入策略：改配置要重启，重启后旧任务按新版本重校验 */
+  private readonly policy: Policy;
 
   constructor(private deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
     this.progressOn = deps.cfg.notifications?.progress ?? false;
     this.effects = deps.effects ?? new EffectQueue(deps.store, { now: this.now });
+    this.policy = resolvePolicy(deps.cfg);
     this.registerEffects(deps.deliverer);
   }
 
@@ -285,6 +289,7 @@ export class Router {
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
+      else if (t === "/policy" || t === "策略") cmd = { kind: "policy", body: "" };
       else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
@@ -430,6 +435,11 @@ export class Router {
       return;
     }
 
+    if (cmd.kind === "policy") {
+      await this.reply(msg.chatId, formatPolicy(this.policy, store.countActiveByPolicyVersion()));
+      return;
+    }
+
     let prompt = cmd.body;
     let baseRef: string | null = null;
     let context: string | null = null;
@@ -500,6 +510,22 @@ export class Router {
       await this.reply(msg.chatId, `仓库未配置：${msg.repo ?? "(默认)"}`);
       return;
     }
+
+    // 准入：按来源、真实发起人与是否 @ 判定；私聊与带触发词的消息视为已 @
+    const admission = decide(this.policy, {
+      source: msg.channel,
+      actor: msg.actor ?? msg.userId,
+      mentioned: msg.mentioned ?? (msg.isDirect === true || msg.text.trim().startsWith(cfg.trigger)),
+    });
+    if (!admission.admitted) {
+      const last = this.deniedAt.get(msg.userId) ?? 0;
+      if (this.now() - last > 24 * 3600 * 1000) {
+        this.deniedAt.set(msg.userId, this.now());
+        await this.reply(msg.chatId, `拒绝派活：${admission.mandate.reason}\n准入策略 ${admission.policyVersion}`);
+      }
+      return;
+    }
+
     if (!prompt) {
       await this.reply(msg.chatId, `用法：${cfg.trigger} <需求描述>`);
       return;
@@ -534,6 +560,8 @@ export class Router {
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
       mode: msg.mode,
+      mandate: admission.mandate,
+      policyVersion: admission.policyVersion,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -1034,6 +1062,25 @@ export class Router {
     }
     if (task.status !== "paused") {
       await this.reply(msg.chatId, `任务 ${id} 不是中断状态（${task.status}），只有中断的任务可以恢复。`);
+      return;
+    }
+
+    // 策略不追溯已建任务，但恢复是一次新的放行：原发起人、原来源按当前规则重校验
+    const admission = decide(this.policy, {
+      source: task.channel,
+      actor: task.mandate?.actor ?? task.requester,
+      mentioned: task.mandate?.mentioned ?? true,
+    });
+    if (!admission.admitted) {
+      await this.reply(
+        msg.chatId,
+        `拒绝恢复 · ${id}\n原因：${admission.mandate.reason}\n准入策略 ${task.policyVersion ?? "未记录"} → 当前 ${admission.policyVersion}，恢复前重校验未通过。`,
+      );
+      return;
+    }
+    const denied = this.checkAccess({ ...msg, userId: task.requester, repo: task.repo }, repoByAlias(cfg, task.repo));
+    if (denied) {
+      await this.reply(msg.chatId, `拒绝恢复 · ${id}\n原因：${denied}`);
       return;
     }
     if (!existsSync(resolve(cfg.stateDir, "worktrees", id))) {
