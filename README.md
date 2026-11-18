@@ -234,7 +234,7 @@ Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、
 `worker.adapter` 决定用谁执行，目前只有一个 `omp` 适配器。换 agent 只需实现 `WorkerAdapter`（`src/adapters/types.ts`：拼参数、备环境、解析一行输出）并注册到 `src/adapters/index.ts`，Router 一行不改；换模型改对应 CLI 的配置即可。
 
 **Q：任务跑飞了怎么收场？**
-`/pisa cancel <任务号>` 停执行；`/pisa rewind <任务号>` 预览并撤销已交付的副作用；单任务 `timeoutSec` 与「无输出 `idleTimeoutSec`」会兜住卡死。
+`/pisa cancel <任务号>` 停执行；`/pisa rewind <任务号>` 预览并撤销已交付的副作用；`/pisa reconcile` 核对并清理残留分支、工作副本与 PR；单任务 `timeoutSec` 与「无输出 `idleTimeoutSec`」会兜住卡死。
 
 ## 已知限制
 

@@ -1,9 +1,9 @@
 import { sh, type ExecResult } from "./git";
 
-/** 执行一条命令；测试注入假实现，不联网 */
-export type Runner = (args: string[]) => ExecResult;
+/** 执行一条命令；测试注入假实现，不联网。cwd 用于需要落在具体仓库里的 gh 查询 */
+export type Runner = (args: string[], cwd?: string) => ExecResult;
 
-export const defaultRunner: Runner = (args) => sh(args);
+export const defaultRunner: Runner = (args, cwd) => sh(args, cwd);
 
 /** 失败不抛出：调用方决定记日志还是重试 */
 export type GhResult<T = void> = { ok: true; value: T } | { ok: false; error: string };

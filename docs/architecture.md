@@ -24,8 +24,7 @@
 │ core：编排（全部状态与决策）                                    │
 │   router / store / worker / deliver / effects / git /         │
 │   github / github-watcher / proactive / scheduler / rewind /  │
-│   github-watcher / proactive / scheduler / rewind /           │
-│   config / types / log / adapters                             │
+│   reconcile / config / types / log / adapters                 │
 └──────────────▲─────────────────────────────────▼────────────┘
                │ WorkerResult                      │ 提示词 + 进程参数
 ┌──────────────┴─────────────────────────────────┴────────────┐
@@ -66,6 +65,7 @@ core 内部模块关系：
 | `scheduler.ts` | cron 到点开单 | 构造时注入 `enqueue` |
 | `proactive.ts` | 群聊关键词与定时探针 | 构造时注入 `enqueue` |
 | `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
+| `reconcile.ts` | 残留对账：任务记录与分支、工作副本、开放 PR 的差异；只读计划 + 显式执行 | `planReconcile`、`applyReconcile` |
 | `stage.ts` / `status.ts` | 任务阶段规则表与对外投影：阶段、JSON 字段、看板文本 | `taskStage()`、`taskJson()`、`formatStatusBoard()` |
 | `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机 | `createWebApp()`、`startWebServer()`、`ReplyBus` |
 | `log.ts` / `config.ts` / `types.ts` | 日志脱敏、配置加载与默认值、共享类型与状态机表 | — |
@@ -259,6 +259,7 @@ interface ChannelAdapter {
 - `Deliverer`（`src/deliver.ts`）：替掉交付策略（例如先开草稿 PR、走内部镜像）。
 - `RouterDeps.ghRunner` 与 `DelivererDeps.createPr/hasGh`：测试替换 `gh`，生产不联网。
 - `RewindProbes`（`src/rewind.ts`）：撤销计划只依赖探测接口，测试用假探测验证分支/PR 各状态组合。
+- `ReconcileProbes`（`src/reconcile.ts`）：对账只依赖分支、工作副本、开放 PR 三个探测函数，测试用假探测覆盖清理与保留。
 - `now()`：时间注入，测试里控制冷却与超时。
 
 ## 5. 失败模式与已知限制
@@ -273,7 +274,8 @@ interface ChannelAdapter {
 | 执行超时 | `worker.timeoutSec` | `failed`（`执行超时`） | 同上 | 拆小任务 |
 | 卡死（长时间无输出/无进度） | 每 30s 看进度文件与 stdout，超过 `worker.idleTimeoutSec`（默认 900s） | `failed`（`卡死：…`） | 同上 | 重投；调大 `idleTimeoutSec` 或拆小任务 |
 | 执行器丢失（进程被 kill，但服务没重启） | `reconcileOrphans` 每 5s 对账 `running` 行与进程内 active 表 | 有 session+worktree → `paused`；否则 `failed` | worktree 保留（paused） | `resume` 或重投 |
-| 请求者取消 | 每 2s 轮询 `cancelRequested`；`queued`/`paused` 直接改状态；`running` 但没有执行器时立即结束 | `cancelled` | `running`：删 worktree 与 `pisa/<id>` 分支；`queued`/`paused`：worktree（若有）保留 | — |
+| 请求者取消 | 每 2s 轮询 `cancelRequested`；`queued`/`paused` 直接改状态；`running` 但没有执行器时立即结束 | `cancelled` | `running`：删 worktree 与 `pisa/<id>` 分支；`queued`/`paused`：worktree（若有）保留 | 残留可 `/pisa reconcile --fix` |
+| 任务结束后资源残留（远程分支、开放 PR、工作副本） | `/pisa reconcile` 对比任务表与仓库现状 | 不改状态 | `--fix` 删已结束任务与孤儿的资源并清账本；运行中与成功任务保留 | 失败项重发 `--fix` |
 | 推送失败 | `pushBranch` 抛错 | `failed` | effect 行随任务失败丢弃；worktree 删除后本地提交一并消失，远程无残留 | 修远程/凭据后重投 |
 | PR 创建失败 | `gh pr create` 无输出 | 任务仍 `succeeded` | 分支已推，`effect` 行留库退避重试 | 重试成功自动回填 `pr_url` 与账本；期间回执给 compare 链接 |
 | 回帖失败 | `gh` 退出码非 0 | 不影响状态 | `effect` 行留库退避重试 | 重试到发出去；隐藏标记保证重复执行也只发一条 |
@@ -296,6 +298,7 @@ interface ChannelAdapter {
 8. **`gh pr create` 未在生产验证**（README「已知限制」）：没配远程的仓库只得到 compare 链接。
 9. **撤销有边界**：只覆盖记账的副作用（分支、推送、PR、回帖、工作副本、合并）。已发出的评论不可撤回；PR 状态无法确认时保留分支且不标 `rewound`；只允许原请求者操作，运行中的任务要求先取消。
 10. **终态不可回运行态**：`rewound` 之后只能重新投递一条新任务。
+11. **残留对账靠显式命令**：不会后台自动清理；孤儿只认 `pisa/` 前缀与 `worktrees/<id>`，手工分支与目录不动；`gh` 不可用时跳过 PR 核对，核对不到就保留。
 
 ## 6. 与 dsh-superagent 的取舍
 
@@ -331,4 +334,5 @@ interface ChannelAdapter {
 | 换 agent | `src/adapters/`、`src/worker.ts` |
 | 交付与 PR | `src/deliver.ts`、`src/git.ts`、`src/github.ts` |
 | 撤销 | `src/rewind.ts`、`docs/specs/013-rewind/` |
+| 残留清理 | `src/reconcile.ts`、`docs/specs/018-reconcile/` |
 | 配置项 | `src/config.ts`、`pisa.config.example.json` |

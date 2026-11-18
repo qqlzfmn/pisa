@@ -6,6 +6,7 @@
 
 ### 新增
 
+- `/pisa reconcile [任务号] [--fix]`：对比任务记录与本地分支、远程分支、工作副本、开放 PR，列出差异；`--fix` 清理已结束任务与孤儿资源并同步删账本，运行中与成功任务的资源保留
 - `triggers` 表：任务创建改为按触发身份（`source` + 线程 + 消息 + 版本 + 载荷指纹）落库，触发器与任务同一事务；旧库在 `Store` 构造时按任务自身信息补齐，重放旧事件不会重复建单
 - 编辑与线程归属：同一消息的新版本按 `version` 留痕，任务仍在排队就更新需求正文；同线程不带命令的后续消息并进未结束任务的上下文
 - 入口身份字段：`IncomingMessage` 新增 `threadKey` / `messageKey` / `version` / `actor`；Telegram 处理 `edited_message` 与论坛话题线程，GitHub 评论用 `updated_at` 作版本、评论作者作 actor，webhook 接受 `threadKey` / `version`

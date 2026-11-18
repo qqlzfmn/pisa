@@ -50,6 +50,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 /pisa continue <任务号> <新要求>   从上一轮的分支和上下文继续做
 /pisa resume <任务号>             恢复被进程重启中断的任务（私聊可用 /resume）
 /pisa rewind <任务号>             预览并撤销任务的副作用（私聊可用 /rewind）
+/pisa reconcile [任务号] [--fix]   核对并清理残留（私聊可用 /reconcile）
 /pisa status                     任务看板（私聊可用 /status）
 ```
 
@@ -91,6 +92,14 @@ Telegram 启动时用 `setMyCommands` 注册命令菜单（私聊可直接点选
 - `/pisa rewind <任务号> --yes` 执行；已合并的任务用 `revert` 提交回退，不改写历史
 - `gh` 查不到 PR 状态时保留分支、不标记完成，修好后重发
 - 任务执行期间的其它外部调用（API、消息、数据库）不在账本内，无法撤销
+
+## 残留核对
+
+- `/pisa reconcile` 只读：扫描全部任务，列出任务记录与本地分支、远程分支、工作副本、开放 PR 的差异
+- `/pisa reconcile <任务号>` 只核对一个任务，不扫描全局孤儿
+- `/pisa reconcile --fix` 清理已结束（失败、取消、已撤销）任务的自建分支 `pisa/<任务号>`、遗留工作副本与仍打开的 PR；任务表里查不到的 `pisa/` 资源按孤儿清理
+- 运行中、暂停与成功的任务一律保留，成功任务只清理遗留工作副本；共用分支与仍被其它任务使用的分支不删
+- `gh` 不可用时跳过 PR 核对，分支处理照常；清理成功的项从账本删除，失败项保留提示重试
 
 ## Webhook 事件入口
 

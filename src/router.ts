@@ -19,6 +19,13 @@ import {
   type Runner,
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import {
+  applyReconcile,
+  formatReconcilePlan,
+  formatReconcileResult,
+  planReconcile,
+  type ReconcileProbes,
+} from "./reconcile";
 import { formatExamples, formatHelp } from "./usage";
 import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
@@ -261,6 +268,7 @@ export class Router {
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
       else if (t === "/rewind" || t.startsWith("/rewind ")) cmd = { kind: "rewind", body: t.slice(7).trim() };
+      else if (t === "/reconcile" || t.startsWith("/reconcile ")) cmd = { kind: "reconcile", body: t.slice(10).trim() };
       else if (t && !t.startsWith("/")) cmd = { kind: "task", body: t };
       else if (t.startsWith("/")) {
         // 未知斜杠命令：只对可能是命令错拼的单词给提示，其余保持忽略
@@ -351,6 +359,11 @@ export class Router {
 
     if (cmd.kind === "rewind") {
       await this.handleRewind(msg, cmd.body);
+      return;
+    }
+
+    if (cmd.kind === "reconcile") {
+      await this.handleReconcile(msg, cmd.body);
       return;
     }
 
@@ -766,6 +779,89 @@ export class Router {
     }
     if (plan.merge !== "unknown" && results.every((r) => r.ok)) store.transition(id, "rewound");
     await this.reply(msg.chatId, formatRewindResult(plan, results));
+  }
+
+  /** 对账探测点：分支、工作副本、开放 PR；预览与 --fix 都只读这些状态 */
+  private reconcileProbes(runner: Runner): ReconcileProbes {
+    return {
+      branches: (repoPath) => {
+        const res = sh(["git", "-C", repoPath, "for-each-ref", "--format=%(refname)", "refs/heads"]);
+        if (res.code !== 0) return null;
+        const local = res.out
+          .split("\n")
+          .filter((line) => line.startsWith("refs/heads/"))
+          .map((line) => line.slice("refs/heads/".length));
+        // 远程以 origin 为准，不用可能过期的远端跟踪引用；查询失败时不判断远程分支
+        const heads = sh(["git", "-C", repoPath, "ls-remote", "--heads", "origin"]);
+        const remote =
+          heads.code === 0
+            ? heads.out
+                .split("\n")
+                .map((line) => line.split("\t")[1] ?? "")
+                .filter((ref) => ref.startsWith("refs/heads/"))
+                .map((ref) => ref.slice("refs/heads/".length))
+            : null;
+        return { local, remote };
+      },
+      worktrees: (repoPath) => {
+        const res = sh(["git", "-C", repoPath, "worktree", "list", "--porcelain"]);
+        if (res.code !== 0) return [];
+        return res.out
+          .split("\n")
+          .filter((line) => line.startsWith("worktree "))
+          .map((line) => line.slice("worktree ".length));
+      },
+      openPrs: (repoPath) => {
+        const res = runner(
+          ["gh", "pr", "list", "--state", "open", "--limit", "200", "--json", "url,headRefName"],
+          repoPath,
+        );
+        if (res.code !== 0) return null;
+        try {
+          const rows = JSON.parse(res.out) as Array<{ url?: unknown; headRefName?: unknown }>;
+          return rows.flatMap((row) =>
+            typeof row.url === "string" && typeof row.headRefName === "string"
+              ? [{ branch: row.headRefName, url: row.url }]
+              : [],
+          );
+        } catch {
+          return null;
+        }
+      },
+    };
+  }
+
+  /**
+   * `/pisa reconcile [任务号] [--fix]`：核对任务记录与分支、工作副本、PR 的差异。
+   * 不带任务号扫描全部任务；--fix 只清理已结束任务与孤儿资源，运行中的任务不动。
+   */
+  private async handleReconcile(msg: IncomingMessage, body: string): Promise<void> {
+    const { cfg, store } = this.deps;
+    const words = body.split(/\s+/).filter(Boolean);
+    const fix = words.includes("--fix");
+    const id = words.find((w) => !w.startsWith("--")) ?? "";
+    if (id && !store.get(id)) {
+      await this.reply(msg.chatId, `找不到任务 ${id}`);
+      return;
+    }
+    const runner = this.deps.ghRunner ?? defaultRunner;
+    const plan = planReconcile(store.allTasks(), id || null, {
+      stateDir: cfg.stateDir,
+      repos: cfg.repos.map((r) => ({ alias: r.alias, path: r.path })),
+      probes: this.reconcileProbes(runner),
+      now: this.now(),
+    });
+    if (!fix || !plan.items.some((item) => item.fixable)) {
+      await this.reply(msg.chatId, formatReconcilePlan(plan, cfg.trigger));
+      return;
+    }
+    const results = applyReconcile(plan, {
+      stateDir: cfg.stateDir,
+      repoPath: (alias) => (alias ? (repoByAlias(cfg, alias)?.path ?? null) : null),
+      runner,
+      forget: (taskId, kind, target) => store.removeEffect(taskId, kind, target),
+    });
+    await this.reply(msg.chatId, formatReconcileResult(plan, results));
   }
 
   private async handleCancel(msg: IncomingMessage, body: string): Promise<void> {

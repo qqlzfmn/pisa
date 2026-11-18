@@ -672,6 +672,12 @@ export class Store {
     return rows.map(toTask);
   }
 
+  /** 全部任务：对账要按任务表判定资源归属，不分页 */
+  allTasks(): Task[] {
+    const rows = this.db.query("SELECT * FROM tasks ORDER BY created_at DESC").all() as Row[];
+    return rows.map(toTask);
+  }
+
   /** CLI 列表：按仓库、状态过滤，先筛后限 */
   listTasks(opts: { repo?: string; status?: TaskStatus; limit?: number } = {}): Task[] {
     const where: string[] = [];
