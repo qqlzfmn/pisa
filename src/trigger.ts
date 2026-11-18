@@ -43,6 +43,19 @@ function digest(...parts: string[]): string {
   return hash.digest("hex").slice(0, 32);
 }
 
+/**
+ * 版本先后：纯数字（Telegram 的秒级时间戳）按数值比，其余（GitHub 的 ISO 时间）按字典序。
+ * 空串表示入口没有版本概念，调用方不能用它排序。
+ */
+export function compareVersion(a: string, b: string): number {
+  if (a === b) return 0;
+  if (/^\d+$/.test(a) && /^\d+$/.test(b)) {
+    const [x, y] = [BigInt(a), BigInt(b)];
+    return x < y ? -1 : 1;
+  }
+  return a < b ? -1 : 1;
+}
+
 /** 载荷指纹忽略行尾差异：同一条消息经不同入口搬运后仍应命中 */
 export function payloadHash(text: string): string {
   return digest(text.replace(/\r\n/g, "\n").trim());

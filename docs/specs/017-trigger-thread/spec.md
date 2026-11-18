@@ -46,8 +46,8 @@
 | --- | --- |
 | FR-001 | `triggers` 表记录 `id`、`source`、`thread_key`、`message_key`、`actor`、`at`、`payload_hash`、`version`、`kind`、`task_id` |
 | FR-002 | 触发器与任务同一事务落库；同一线程同一消息的重复投递只建一个任务 |
-| FR-003 | 同一线程同一消息的不同版本视为编辑：挂到原任务，不建新任务；原任务仍在排队时正文更新为新版本 |
-| FR-004 | 编辑按 `version` 在 `triggers` 里留独立行（`kind=context`），与建任务那行可区分 |
+| FR-003 | 同一线程同一消息的不同版本视为编辑：挂到原任务，不建新任务；原任务仍在排队时正文更新为新版本。已登记过的版本再次投递不再留痕、不改写任务；比当前最大版本旧的未登记版本只留痕，正文保持最新版本 |
+| FR-004 | 编辑按 `version` 在 `triggers` 里留独立行（`kind=context`），与建任务那行可区分；版本先后按数值（Telegram 秒级时间戳）或字典序（GitHub ISO 时间）比较，空版本不参与排序 |
 | FR-005 | 入口可显式声明线程与版本（IM 论坛话题、GitHub 评论 `updated_at`、webhook `threadKey`/`version`）；未声明时线程按「回复的任务 > 该消息自身」推导 |
 | FR-006 | 旧库启动时按任务既有字段补触发器，不改动 `tasks` 行 |
 | FR-007 | 对外行为不变：webhook 响应、CLI 回执、Web 控制台都能拿回既有任务号；`pisa --event-id` 重复调用返回原任务 |
@@ -65,6 +65,8 @@
 | 同一消息投递两次 | 1 个任务，`triggers` 1 行 |
 | 同一消息声明两个线程 | 2 个任务 |
 | 同一消息 v1 → v2 | 1 个任务，`triggers` 2 行（`kind=task`/`context`），排队任务的 `prompt` 为 v2 |
+| v1 → v2 之后重投 v1 | 1 个任务，`triggers` 仍 2 行，`prompt` 保持 v2，无回执 |
+| v1 → v3 之后到达未登记的 v2 | `triggers` 3 行，`prompt` 保持 v3，回执说明旧版本只做了留痕 |
 | 已开跑任务被编辑 | 任务正文不变，编辑仍留 `kind=context` 行 |
 | 旧库打开 | 任务行数不变，每个任务有触发器；重放旧事件不建新任务 |
 | 回复某条任务消息续跑 | 子任务触发器 `thread_key` 为 `task:<父任务号>` |

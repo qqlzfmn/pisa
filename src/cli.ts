@@ -165,9 +165,11 @@ function enqueue(io: Io, store: Store, args: ParsedArgs, task: Task): number {
     if (existing) {
       const note = claim.promptUpdated
         ? "事件已存在，需求已按最新版本更新"
-        : claim.edited
-          ? "事件已存在，任务已开跑，本次内容只做了留痕"
-          : "事件已存在，返回原任务";
+        : claim.stale
+          ? "事件已存在，已有更新版本，本次旧版本内容只做了留痕"
+          : claim.edited
+            ? "事件已存在，任务已开跑，本次内容只做了留痕"
+            : "事件已存在，返回原任务";
       emitTask(io, args, existing, note);
     }
     return EXIT.ok;

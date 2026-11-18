@@ -37,3 +37,12 @@
 - [x] T017 `tests/webhook.test.ts`：token 缺失/等长错值/短值 403、`cron:`/`github:comment:`/`telegram:`/无前缀 400 且 `events` 无键、合法事件号建任务并回执、重投只建一个、省略事件号自动生成、伪造 `Content-Length` 与超限正文 413、非 POST 405
 - [x] T018 `tests/router.test.ts`：非白名单投递 `eventId` 被拒后，白名单同 `eventId` 建任务且 `events` 只一行
 - [x] T019 `README.md`、`docs/operations.md`、`docs/architecture.md` 补命名空间与错误码说明；`CHANGELOG.md` 记录
+
+## 版本重放：旧版本不能倒退需求
+
+- [x] T020 `src/trigger.ts`：`compareVersion` 纯数字按数值、其余按字典序，空版本不参与排序（FR-004）
+- [x] T021 `src/store.ts`：去重按触发器 `id` 是否已登记判断；`latestVersion` 识别迟到的未登记旧版本，只留痕不改正文；`TriggerClaim` 增加 `stale`（FR-003）
+- [x] T022 `src/router.ts`、`src/cli.ts`：迟到旧版本的回执说明「已有更新版本，只做了留痕」（FR-007）
+- [x] T023 `tests/trigger-thread.test.ts`：v1 → v2 后重投 v1 正文保持 v2 且 `triggers` 仍 2 行、v1 → v3 后到达 v2 只留痕、版本数值/字典序比较
+      验证：重放与迟到用例在旧实现上正文退回旧版本（红，见复现记录），改后保持最新版本（绿）
+- [x] T024 `docs/architecture.md` 4.2、`CHANGELOG.md` 同步规则与修复说明

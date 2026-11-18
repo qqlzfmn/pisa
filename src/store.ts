@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
-import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
+import { compareVersion, makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
 
@@ -177,6 +177,8 @@ interface TriggerClaim {
   edited: boolean;
   /** 原任务仍在排队，需求正文已换成最新版本 */
   promptUpdated: boolean;
+  /** 迟到的旧版本：留痕但不改写正文，避免把已更新的需求退回旧文案 */
+  stale: boolean;
 }
 
 interface TriggerRow {
@@ -434,25 +436,40 @@ export class Store {
    * 触发器的唯一落库口：新触发建任务；同一条消息的新版本挂到原任务上。
    *
    * 整个判断在一个事务里，所以重复投递和并发投递都只会有一个任务。
+   * 已登记过的版本（重放、迟到投递）不再落触发器、也不改写任务；
+   * 没登记过但比当前版本旧的，只留痕，正文保持最新版本。
    */
   createTaskFromTrigger(trigger: Trigger, task: Task): TriggerClaim {
-    const claim: TriggerClaim = { taskId: task.id, created: false, edited: false, promptUpdated: false };
+    const claim: TriggerClaim = { taskId: task.id, created: false, edited: false, promptUpdated: false, stale: false };
     this.db.transaction(() => {
       const prior = this.triggerByMessage(trigger.threadKey, trigger.messageKey);
-      if (prior) {
-        claim.taskId = prior.taskId ?? task.id;
-        if (prior.id === trigger.id) return; // 重复投递：原样返回已有任务
-        claim.edited = true;
-        this.insertTrigger(trigger, "context", claim.taskId);
-        claim.promptUpdated = this.updatePrompt(claim.taskId, task.prompt);
+      if (!prior) {
+        this.insertTrigger(trigger, "task", task.id);
+        this.insertTask(task);
+        claim.created = true;
+        claim.taskId = task.id;
         return;
       }
-      this.insertTrigger(trigger, "task", task.id);
-      this.insertTask(task);
-      claim.created = true;
-      claim.taskId = task.id;
+      claim.taskId = prior.taskId ?? task.id;
+      const latest = this.latestVersion(trigger.threadKey, trigger.messageKey);
+      // 这个版本已经处理过（含重复投递）：原样返回已有任务
+      if (this.insertTrigger(trigger, "context", claim.taskId).changes === 0) return;
+      claim.edited = true;
+      if (trigger.version && latest && compareVersion(trigger.version, latest) < 0) {
+        claim.stale = true;
+        return;
+      }
+      claim.promptUpdated = this.updatePrompt(claim.taskId, task.prompt);
     })();
     return claim;
+  }
+
+  /** 这条消息已见过的最大版本；入口没有版本概念时为空串，无法排序 */
+  private latestVersion(threadKey: string, messageKey: string): string {
+    const rows = this.db
+      .query("SELECT version FROM triggers WHERE thread_key = ? AND message_key = ?")
+      .all(threadKey, messageKey) as Array<{ version: string }>;
+    return rows.reduce((max, r) => (compareVersion(r.version, max) > 0 ? r.version : max), "");
   }
 
   private insertTrigger(trigger: Trigger, kind: "task" | "context", taskId: string | null) {

@@ -7,6 +7,7 @@ import { Router } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
 import { GithubWatcher } from "../src/github-watcher";
 import { sh } from "../src/git";
+import { compareVersion } from "../src/trigger";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
@@ -209,6 +210,38 @@ describe("Trigger 身份与线程归属", () => {
     expect(triggers(store).filter((t) => t.kind === "context")).toHaveLength(1);
   });
 
+  test("旧版本重放不改写正文，触发器不重复", async () => {
+    const r = router();
+    await r.handle(msg("/pisa 修登录", { threadKey: "tg:a", version: "100" }));
+    await r.handle(msg("/pisa 修登录并补测试", { threadKey: "tg:a", version: "200" }));
+    const task = store.recentTasks()[0]!;
+    channel.sent.length = 0;
+
+    // 入口重投已处理过的旧版本：既不能新建任务，也不能把需求退回旧文案
+    await r.handle(msg("/pisa 修登录", { threadKey: "tg:a", version: "100" }));
+
+    expect(store.recentTasks()).toHaveLength(1);
+    expect(store.get(task.id)?.prompt).toBe("修登录并补测试");
+    expect(triggers(store)).toHaveLength(2);
+    expect(channel.sent).toEqual([]);
+  });
+
+  test("乱序到达的旧版本只留痕，不把正文退回旧版本", async () => {
+    const r = router();
+    await r.handle(msg("/pisa 修登录", { threadKey: "tg:a", version: "100" }));
+    await r.handle(msg("/pisa 修登录并补测试", { threadKey: "tg:a", version: "300" }));
+    const task = store.recentTasks()[0]!;
+    channel.sent.length = 0;
+
+    await r.handle(msg("/pisa 修登录并补测试，再加日志", { threadKey: "tg:a", version: "200" }));
+
+    expect(store.get(task.id)?.prompt).toBe("修登录并补测试");
+    const rows = triggers(store);
+    expect(rows.map((t) => t.version)).toEqual(["100", "300", "200"]);
+    expect(rows.filter((t) => t.kind === "context")).toHaveLength(2);
+    expect(channel.sent.at(-1)?.text).toContain("已有更新版本");
+  });
+
   test("回复任务消息续跑，子任务触发器线程为 task:<父任务号>", async () => {
     store.linkMessage("c1", "77", "t_parent");
     seedTask({ id: "t_parent", branch: "pisa/parent" });
@@ -292,6 +325,15 @@ describe("Trigger 身份与线程归属", () => {
     const rows = triggers(store);
     expect(rows.map((t) => t.version)).toEqual(["2026-11-18T10:00:00Z", "2026-11-18T10:05:00Z"]);
     expect(rows[0]).toMatchObject({ thread_key: "github:o/r:issue:12", message_key: "501", actor: "alice" });
+  });
+});
+
+describe("版本先后", () => {
+  test("纯数字按数值比，ISO 时间按字典序比", () => {
+    expect(compareVersion("999", "1000")).toBe(-1);
+    expect(compareVersion("1700000000", "999999999")).toBe(1);
+    expect(compareVersion("2026-11-18T10:00:00Z", "2026-11-18T10:05:00Z")).toBe(-1);
+    expect(compareVersion("7", "7")).toBe(0);
   });
 });
 

@@ -497,6 +497,7 @@ export class Router {
     const claim = store.createTaskFromTrigger(trigger, task);
     if (!claim.created) {
       if (claim.promptUpdated) await this.reply(msg.chatId, `任务 ${claim.taskId} 还没开跑，已按最新版本更新需求。`);
+      else if (claim.stale) await this.reply(msg.chatId, `任务 ${claim.taskId} 已有更新版本，这次旧版本的修改只做了留痕。`);
       else if (claim.edited) await this.reply(msg.chatId, `任务 ${claim.taskId} 已在执行，这次修改只做了留痕。`);
       return;
     }

@@ -148,7 +148,7 @@ cancelled ─┘
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由触发身份去重，编辑按 `updated_at` 区分）。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 线程解析（`threadKeyOf`：入口声明 > 被回复任务 > 本条消息）→ 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。
-3. **去重与鉴权**（`src/trigger.ts` 与 `checkAccess`，`src/router.ts`）。先 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库，再校验仓库与需求：被拦下的消息不写触发器，改完配置重发同一条即可。通过后 `makeTrigger` 算出触发身份，`store.triggerByMessage(threadKey, messageKey)` 命中同一条消息时，同版本同载荷即重复投递直接丢弃，版本不同即编辑（见 4.2）。
+3. **去重与鉴权**（`src/trigger.ts` 与 `checkAccess`，`src/router.ts`）。先 `checkAccess` 校验白名单用户、白名单仓库、目录是 git 仓库，再校验仓库与需求：被拦下的消息不写触发器，改完配置重发同一条即可。通过后 `makeTrigger` 算出触发身份，`store.createTaskFromTrigger` 按触发器 `id` 是否已登记判重复投递，同线程同消息的更新版本即编辑、更旧版本只留痕（见 4.2）。
 4. **落库与回执**（`Router.handle`，`src/router.ts`）。`store.createTaskFromTrigger` 在同一事务里写触发器与任务（`status=queued`），立刻回 `已接单 · <任务号>`，再把 `chatId+messageId → taskId` 写入 `task_messages`，后续回复该消息即可续跑。
 5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
@@ -215,14 +215,17 @@ id = hex(sha256(source, threadKey, messageKey, version, payloadHash))[:32]
 - `version`：消息版本（编辑时间等），没有版本概念时为空串。
 - `payloadHash`：解析后的需求正文的摘要（CRLF 归一 + trim），因此 `/pisa X` 与裸 `X` 命中同一个指纹。
 
-`triggers` 表（`src/store.ts`）记录 `id`、`source`、`thread_key`、`message_key`、`actor`、`at`、`payload_hash`、`version`、`kind`、`task_id`，覆盖下面四种情形：
+`triggers` 表（`src/store.ts`）记录 `id`、`source`、`thread_key`、`message_key`、`actor`、`at`、`payload_hash`、`version`、`kind`、`task_id`，覆盖下面五种情形：
 
 | 情形 | 处理 |
 | --- | --- |
-| 同线程同消息、同版本同载荷 | 重复投递：丢弃，不新建任务 |
-| 同线程同消息、版本或载荷不同 | 编辑：记 `kind=context` 留痕；任务仍排队则用新正文覆盖需求，已开跑只留痕 |
+| 触发器 `id` 已登记（含同版本同载荷的重复投递） | 重复投递：不落新行，返回已有任务 |
+| 同线程同消息、版本更新的新版本 | 编辑：记 `kind=context` 留痕；任务仍排队则用新正文覆盖需求，已开跑只留痕 |
+| 同线程同消息、版本比已见过的最大版本旧 | 迟到版本：记 `kind=context` 留痕，正文保持最新版本，回执说明只做了留痕 |
 | 同线程不同消息、不带命令 | 并进该线程未结束任务（`queued`/`paused`）的上下文，不新建任务 |
 | 同线程不同消息、带命令 | 新任务：同一会话里的第二次明确请求是另一件事 |
+
+版本先后由 `compareVersion`（`src/trigger.ts`）判断：纯数字按数值（Telegram 秒级时间戳），其余按字典序（GitHub ISO 时间）；空串表示入口没有版本概念，不参与排序，按更新处理。
 
 内置六种触发源都按这个模式接：
 
