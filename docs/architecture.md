@@ -141,9 +141,10 @@ cancelled ─┘
 
 逐步（括号内是代码位置）：
 
-1. **事件进入**。六类触发源都产生 `IncomingMessage`；入口能给出更稳定的身份就填 `threadKey` / `messageKey` / `version` / `actor`，缺省由 core 补齐（见 4.2）：
+1. **事件进入**。所有触发源都产生 `IncomingMessage`；入口能给出更稳定的身份就填 `threadKey` / `messageKey` / `version` / `actor`，缺省由 core 补齐（见 4.2）：
    - IM：`channel.start(onMessage)` 回调里先喂 `Proactive.observe`，再 `router.handle`（`src/index.ts`）。
    - webhook：`Bun.serve` 只接 127.0.0.1 的 `POST /event`（`src/webhook.ts`），先做 token 常量时间比较（403）、`Content-Length` 与正文 64 KiB 上限（413），再校验 body `{prompt, repo?, eventId?, threadKey?, version?}`；`eventId` 必须是 `webhook:` 前缀（`events` 表跨通道共享，`cron:`/`github:comment:`/`telegram:` 归各自入口，越界 400），缺省为 `webhook:<ts>:<rand>`。校验全过后才交给 `router.handle`，被拒的请求不解析正文、不占事件号；带上 `threadKey`（业务单号）就能和别的入口命中同一个任务。
+   - 通用触发适配层：`src/triggers/` 下的 `TriggerAdapter` 把外部协议归一成 `IncomingMessage`，`/github/actions`、`/feishu/event`、`/wecom/event` 共用 127.0.0.1 上的一个端口（默认 8790），文件监听不走 HTTP。验签、白名单与去重键都在适配器内部，任务仍由 `router.handle` 建，回执走配置的 `triggers.chatId`（见 4.2）。
    - Web 控制台：`Bun.serve` 只接 127.0.0.1 的 `/ui` 与 `/api/*`，token 鉴权通过后把派活/取消/合并拼成 `IncomingMessage`（`admin: true`）交给 `router.handle`，回执经 `ReplyBus` 收集后回给页面（`src/web.ts`）。`admin` 让 Router 跳过单英文词误触防护与原请求者校验——浏览器里的操作由 token 直接认证，没有可回 `confirm` 的聊天。
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由触发身份去重，编辑按 `updated_at` 区分）。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
@@ -224,7 +225,7 @@ id = hex(sha256(source, threadKey, messageKey, version, payloadHash))[:32]
 | 同线程不同消息、不带命令 | 并进该线程未结束任务（`queued`/`paused`）的上下文，不新建任务 |
 | 同线程不同消息、带命令 | 新任务：同一会话里的第二次明确请求是另一件事 |
 
-内置六种触发源都按这个模式接：
+内置十种触发源都按这个模式接：
 
 | 触发源 | 代码 | threadKey | messageKey / version |
 | --- | --- | --- | --- |
@@ -234,10 +235,27 @@ id = hex(sha256(source, threadKey, messageKey, version, payloadHash))[:32]
 | GitHub 评论 | `github-watcher.ts` | `github:<repo>:issue:<n>` | 评论 id / `updated_at` |
 | cron | `scheduler.ts` | 本条消息 | 分钟键 |
 | 主动发现 | `proactive.ts` | 本条消息 | 事件号 |
+| GitHub Actions | `src/triggers/github-actions.ts` | `github-actions:<repo>:<branch>` | run id / `updated_at` |
+| 飞书 | `src/triggers/feishu.ts` | `feishu:<chat_id>` | `message_id` |
+| 企业微信 | `src/triggers/wecom.ts` | `wecom:<FromUserName>` | `MsgId`，事件消息回退发送者 + 时间 |
+| 文件监听 | `src/triggers/file-watch.ts` | `file-watch:<监听路径>` | 变化路径 + 事件时刻 |
 
 触发记录不随保留策略清理：它是「这件事已经做过」的唯一凭据，删掉会让重放复活成新任务。
 
-新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。冷却与去重这类「触发源自己的节流」放在触发源内部（例如 `Proactive` 的 cooldown、`GithubWatcher` 的 `since` 下界，跨越重启的进度写进 `store` 的 `meta`），core 只负责按触发身份去重。
+新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。
+
+新协议走适配器，不直接写 `router.handle`。`TriggerAdapter`（`src/triggers/types.ts`）把入口逻辑拆成三段，各自只有一个落点：
+
+```ts
+interface TriggerAdapter<Raw, Payload> {
+  readonly name: string;
+  verify(raw: Raw): Promise<Payload>;                 // 验签、解析；失败抛 TriggerError
+  normalize(payload: Payload): TriggerOutcome | null; // 白名单 + 归一；null 表示忽略
+  dedupeKey(payload: Payload): string;                // 去重键，进 messageKey
+}
+```
+
+`dispatch` 串起来只有一条线：`verify → normalize → messageKey ??= dedupeKey → handle`。`TriggerOutcome.reply` 承载协议级回执（飞书 challenge、企业微信 `success`），没有 `event` 就只回执、不建任务。接入新协议时实现这三段、在 `src/triggers/http.ts` 加一条路径、在 `triggers` 配置里加一个 `enabled` 与白名单即可，`router.ts` 与 core 不动。冷却与去重这类「触发源自己的节流」放在触发源内部（例如 `Proactive` 的 cooldown、`GithubWatcher` 的 `since` 下界，跨越重启的进度写进 `store` 的 `meta`），core 只负责按触发身份去重。
 
 ### 4.3 入口客户端：加通道
 

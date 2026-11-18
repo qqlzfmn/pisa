@@ -62,6 +62,49 @@
     "chatId": "<telegram chat id>",
     "userId": "<telegram user id>"
   },
+  "triggers": {
+    "chatId": "<telegram chat id>",
+    "userId": "<telegram user id>",
+    "repo": "pisa",
+    "http": {
+      "enabled": false,
+      "port": 8790
+    },
+    "githubActions": {
+      "enabled": false,
+      "secretEnv": "PISA_GH_ACTIONS_SECRET",
+      "repos": [
+        "owner/pisa"
+      ],
+      "conclusions": [
+        "failure",
+        "timed_out"
+      ]
+    },
+    "feishu": {
+      "enabled": false,
+      "secretEnv": "PISA_FEISHU_ENCRYPT_KEY",
+      "chats": [],
+      "users": []
+    },
+    "wecom": {
+      "enabled": false,
+      "tokenEnv": "PISA_WECOM_TOKEN",
+      "aesKeyEnv": "PISA_WECOM_AES_KEY",
+      "users": []
+    },
+    "fileWatch": {
+      "enabled": false,
+      "debounceMs": 500,
+      "paths": [
+        {
+          "path": "build/last.log",
+          "prompt": "构建日志变化，检查失败原因：{path}",
+          "repo": "pisa"
+        }
+      ]
+    }
+  },
   "github": {
     "enabled": false,
     "intervalSec": 120,
