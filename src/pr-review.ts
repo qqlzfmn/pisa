@@ -13,11 +13,18 @@ export function reviewEventId(repo: string, pr: number, headSha: string): string
   return `github:review:${repo}:${pr}:${headSha}`;
 }
 
+/** 围栏必须比 diff 里最长的反引号串更长，否则 diff 自带的代码块会提前闭合 */
+function fenceFor(text: string): string {
+  const longest = (text.match(/`+/g) ?? []).reduce((n, run) => Math.max(n, run.length), 0);
+  return "`".repeat(Math.max(3, longest + 1));
+}
+
 export function buildReviewPrompt(repo: string, pr: OpenPr, diff: string): string {
   const patch =
     diff.length > REVIEW_DIFF_MAX
       ? `${diff.slice(0, REVIEW_DIFF_MAX)}\n\n（diff 过长，已截断 ${diff.length - REVIEW_DIFF_MAX} 字符；只评审以上内容）`
       : diff;
+  const fence = fenceFor(patch);
   return [
     `评审 PR ${repo}#${pr.number}：${pr.title}`,
     "",
@@ -32,8 +39,8 @@ export function buildReviewPrompt(repo: string, pr: OpenPr, diff: string): strin
     "- 不要复述 diff；没有发现问题就明确说明。",
     "",
     "## Diff",
-    "```diff",
+    `${fence}diff`,
     patch || "（空）",
-    "```",
+    fence,
   ].join("\n");
 }
