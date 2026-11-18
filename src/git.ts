@@ -13,6 +13,45 @@ export function sh(args: string[], cwd?: string): ExecResult {
   };
 }
 
+export interface TimedExecResult extends ExecResult {
+  /** 进程因超时被杀，code 不可当作正常退出码 */
+  timedOut: boolean;
+}
+
+/**
+ * 有墙钟上限的异步执行，用于跑不受信任的代码（验证副本里的测试）。
+ * 不能用 sh()：spawnSync 会阻塞事件循环，且没有超时。
+ * 子进程独立成组，超时按组 SIGKILL，连同它在测试里拉起的子进程一起收掉。
+ */
+export async function shTimed(
+  args: string[],
+  opts: { cwd: string; env: Record<string, string>; timeoutMs: number },
+): Promise<TimedExecResult> {
+  const proc = Bun.spawn(args, {
+    cwd: opts.cwd,
+    env: opts.env,
+    stdout: "pipe",
+    stderr: "pipe",
+    detached: true,
+  });
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try {
+      process.kill(-proc.pid, "SIGKILL");
+    } catch {
+      proc.kill("SIGKILL");
+    }
+  }, opts.timeoutMs);
+  const [out, err, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  clearTimeout(timer);
+  return { code, out: out.trim(), err: err.trim(), timedOut };
+}
+
 export function isGitRepo(path: string): boolean {
   return sh(["git", "-C", path, "rev-parse", "--git-dir"]).code === 0;
 }

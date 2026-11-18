@@ -152,9 +152,10 @@ cancelled ─┘
 5. **调度**（`fill` 与 `launch`，`src/router.ts`）。`start(800)` 定时 `fill()`：活跃数小于 `worker.concurrency`（默认 2）时取最早 `queued` 任务，`claimQueued` 成功才 `launch`，分支名默认 `pisa/<taskId>`。
 6. **工作副本**（`runTask`，`src/router.ts`）。`resuming` 用工作副本是否存在判断；新建时 `git worktree add -b <branch> <workdir> <baseRef|baseBranch|HEAD>`，随后记两条副作用（`worktree`、`branch`；共用父分支时 `detail="shared"`），回 `开始执行`，启动进度转发。
 7. **执行**（`Worker.run`，`src/worker.ts`）。`adapter.buildArgs` 生成命令行（omp：`-e <extension> [-r <sessionId>] --mode=json -p <prompt> --cwd <workdir>`），`Bun.spawn` 的 cwd 就是工作副本，环境变量附带 `PISA_WORKDIR`、`PISA_PROGRESS_FILE`。超时按 `worker.timeoutSec`（默认 3600s）`SIGTERM`，10s 后 `SIGKILL`；取消每 2s 轮询一次，同样先礼后兵。stdout 按行交给 `adapter.parseLine`，最终 `summary` 与 `error` 都过 `redact`。
-8. **进度回传**。skill 把 `session`/`tool`/`blocked`/`done` 追加进 `.pisa/progress/<taskId>.jsonl`；`watchProgress`（`src/router.ts`）每 2s 读增量，节流 6s，转成 `🛠`/`✏️`/`⛔` 消息发到原对话。progress 只是旁路，丢了不影响任务结果。
-9. **交付**（`GitDeliverer.deliver`，`src/deliver.ts`）。`git status --porcelain` 无改动直接返回；有改动则 `commitAll`（`pisa: <首行>`，正文带任务号）。推送与建 PR 都经 outbox（`src/effects.ts`）：先按 `(kind,key)` 落 `effects` 行再执行，`push` 失败抛错让任务落 `failed`，`pr` 失败留在队列里退避重试、本轮退回 `compare` 链接。若 `delivery.pr`、远程在 github.com、`gh` 可用，先 `gh pr list --head <branch>` 认领该分支上已有的开放 PR（上次建好却没来得及记账），没查到才 `gh pr create`（PR 正文带 `Closes #<issue>`）；两者都在仓库根目录执行，工作副本删掉后重试仍可用。成功后由 Router 记 `push`/`pr` 副作用并回填 `pr_url`。无改动且任务无 `prUrl` 时，若分支已在 origin 上同样先认领一次。
-10. **收尾**。`transition(succeeded)` 写入 `summary/branch/prUrl/endedAt` → 删工作副本（保留分支与副作用账本）→ `replyToSource` 经 outbox 回 PR/Issue（正文带隐藏标记 `<!-- pisa:reply task=… -->`，线程里已有同标记即视为发过，退避重试也不会重复回帖）→ 最终回执（摘要、文件清单、分支、链接、会话 id）。任务失败或取消时清掉该任务未完成的 effect 行。
+8. **合并前验证**（`Router.handleMerge`）。`/pisa merge` 在 `stateDir/verify/<任务号>` 副本里 rebase 到最新主干后跑 `bun test`：环境只取 `worker.envAllow` 白名单（与 Worker 子进程同一份 `workerEnv`），超时按 `worker.verifyTimeoutSec`（默认 600s）`SIGKILL` 整个进程组，超时即回「未合并 · 验证超时」，主干不动。验证输出过 `redact` 再进回执。
+9. **进度回传**。skill 把 `session`/`tool`/`blocked`/`done` 追加进 `.pisa/progress/<taskId>.jsonl`；`watchProgress`（`src/router.ts`）每 2s 读增量，节流 6s，转成 `🛠`/`✏️`/`⛔` 消息发到原对话。progress 只是旁路，丢了不影响任务结果。
+10. **交付**（`GitDeliverer.deliver`，`src/deliver.ts`）。`git status --porcelain` 无改动直接返回；有改动则 `commitAll`（`pisa: <首行>`，正文带任务号）。推送与建 PR 都经 outbox（`src/effects.ts`）：先按 `(kind,key)` 落 `effects` 行再执行，`push` 失败抛错让任务落 `failed`，`pr` 失败留在队列里退避重试、本轮退回 `compare` 链接。若 `delivery.pr`、远程在 github.com、`gh` 可用，先 `gh pr list --head <branch>` 认领该分支上已有的开放 PR（上次建好却没来得及记账），没查到才 `gh pr create`（PR 正文带 `Closes #<issue>`）；两者都在仓库根目录执行，工作副本删掉后重试仍可用。成功后由 Router 记 `push`/`pr` 副作用并回填 `pr_url`。无改动且任务无 `prUrl` 时，若分支已在 origin 上同样先认领一次。
+11. **收尾**。`transition(succeeded)` 写入 `summary/branch/prUrl/endedAt` → 删工作副本（保留分支与副作用账本）→ `replyToSource` 经 outbox 回 PR/Issue（正文带隐藏标记 `<!-- pisa:reply task=… -->`，线程里已有同标记即视为发过，退避重试也不会重复回帖）→ 最终回执（摘要、文件清单、分支、链接、会话 id）。任务失败或取消时清掉该任务未完成的 effect 行。
 
 一次成功任务落盘的东西：
 
@@ -286,10 +287,10 @@ interface ChannelAdapter {
 
 ### 5.2 已知限制
 
-1. **无沙箱**。agent 进程以当前用户身份运行，能读写工作副本之外的文件；环境变量只继承 `worker.envAllow` 白名单里的键（默认 `PATH`、`HOME`、`LANG`、`LC_ALL`、`TERM`、`TMPDIR`、`SHELL`、`USER`），其余不进子进程。`extensions/pisa-worker.ts` 的拦截是按 bash 命令文本首段匹配的正则 denylist（`git push`、`git reset --hard`、带 `f` 的 `git clean`、`rm -rf /`（`/tmp` 除外）、`sudo`、改 `/etc` 的 `chmod/chown`），`/usr/bin/git push`、`git -c … push`、脚本包装、非 bash 工具写文件都不在覆盖范围。worktree 只隔离同一仓库的分支，不是文件系统隔离。
+1. **无沙箱**。agent 进程以当前用户身份运行，能读写工作副本之外的文件；环境变量只继承 `worker.envAllow` 白名单里的键（默认 `PATH`、`HOME`、`LANG`、`LC_ALL`、`TERM`、`TMPDIR`、`SHELL`、`USER`），其余不进子进程；`/pisa merge` 的验证步骤用同一份白名单执行副本里的测试。`extensions/pisa-worker.ts` 的拦截是按 bash 命令文本首段匹配的正则 denylist（`git push`、`git reset --hard`、带 `f` 的 `git clean`、`rm -rf /`（`/tmp` 除外）、`sudo`、改 `/etc` 的 `chmod/chown`），`/usr/bin/git push`、`git -c … push`、脚本包装、非 bash 工具写文件都不在覆盖范围。worktree 只隔离同一仓库的分支，不是文件系统隔离。
 2. **单机**。SQLite、worktree、日志、agent 会话都在本机 `.pisa` 与 agent 自己的存储里。`supervise.sh` 在本机按 1→30s 退避重启，机器下线即系统下线；没有跨机器接管。
 3. **并发**。上限是 `worker.concurrency`（默认 2），以进程内活跃 Promise 计；多任务共享同一 `.git` 对象库，交付只 `git add -A` 自己的工作副本；同一分支不能有两个 worktree，续跑同一分支的第二个任务会直接失败；`merge` 要求主工作区停在 base 分支，并先 rebase 到最新主干（否则历史前进后快进必然失败）。
-4. **信号只到直接子进程**：超时与取消对 agent 进程 `SIGTERM`→`SIGKILL`，它派生的孙进程可能残留。
+4. **信号只到直接子进程**：Worker 的超时与取消对 agent 进程 `SIGTERM`→`SIGKILL`，它派生的孙进程可能残留；`/pisa merge` 的验证步骤例外，子进程独立成组，超时按组 `SIGKILL`。
 5. **去重按触发身份**：鉴权与参数校验通过才写 `triggers`，同一触发身份只会有一个任务；载荷指纹取解析后的需求正文，同一条消息换入口包装（`/pisa X` 与裸 `X`）仍命中同一个触发。旧库升级时 `Store` 构造会按任务自身信息补齐触发器，重放旧事件不会重复建任务。
 6. **内存态丢失**：24h 拒绝提示节流、单字确认的 10 分钟待确认态、主动发现冷却都在内存。重启后这些窗口归零（去重靠 `triggers` 表长期有效；GitHub 评论游标已落库，停机期间的评论会补拉）。
 7. **调度不补跑**：cron 粒度到分钟、tick 30s，停机错过的时间窗不补；同一分钟只投一次。

@@ -14,6 +14,7 @@
 
 - 恢复中断任务不再重放旧过程消息：`resume` 从进度文件已写位置继续轮询，上一轮推送过的工具调用不会在重启后重复出现
 - 重启恢复尊重 `cancel_requested`：执行中说 `cancel` 的任务遇进程重启直接落 `cancelled`，不会再变成 `paused` 被后续 `resume` 复活；启动日志与恢复表同步三类计数
+- `/pisa merge` 的验证步骤按最小权限执行：`bun test` 只拿 `worker.envAllow` 白名单环境（不再继承 `GH_TOKEN`、`PISA_TELEGRAM_TOKEN`），并按新增的 `worker.verifyTimeoutSec`（默认 600s）超时杀进程组，超时回「未合并 · 验证超时」，主干不动；验证输出过 `redact` 再进回执
 
 ### 变更
 

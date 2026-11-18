@@ -67,6 +67,8 @@ export interface Config {
     envAllow?: string[];
     /** 多久没有任何输出/进度就算卡死并杀掉，默认 900 秒 */
     idleTimeoutSec?: number;
+    /** /pisa merge 在验证副本里跑测试的墙钟上限，超时杀进程并拒绝合并，默认 600 秒 */
+    verifyTimeoutSec?: number;
   };
   delivery: { push: boolean; pr: boolean; commitName: string; commitEmail: string };
   /** 通知详细程度；progress=false 时只发接单/执行/完成等生命周期消息 */
@@ -135,6 +137,7 @@ export const DEFAULT_CONFIG: Config = {
     concurrency: 2,
     envAllow: [...DEFAULT_ENV_ALLOW],
     idleTimeoutSec: 900,
+    verifyTimeoutSec: 600,
   },
   delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
   notifications: { progress: false },

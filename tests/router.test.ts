@@ -527,6 +527,82 @@ describe("Router", () => {
     }
   });
 
+  test("验证超时：返回未合并且主干不变", async () => {
+    const supervised = process.env.PISA_SUPERVISED;
+    delete process.env.PISA_SUPERVISED;
+    try {
+      cfg.worker.verifyTimeoutSec = 2;
+      const slowVerifier: WorkerRunner = {
+        async run(_task, workdir): Promise<WorkerResult> {
+          mkdirSync(join(workdir, "tests"), { recursive: true });
+          writeFileSync(
+            join(workdir, "tests", "slow.test.ts"),
+            `import { test, expect } from "bun:test";\ntest("slow", async () => { await Bun.sleep(30000); expect(1).toBe(1); }, 120000);\n`,
+          );
+          return { ok: true, summary: "加了慢测试", exitCode: 0 };
+        },
+      };
+      const router = build(slowVerifier);
+      await router.handle(msg("/pisa 加一个慢测试"));
+      await router.drainOnce();
+      const id = store.recentTasks()[0]!.id;
+      const before = sh(["git", "-C", repo, "rev-parse", "main"]).out;
+
+      const t0 = Date.now();
+      await router.handle(msg(`/pisa merge ${id}`));
+      expect(Date.now() - t0).toBeLessThan(5000);
+      expect(channel.sent.some((s) => s.text.includes("验证超时"))).toBe(true);
+      expect(sh(["git", "-C", repo, "rev-parse", "main"]).out).toBe(before);
+      expect(sh(["git", "-C", repo, "cat-file", "-e", "main:tests/slow.test.ts"]).code).not.toBe(0);
+      expect(store.effectsOf(id).some((e) => e.kind === "merge")).toBe(false);
+    } finally {
+      if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+    }
+  });
+
+  // 子进程的默认 env 是进程启动时的快照，运行时改 process.env 进不去；
+  // 所以带凭据的真实用例在启动环境里跑，外层再以 GH_TOKEN 拉起一次本用例。
+  const VERIFY_SECRET = "SECRET-verify-env";
+
+  test.skipIf(process.env.GH_TOKEN !== VERIFY_SECRET)("验证步骤不继承凭据：回执不含 GH_TOKEN 明文", async () => {
+    const supervised = process.env.PISA_SUPERVISED;
+    delete process.env.PISA_SUPERVISED;
+    try {
+      const envProbe: WorkerRunner = {
+        async run(_task, workdir): Promise<WorkerResult> {
+          mkdirSync(join(workdir, "tests"), { recursive: true });
+          writeFileSync(
+            join(workdir, "tests", "env.test.ts"),
+            `import { test, expect } from "bun:test";\ntest("env", () => { console.log("GH_TOKEN=" + process.env.GH_TOKEN); expect(process.env.GH_TOKEN).toBeUndefined(); });\n`,
+          );
+          return { ok: true, summary: "加环境用例", exitCode: 0 };
+        },
+      };
+      const router = build(envProbe);
+      await router.handle(msg("/pisa 加环境用例"));
+      await router.drainOnce();
+      const id = store.recentTasks()[0]!.id;
+
+      await router.handle(msg(`/pisa merge ${id}`));
+      const replies = channel.sent.map((s) => s.text).join("\n");
+      expect(replies).not.toContain(VERIFY_SECRET);
+      expect(replies).toContain("已合并");
+    } finally {
+      if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+    }
+  });
+
+  test.skipIf(process.env.GH_TOKEN === VERIFY_SECRET)("凭据用例在 GH_TOKEN 已就位的启动环境重跑", () => {
+    const run = Bun.spawnSync(["bun", "test", "-t", "验证步骤不继承凭据", "tests/router.test.ts"], {
+      cwd: join(import.meta.dir, ".."),
+      env: { ...process.env, GH_TOKEN: VERIFY_SECRET },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (run.exitCode !== 0) console.error(run.stdout.toString() + run.stderr.toString());
+    expect(run.exitCode).toBe(0);
+  });
+
   test("回复任务消息自动续跑该任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 第一轮"));
