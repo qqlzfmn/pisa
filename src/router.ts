@@ -93,15 +93,27 @@ export class Router {
   }
 
   /**
-   * 进程重启后的分流：工作副本仍在且有会话 id 的 running 任务转 paused，
-   * 其余 running 任务标 failed。工作副本一律保留，交给恢复者复用。
+   * 中断任务的归宿：取消请求优先（请求者已经否决这次写操作，恢复不得改写其意图），
+   * 其次工作副本与会话都在即可续跑，否则不可恢复。
    */
-  recoverInterrupted(): { paused: number; failed: number } {
-    const { cfg, store } = this.deps;
-    const result = { paused: 0, failed: 0 };
+  private interruptedOutcome(task: Task): "cancelled" | "paused" | "failed" {
+    if (task.cancelRequested) return "cancelled";
+    const workdir = resolve(this.deps.cfg.stateDir, "worktrees", task.id);
+    return task.sessionId && existsSync(workdir) ? "paused" : "failed";
+  }
+
+  /**
+   * 进程重启后的分流：已请求取消的 running 任务转 cancelled，
+   * 有会话 id 与工作副本的转 paused，其余标 failed。工作副本一律保留。
+   */
+  recoverInterrupted(): { paused: number; failed: number; cancelled: number } {
+    const { store } = this.deps;
+    const result = { paused: 0, failed: 0, cancelled: 0 };
     for (const task of store.runningTasks()) {
-      const workdir = resolve(cfg.stateDir, "worktrees", task.id);
-      if (task.sessionId && existsSync(workdir)) {
+      const to = this.interruptedOutcome(task);
+      if (to === "cancelled") {
+        if (store.transition(task.id, "cancelled", { endedAt: this.now() })) result.cancelled += 1;
+      } else if (to === "paused") {
         if (store.transition(task.id, "paused")) result.paused += 1;
       } else if (store.transition(task.id, "failed", { error: "进程重启，任务中断", endedAt: this.now() })) {
         result.failed += 1;
@@ -112,18 +124,20 @@ export class Router {
 
   /**
    * 运行期兜底：DB 里是 running 但本进程没有执行器的行（上一次进程崩溃/被 kill 的遗留），
-   * 按 worktree + sessionId 分流为 paused / failed，避免永久卡在 running。
+   * 按取消请求、worktree、sessionId 分流为 cancelled / paused / failed，避免永久卡在 running。
    * 只处理启动超过 30 秒的任务，避开 claimQueued 到 launch 之间的瞬间。
    */
   reconcileOrphans(): number {
-    const { cfg, store } = this.deps;
+    const { store } = this.deps;
     const cutoff = this.now() - 30_000;
     let n = 0;
     for (const task of store.runningTasks()) {
       if (this.active.has(task.id)) continue;
       if (task.startedAt !== null && task.startedAt > cutoff) continue;
-      const workdir = resolve(cfg.stateDir, "worktrees", task.id);
-      if (task.sessionId && existsSync(workdir)) {
+      const to = this.interruptedOutcome(task);
+      if (to === "cancelled") {
+        if (store.transition(task.id, "cancelled", { endedAt: this.now() })) n += 1;
+      } else if (to === "paused") {
         if (store.transition(task.id, "paused", { error: "执行器丢失，任务暂停" })) n += 1;
       } else if (store.transition(task.id, "failed", { error: "执行器丢失，任务中断", endedAt: this.now() })) {
         n += 1;

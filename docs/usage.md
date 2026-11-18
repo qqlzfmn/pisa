@@ -47,7 +47,7 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 
 ### 单机
 
-任务状态存本地 SQLite（`stateDir/pisa.db`），队列是进程内轮询，工作副本在本地磁盘。没有跨机调度，也没有多副本一致性：同一份状态目录只应有一个 pisa 进程在跑。设备离线期间任务停摆，重启后 `running` 任务转 `paused`，需要 `/pisa resume` 拉回。
+任务状态存本地 SQLite（`stateDir/pisa.db`），队列是进程内轮询，工作副本在本地磁盘。没有跨机调度，也没有多副本一致性：同一份状态目录只应有一个 pisa 进程在跑。设备离线期间任务停摆，重启后 `running` 任务转 `paused`（已请求取消的直接转 `cancelled`），需要 `/pisa resume` 拉回。
 
 ### 并发
 
@@ -67,7 +67,7 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 pisa 自己兜底，不需要手工改数据库：
 
 1. **卡死检测**：worker 超过 `worker.idleTimeoutSec`（默认 900 秒）没有任何 stdout 或进度事件，进程被 SIGTERM→SIGKILL，任务转 `failed`，原因写进回执。
-2. **孤儿对账**：每 5 秒比对数据库里的 `running` 行与进程内执行器。进程被 kill 但服务没重启时，有会话与工作副本的转 `paused`，其余转 `failed`，不会永久挂着。
+2. **孤儿对账**：每 5 秒比对数据库里的 `running` 行与进程内执行器。进程被 kill 但服务没重启时，已请求取消的转 `cancelled`，有会话与工作副本的转 `paused`，其余转 `failed`，不会永久挂着。
 3. **取消兜底**：`/pisa cancel <id>` 对没有执行器的 `running` 行直接结束，不会停在“取消中”。
 4. **合并门禁**：有任务在跑时 `/pisa merge` 会拒绝并说明原因；确实要打断就加 `--force`。
 

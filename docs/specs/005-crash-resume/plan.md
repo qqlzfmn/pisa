@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | 状态存储 | 只在 `TaskStatus` 与 `ALLOWED` 增加 `paused`，tasks 表复用 `status` 文本列 | 表结构不变，SQLite 无枚举约束；迁移成本为零（FR-001） |
 | 工作副本定位 | 由 `resolve(stateDir, "worktrees", task.id)` 推导，不落库 | 路径是任务号的纯函数，多一列就多一处可失效的副本（FR-002） |
-| 可恢复判定 | 工作副本目录存在且 `sessionId` 非空 | 缺工作副本无处执行，缺会话无法续上下文（FR-002） |
+| 可恢复判定 | 先看取消请求：`cancel_requested=1` 直接转 `cancelled`；否则工作副本目录存在且 `sessionId` 非空 | 取消是请求者对写操作的否决，恢复不得改写成 `paused`；缺工作副本无处执行，缺会话无法续上下文（FR-002） |
 | 分流位置 | `Router.recoverInterrupted()`，启动时由 `index.ts` 调用，取代 `store.markOrphansFailed` | 判定要用 `cfg.stateDir` 与文件系统，属于 Router 的编排职责；Store 只做单条状态写入 |
 | 恢复入口 | 复用现有命令解析：新增 `resume` 命令与私聊 `/resume` | 与 `continue`/`cancel` 同一套鉴权与回执路径（FR-003/004） |
 | 恢复执行 | `paused → running` 后直接进入 `runTask`，注册到 `active` 表 | 复用并发与取消机制；`drainOnce` 仍能等到它（FR-005/008） |

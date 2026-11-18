@@ -83,7 +83,7 @@ failed    ─┼──rewind────────────► rewound
 cancelled ─┘
 ```
 
-上图的边与 `ALLOWED` 一一对应：`queued` 两条出边、`running` 四条、`paused` 两条、三个终态各一条 `rewound`。
+上图的边与 `ALLOWED` 一一对应：`queued` 两条出边、`running` 四条、`paused` 两条、三个终态各一条 `rewound`。重启分流走的是已有的边，不新增状态：`cancel_requested=1` 的 running 任务经 `running → cancelled` 结束，不再经过 `paused`。
 
 合法跃迁表定义在 `src/types.ts` 的 `ALLOWED`，由 `canTransition` 与 `store.transition` 共同守护：
 
@@ -92,10 +92,10 @@ cancelled ─┘
 | — | `queued` | 鉴权通过后的新事件 | `store.insertTask`（`src/router.ts`） |
 | `queued` | `running` | 调度器认领 | `store.claimQueued`（`src/router.ts`），原子 UPDATE，失败即放弃 |
 | `queued` | `cancelled` | 请求者 `cancel` | `handleCancel`（`src/router.ts`） |
-| `running` | `paused` | 重启时工作副本与 agent 会话都在 | `recoverInterrupted`（`src/router.ts`） |
+| `running` | `paused` | 重启时工作副本与 agent 会话都在，且未被请求取消 | `recoverInterrupted`（`src/router.ts`） |
 | `running` | `succeeded` | 交付完成 | `runTask`（`src/router.ts`） |
 | `running` | `failed` | Worker 非零退出、超时、异常、交付抛错、启动失败 | `runTask`（`src/router.ts`） |
-| `running` | `cancelled` | 请求者 `cancel`，Worker 退出后落地 | `handleCancel` 与 `runTask`（`src/router.ts`） |
+| `running` | `cancelled` | 请求者 `cancel`（Worker 退出后落地）；或重启时 `cancel_requested=1` | `handleCancel`、`runTask` 与 `recoverInterrupted`（`src/router.ts`） |
 | `paused` | `running` | 请求者 `resume`（人工，不自动） | `handleResume`（`src/router.ts`） |
 | `paused` | `cancelled` | 请求者 `cancel` | `handleCancel`（`src/router.ts`） |
 | `succeeded`/`failed`/`cancelled` | `rewound` | 请求者 `rewind --yes`，执行完且合并状态可确认 | `handleRewind`（`src/router.ts`） |
@@ -105,13 +105,14 @@ cancelled ─┘
 - 所有跃迁都是 compare-and-set：`UPDATE … WHERE id=? AND status=<旧值>`，并发认领或重复操作只有一个成功。
 - `queued → running` 只能经 `claimQueued`（在 SQL 里写 `startedAt` 与分支名）；其余跃迁经 `transition`。
 - 终态只有 `rewound` 这一条出边，运行态无法回退；撤销完的任务不能再 resume。
-- 状态写入只有三个来源：事件驱动的 `runTask`、重启时的 `recoverInterrupted`、请求者发起的 `cancel`/`resume`/`rewind`。关停路径刻意不写状态。
+- 状态写入只有四个来源：事件驱动的 `runTask`、重启时的 `recoverInterrupted`、运行期的 `reconcileOrphans`、请求者发起的 `cancel`/`resume`/`rewind`。关停路径刻意不写状态。
 
 恢复语义（对应 005）：
 
 | 场景 | 判定依据 | 归宿 | 依据 |
 | --- | --- | --- | --- |
-| 进程在任务执行中退出 | 重启时 `status='running'` | agent 会话 id 与 `.pisa/worktrees/<id>` 都存在 → `paused` | `recoverInterrupted`（`src/router.ts`） |
+| 进程在任务执行中退出 | 重启时 `status='running'`，`cancel_requested=1` | `cancelled`，工作副本保留 | 请求者已否决这次写操作，恢复不得把它改写成 `paused`（`src/router.ts` 的 `interruptedOutcome`） |
+| 同上，未请求取消 | agent 会话 id 与 `.pisa/worktrees/<id>` 都存在 | `paused` | `recoverInterrupted`（`src/router.ts`） |
 | 同上，缺一样 | — | `failed`，error=`进程重启，任务中断` | 会话或工作副本已无法续跑 |
 | 主动关停（SIGINT/SIGTERM） | `stopping` 标志 | 任务保持 `running`，不落 failed/succeeded，不删 worktree 与分支 | `router.stop()` 最多等 3 秒；`src/index.ts` 退出码 75 交给 supervisor |
 | 重启后遗留 `queued` | — | 由 `fill()` 继续认领，自动执行 | 队列在数据库里，不在内存里 |
@@ -239,12 +240,12 @@ interface ChannelAdapter {
 | Worker 非零退出 | 退出码 + 最后 20 行 | `failed` | 删 worktree 与 `pisa/<id>` 分支 | 重新投递 |
 | 执行超时 | `worker.timeoutSec` | `failed`（`执行超时`） | 同上 | 拆小任务 |
 | 卡死（长时间无输出/无进度） | 每 30s 看进度文件与 stdout，超过 `worker.idleTimeoutSec`（默认 900s） | `failed`（`卡死：…`） | 同上 | 重投；调大 `idleTimeoutSec` 或拆小任务 |
-| 执行器丢失（进程被 kill，但服务没重启） | `reconcileOrphans` 每 5s 对账 `running` 行与进程内 active 表 | 有 session+worktree → `paused`；否则 `failed` | worktree 保留（paused） | `resume` 或重投 |
-| 请求者取消 | 每 2s 轮询 `cancelRequested`；`queued`/`paused` 直接改状态；`running` 但没有执行器时立即结束 | `cancelled` | `running`：删 worktree 与 `pisa/<id>` 分支；`queued`/`paused`：worktree（若有）保留 | — |
+| 执行器丢失（进程被 kill，但服务没重启） | `reconcileOrphans` 每 5s 对账 `running` 行与进程内 active 表 | `cancel_requested=1` → `cancelled`；否则有 session+worktree → `paused`；否则 `failed` | worktree 保留（cancelled / paused） | `resume` 或重投 |
+| 请求者取消 | 每 2s 轮询 `cancelRequested`；`queued`/`paused` 直接改状态；`running` 但没有执行器时立即结束；重启时由 `recoverInterrupted` 兜底 | `cancelled` | `running` 且 Worker 在跑：删 worktree 与 `pisa/<id>` 分支；`queued`/`paused`/重启后落地：worktree（若有）保留 | — |
 | 推送失败 | `pushBranch` 抛错 | `failed` | worktree 删除后本地提交一并消失，远程无残留 | 修远程/凭据后重投 |
 | PR 创建失败 | `gh pr create` 无输出 | 任务仍 `succeeded` | 分支已推 | 手动开 PR，或按回执里的 compare 链接 |
 | 回帖失败 | 抓异常写日志 | 不影响状态 | 无 | 手动补，标记保证不重复 |
-| 进程被杀 | `recoverInterrupted` | `paused` 或 `failed` | worktree 保留（paused） | `resume` 或 `rewind` |
+| 进程被杀 | `recoverInterrupted` | `cancel_requested=1` → `cancelled`；否则 `paused` 或 `failed` | worktree 保留（cancelled / paused） | `resume` 或 `rewind` |
 | 重复投递 | `claimEvent` 主键冲突 | 只有一条任务 | — | 自动 |
 | 交付过程抛任意异常 | `runTask` catch | `failed` | 删 worktree 与分支 | 重新投递 |
 

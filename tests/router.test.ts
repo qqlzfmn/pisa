@@ -624,11 +624,32 @@ describe("Router", () => {
 
     expect(store.claimQueued(b.id, Date.now(), `pisa/${b.id}`)).toBe(true);
 
-    expect(router.recoverInterrupted()).toEqual({ paused: 1, failed: 1 });
+    expect(router.recoverInterrupted()).toEqual({ paused: 1, failed: 1, cancelled: 0 });
     expect(store.get(a.id)?.status).toBe("paused");
     expect(store.get(b.id)?.status).toBe("failed");
     expect(store.get(b.id)?.error).toContain("中断");
     expect(existsSync(workdirA)).toBe(true);
+  });
+
+  test("启动恢复：已请求取消的任务直接取消，不被恢复成 paused", async () => {
+    const router = build(okWorker);
+    const revoked = seedTask({ id: "t_revoked", status: "running", branch: "pisa/t_revoked" });
+    const control = seedTask({ id: "t_control", status: "running", branch: "pisa/t_control" });
+    for (const t of [revoked, control]) {
+      const workdir = join(stateDir, "worktrees", t.id);
+      expect(createWorktree(repo, workdir, t.branch!).code).toBe(0);
+      store.setSessionId(t.id, `sess-${t.id}`);
+    }
+    expect(store.requestCancel(revoked.id)).toBe(true);
+
+    expect(router.recoverInterrupted()).toEqual({ paused: 1, failed: 0, cancelled: 1 });
+    expect(store.get(revoked.id)?.status).toBe("cancelled");
+    expect(store.get(control.id)?.status).toBe("paused");
+    expect(existsSync(join(stateDir, "worktrees", revoked.id))).toBe(true);
+
+    await router.handle(msg(`/pisa resume ${revoked.id}`));
+    expect(channel.sent.at(-1)?.text).toContain("不是中断状态");
+    expect(store.get(revoked.id)?.status).toBe("cancelled");
   });
 
   test("resume 复用工作副本，Worker 再次执行且任务成功", async () => {
@@ -915,6 +936,18 @@ describe("执行器丢失与合并门禁", () => {
     store.setSessionId("t_resume", "s1");
     expect(router.reconcileOrphans()).toBe(1);
     expect(store.get("t_resume")!.status).toBe("paused");
+    store.close();
+  });
+
+  test("请求取消的孤儿 running 行 → cancelled，不复活为 paused", () => {
+    const { store, router, stateDir } = mk();
+    mkdirSync(join(stateDir, "worktrees", "t_revoked"), { recursive: true });
+    store.insertTask({ ...base("t_revoked") });
+    expect(store.claimQueued("t_revoked", Date.now() - 60_000, "pisa/t_revoked")).toBe(true);
+    store.setSessionId("t_revoked", "s1");
+    expect(store.requestCancel("t_revoked")).toBe(true);
+    expect(router.reconcileOrphans()).toBe(1);
+    expect(store.get("t_revoked")!.status).toBe("cancelled");
     store.close();
   });
 

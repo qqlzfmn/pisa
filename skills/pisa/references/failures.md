@@ -60,7 +60,7 @@ pisa repos --json                  # 仓库是否 allowed
 ## 6. 退出码 4：任务不可运行
 
 - `paused`：进程重启且工作副本与会话都在时进入。当前只能由人类在 pisa 会话里执行 `resume <任务号>`；CLI 不能恢复。
-- `cancelled`：已取消，需要就新建任务。
+- `cancelled`：已取消，需要就新建任务。取消请求在进程重启后生效时也落到这里，`resume` 不会复活它。
 - `rewound`：副作用已被撤销，不能继续。
 
 ## 7. `continue` 报"没有可续跑的分支"
