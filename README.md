@@ -231,7 +231,7 @@ Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、
 代码里没有 macOS 专有依赖；常驻脚本只提供了 macOS launchd 版本（`scripts/install-launchd.sh`），Linux 用 systemd/pm2 之类托管 `bun run src/index.ts` 即可。
 
 **Q：能换模型或换 agent 吗？**
-`worker.adapter` 决定用谁执行，目前只有一个 `omp` 适配器。换 agent 只需实现 `WorkerAdapter`（`src/adapters/types.ts`：拼参数、备环境、解析一行输出）并注册到 `src/adapters/index.ts`，Router 一行不改；换模型改对应 CLI 的配置即可。
+`worker.adapter` 决定用谁执行，目前只有一个 `omp` 适配器。换 agent 只需实现 `WorkerAdapter`（`src/adapters/types.ts`：拼参数、备环境、解析一行输出）并注册到 `src/adapters/index.ts`，Router 一行不改；完整步骤与测试见 [docs/extending.md](./docs/extending.md#2-加一个-adapter)；换模型改对应 CLI 的配置即可。
 
 **Q：任务跑飞了怎么收场？**
 `/pisa cancel <任务号>` 停执行；`/pisa rewind <任务号>` 预览并撤销已交付的副作用；单任务 `timeoutSec` 与「无输出 `idleTimeoutSec`」会兜住卡死。
@@ -243,7 +243,7 @@ Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、
 - **单机单进程**：没有分布式调度，并发受本机 CPU 与 agent 进程数限制
 - **没有真正的会话持久化**：续跑靠「上一轮分支 + 上下文注入」，不是恢复 token 流
 - **`gh pr create` 未实测**：没配远程的仓库只得到 compare 链接
-- **常驻脚本仅覆盖 macOS launchd**：其它系统需要自己托管进程
+- **常驻脚本只做 macOS launchd**：`scripts/install-launchd.sh` 是一键安装；其它系统自己托管，Linux systemd 写法见 [docs/deployment.md](./docs/deployment.md#3-启动)
 
 ## 文档地图
 
@@ -251,6 +251,9 @@ Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、
 | --- | --- |
 | [docs/operations.md](./docs/operations.md) | 全部配置项、IM/CLI 命令、事件入口、撤销、数据保留、常驻 |
 | [docs/usage.md](./docs/usage.md) | 使用场景、最佳实践、能力边界、卡住排查 |
+| [docs/domain.md](./docs/domain.md) | 术语表：任务、触发身份、账本、对账、撤销等名词的定义与代码位置 |
+| [docs/deployment.md](./docs/deployment.md) | 安装、升级、常驻、端口与数据、退出码、排障表 |
+| [docs/extending.md](./docs/extending.md) | 加触发源（Source）与换 agent（Adapter）的步骤、装配与测试 |
 | [docs/architecture.md](./docs/architecture.md) | 分层、状态机、数据流、扩展点、失败模式与设计取舍 |
 | [docs/specs/](./docs/specs/) | 每个 feature 的 spec / plan / tasks |
 | [skills/pisa/](./skills/pisa/) | 给 agent 用的 skill：命令表、brief 模板、失败模式、可复制场景 |

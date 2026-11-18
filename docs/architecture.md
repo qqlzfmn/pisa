@@ -2,7 +2,7 @@
 
 面向两类读者：要改内核的贡献者，和半年后回来读代码的自己。内容只回答五个问题——层怎么分、任务怎么流转、数据怎么走、哪里能插东西、哪里会坏。
 
-代码是唯一事实源；本文给位置和约束，不复述实现。规格细节见 `docs/specs/`（尤其 001 状态机、003 事件入口、005 恢复语义、013 撤销）。
+代码是唯一事实源；本文给位置和约束，不复述实现。规格细节见 `docs/specs/`（尤其 001 状态机、003 事件入口、005 恢复语义、013 撤销）。名词定义见 [domain.md](./domain.md)，装、升级与排障见 [deployment.md](./deployment.md)，加 Source / Adapter 的步骤与测试见 [extending.md](./extending.md)。
 
 ## 1. 分层与职责
 
@@ -193,7 +193,7 @@ interface WorkerAdapter {
 }
 ```
 
-`AdapterInput` 给 `task`、`workdir`、`extensionPath`、`progressFile`、`cfg`（`worker.*`）、`resumeSessionId`。registry 在 `src/adapters/index.ts`，目前只有 `omp`。
+`AdapterInput` 给 `task`、`workdir`、`extensionPath`、`progressFile`、`cfg`（`worker.*`）、`resumeSessionId`。registry 在 `src/adapters/index.ts`，目前只有 `omp`。新增适配器的实现、注册、配置与测试见 [extending.md](./extending.md#2-加一个-adapter)。
 
 接入一个新 agent 需要满足的契约：
 
@@ -246,7 +246,7 @@ id = hex(sha256(source, threadKey, messageKey, version, payloadHash))[:32]
 
 触发记录不随保留策略清理：它是「这件事已经做过」的唯一凭据，删掉会让重放复活成新任务。
 
-新增触发源三步：写一个类，构造参数收 `enqueue`（需要配置或存储的再加 `cfg`、`store`）；在 `src/index.ts` 里实例化并 `start()`；在 `shutdown()` 里 `stop()`。不需要改 `router.ts`。
+新增触发源的步骤（配置字段、适配器三段、装配点、配置示例与测试清单）见 [extending.md](./extending.md#1-加一个-source)；core 的契约只有上面两条，不需要改 `router.ts`。
 
 新协议走适配器，不直接写 `router.handle`。`TriggerAdapter`（`src/triggers/types.ts`）把入口逻辑拆成三段，各自只有一个落点：
 
@@ -350,8 +350,10 @@ interface ChannelAdapter {
 | 想改什么 | 先读 |
 | --- | --- |
 | 任务状态与恢复 | `src/types.ts`、`src/store.ts`、`docs/specs/005-crash-resume/` |
+| 名词与边界 | `docs/domain.md` |
+| 加事件源 / 换 agent | `docs/extending.md`、`src/triggers/`、`src/adapters/`、`src/worker.ts` |
+| 装、升级、排障、退出码 | `docs/deployment.md`、`scripts/`、`src/cli.ts` |
 | 事件入口 | `src/router.ts` 的 `handle`、`src/index.ts`、`docs/specs/003-super-agent-loop/` |
-| 换 agent | `src/adapters/`、`src/worker.ts` |
 | 交付与 PR | `src/deliver.ts`、`src/git.ts`、`src/github.ts` |
 | 撤销 | `src/rewind.ts`、`docs/specs/013-rewind/` |
 | 资源对账 | `src/reconcile.ts`、`docs/specs/019-reconcile/` |

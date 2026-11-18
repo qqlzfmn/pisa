@@ -78,6 +78,9 @@ specify → plan → tasks → implement → converge
 | 项目是什么、怎么装 | [README.md](./README.md) |
 | 配置项、IM/CLI 命令、事件入口、常驻 | [docs/operations.md](./docs/operations.md) |
 | 场景、最佳实践、能力边界（无沙箱、回滚范围、鉴权面） | [docs/usage.md](./docs/usage.md) |
+| 名词定义与边界（任务、触发身份、阶段、账本、对账） | [docs/domain.md](./docs/domain.md) |
+| 安装、升级、常驻、端口与数据、退出码、排障 | [docs/deployment.md](./docs/deployment.md) |
+| 加触发源、换 agent 的步骤与测试 | [docs/extending.md](./docs/extending.md) |
 | 分层、状态机、数据流、扩展点、失败模式 | [docs/architecture.md](./docs/architecture.md) |
 | 规格流程 | [SDD.md](./SDD.md) |
 | 工程规范（编码、测试、Git、子代理） | [AGENTS.md](./AGENTS.md) |

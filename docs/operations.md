@@ -1,6 +1,6 @@
 # 配置与运维
 
-README 只放 30 秒上手；这份文档是完整的手册：配置项、命令细节、事件入口、撤销、常驻与自维护。
+README 只放 30 秒上手；这份文档是完整的手册：配置项、命令细节、事件入口、撤销、常驻与自维护。从零安装、升级、退出码与排障表见 [deployment.md](./deployment.md)；名词定义见 [domain.md](./domain.md)。
 
 ## 目录
 
@@ -22,7 +22,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 
 ## 安装与配置
 
-安装命令在 [README 的 30 秒上手](../README.md#30-秒上手)。这里只说配置怎么定位、怎么生效。
+安装、升级与排障的完整步骤见 [deployment.md](./deployment.md)。这里只说配置怎么定位、怎么生效。
 
 配置文件按以下顺序定位：`--config <路径>` → 环境变量 `PISA_CONFIG` → 从当前目录向上找 `pisa.config.json`。相对 `stateDir` 与仓库路径以配置文件所在目录为基准，从子目录调用也指向同一份状态。
 
@@ -380,7 +380,7 @@ pisa 可以改自己：
 
 ## 常驻（launchd）
 
-`scripts/supervise.sh` 交给 launchd 托管：开机自启，进程退出后自动拉起。
+`scripts/supervise.sh` 交给 launchd 托管：开机自启，进程退出后自动拉起。退出码与 restart 语义见 [deployment.md](./deployment.md#9-退出码)，systemd 写法见 [deployment.md](./deployment.md#3-启动)。
 
 安装（重复执行等于重装）：
 
