@@ -50,7 +50,12 @@ export interface IncomingMessage {
   version?: string;
   /** 触发者：入口侧真实发起人；缺省用 userId（PR 评论这类以配置身份投递的入口要显式给） */
   actor?: string;
+  /** 任务类型；缺省按普通开发任务处理 */
+  mode?: TaskMode;
 }
+
+/** work：改代码并交付；review：只读评审，不建分支、不交付 */
+export type TaskMode = "work" | "review";
 
 export interface Task {
   id: string;
@@ -72,8 +77,10 @@ export interface Task {
   replyPr: number | null;
   /** 任务完成后回帖到该 Issue；null 表示不回帖 */
   replyIssue: number | null;
-  /** 回帖目标仓库；null 表示回退到 github 配置的单仓库 */
+  /** 任务完成后回帖到该仓库；null 表示回退到 github 配置的单仓库 */
   replyRepo: string | null;
+  /** 任务类型：review 只读评审，不建分支、不交付；缺省按 work 处理 */
+  mode?: TaskMode;
   summary: string | null;
   error: string | null;
   createdAt: number;

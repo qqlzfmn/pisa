@@ -24,6 +24,11 @@ export interface GithubRepoConfig {
   userId: string;
 }
 
+export interface GithubReviewConfig {
+  /** 新 PR 自动评审；缺省关闭 */
+  enabled: boolean;
+}
+
 export interface GithubConfig {
   enabled: boolean;
   /** 单仓库旧写法；repos 非空时被忽略 */
@@ -35,6 +40,8 @@ export interface GithubConfig {
   userId?: string;
   /** 多仓库写法，优先于旧字段 */
   repos?: GithubRepoConfig[];
+  /** PR 自动评审；不影响评论派活 */
+  review?: GithubReviewConfig;
 }
 
 /** 本机 Web 控制台；只监听 127.0.0.1，token 是唯一的鉴权因子 */

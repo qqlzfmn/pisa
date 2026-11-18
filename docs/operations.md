@@ -345,6 +345,27 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 
 `gh` 需要认证：`tokenEnv` 指定的环境变量（默认 `GH_TOKEN`）会被读进 `process.env.GH_TOKEN`，`gh` 只认 `GH_TOKEN` / `GITHUB_TOKEN`。评论作者不参与鉴权，任务归属由各仓库条目的 `chatId` / `userId` 决定（旧写法为顶层字段）。
 
+### PR 自动评审
+
+打开 `github.review.enabled` 后，轮询会额外检查每个监听仓库的 open PR，对没评审过的 head SHA 建一个只读评审任务：
+
+```json
+{
+  "github": {
+    "enabled": true,
+    "repos": [{ "repo": "owner/pisa", "chatId": "...", "userId": "..." }],
+    "review": { "enabled": true }
+  }
+}
+```
+
+- 评审只读：不检出仓库、不建 worktree 或分支、不交付、不推送；Worker 在空的临时目录里只看 `gh pr diff` 的结果
+- diff 在创建任务时拉取，超过 60000 字符截断并在正文注明；拉取失败不建任务，下一轮重试
+- 去重键是 `(github:<repo>:pull:<n>:review, head SHA)`，落在 `triggers` 表，重启后仍有效；同一 PR 推了新提交会重新评审
+- 结论以评论回帖到 PR，标题是「评审完成」；失败或取消不回帖
+- 评审任务沿用对应仓库条目的 `chatId` / `userId`，开始、完成、失败都会回到该会话
+- 开关关闭（缺省）时完全不调用 `gh pr list`，评论派活不受影响
+
 ## 自举
 
 pisa 可以改自己：

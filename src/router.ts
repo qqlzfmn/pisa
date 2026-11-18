@@ -1,5 +1,6 @@
 import { join, resolve, sep } from "node:path";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
@@ -203,8 +204,7 @@ export class Router {
 
   /** 立即执行一个已进入 running 的任务；不等待完成 */
   private launch(task: Task): void {
-    const branch = task.branch ?? `pisa/${task.id}`;
-    const p = this.runTask(task, branch)
+    const p = this.runTask(task)
       .catch(() => {})
       .finally(() => this.active.delete(task.id));
     this.active.set(task.id, p);
@@ -217,7 +217,8 @@ export class Router {
     while (this.active.size < limit) {
       const task = this.deps.store.nextQueued();
       if (!task) break;
-      const branch = task.branch ?? `pisa/${task.id}`;
+      // 评审任务不建分支：branch 保持 null，执行路径也不会碰 git
+      const branch = task.branch ?? (task.mode === "review" ? null : `pisa/${task.id}`);
       if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
       this.launch({ ...task, branch, status: "running" });
     }
@@ -515,6 +516,7 @@ export class Router {
       replyPr: msg.replyPr ?? null,
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
+      mode: msg.mode,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -1084,7 +1086,7 @@ export class Router {
     // 多仓库：任务记住评论所在仓库；旧任务与 IM 触发的回帖退回配置里的单仓库
     const repo = task.replyRepo ?? githubRepos(gh)[0]?.repo;
     if (!gh?.enabled || !repo) return;
-    const body = formatReply(summary);
+    const body = formatReply(summary, task.mode === "review" ? "评审完成" : "任务完成");
     if (task.replyPr) await this.postReply(repo, task.replyPr, "pr", task, body, log);
     if (task.replyIssue) await this.postReply(repo, task.replyIssue, "issue", task, body, log);
   }
@@ -1131,8 +1133,66 @@ export class Router {
     this.deps.store.removeEffect(task.id, "worktree", workdir);
   }
 
-  private async runTask(task: Task, branch: string): Promise<void> {
+  /**
+   * 评审任务：在空的临时目录里执行，只靠提示词里的 diff 评审。
+   * 不建 worktree / 分支，不交付；成功后才把摘要回帖到 PR。
+   */
+  private async runReviewTask(task: Task): Promise<void> {
+    const { cfg, store, worker } = this.deps;
+    const workdir = mkdtempSync(join(tmpdir(), "pisa-review-"));
+    const log = new TaskLogger(cfg.stateDir, task.id);
+    const target = `${task.replyRepo ?? ""}#${task.replyPr ?? ""}`;
+    const cleanup = () => rmSync(workdir, { recursive: true, force: true });
+    log.write("start", `review ${target}`);
+
+    await this.reply(task.chatId, `开始评审 · ${task.id}\nPR ${target}`, task.id);
+
+    let result: WorkerResult;
+    try {
+      result = await worker.run(task, workdir, (line) => log.write("worker", line), () =>
+        store.isCancelRequested(task.id),
+      );
+    } catch (err) {
+      result = { ok: false, summary: "", error: (err as Error).message, exitCode: -1 };
+    }
+
+    // 关停中：不写终态、不清理临时目录，任务留在 running 等下次启动分流
+    if (this.stopping) {
+      log.write("stopping", "进程关停，任务保持 running");
+      return;
+    }
+
+    if (store.isCancelRequested(task.id) || result.error === "任务已取消") {
+      cleanup();
+      this.effects.cancelTask(task.id);
+      store.transition(task.id, "cancelled", { endedAt: this.now() });
+      await this.reply(task.chatId, `已取消 · ${task.id}`);
+      return;
+    }
+
+    if (!result.ok) {
+      log.write("failed", result.error ?? "");
+      cleanup();
+      this.effects.cancelTask(task.id);
+      store.transition(task.id, "failed", { error: result.error ?? "未知错误", endedAt: this.now() });
+      await this.reply(task.chatId, `失败 · ${task.id}\n${(result.error ?? "").slice(0, 800)}`, task.id);
+      return;
+    }
+
+    store.transition(task.id, "succeeded", { summary: result.summary, endedAt: this.now() });
+    cleanup();
+    log.write("done", "review");
+    await this.replyToSource(task, result.summary, log);
+    await this.reply(task.chatId, `✅ ${task.id} 评审完成\n\n${result.summary.slice(0, 1200)}`, task.id);
+  }
+
+  private async runTask(task: Task): Promise<void> {
+    if (task.mode === "review") {
+      await this.runReviewTask(task);
+      return;
+    }
     const { cfg, store, channel, worker, deliverer } = this.deps;
+    const branch = task.branch ?? `pisa/${task.id}`;
     const repo = repoByAlias(cfg, task.repo);
     if (!repo) {
       store.transition(task.id, "failed", { error: `仓库未配置：${task.repo}`, endedAt: this.now() });
