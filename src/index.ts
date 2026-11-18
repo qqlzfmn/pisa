@@ -12,9 +12,19 @@ import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import { ReplyBus, startWebServer, type WebServer } from "./web";
 import type { ChannelAdapter } from "./types";
+import { loadPrompts, promptsDir, type PromptBundle } from "./prompts";
 
 async function main(): Promise<void> {
-  const cfg = loadConfig();
+  const configPath = process.env.PISA_CONFIG ?? "pisa.config.json";
+  const cfg = loadConfig(configPath);
+  // 提示词覆盖在启动时加载并校验：未知键与非法占位符直接拒绝启动
+  let prompts: PromptBundle;
+  try {
+    prompts = loadPrompts(promptsDir(configPath));
+  } catch (err) {
+    console.error(`[pisa] 提示词配置无效：${(err as Error).message}`);
+    process.exit(1);
+  }
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
   // `--web` 强制开启控制台；没有可用通道时回落到 CLI 通道，只当服务宿主
   const web: WebConfig = { ...(cfg.web ?? DEFAULT_WEB), enabled: cfg.web?.enabled === true || process.argv.includes("--web") };
@@ -62,9 +72,10 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, prompts),
       deliverer: new GitDeliverer(cfg),
       channel: bus,
+      prompts,
     });
     if (!cfg.whitelist.users.includes(web.userId)) {
       console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
@@ -74,9 +85,10 @@ async function main(): Promise<void> {
     router = new Router({
       cfg,
       store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
+      worker: new Worker(cfg.worker, cfg.stateDir, prompts),
       deliverer: new GitDeliverer(cfg),
       channel,
+      prompts,
     });
   }
 

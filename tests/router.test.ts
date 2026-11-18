@@ -9,6 +9,7 @@ import { parseCommand, taskGuard, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
 import { sh, changedFiles, createWorktree } from "../src/git";
+import { BUILTIN_PROMPTS, PROMPT_VERSION, type PromptBundle } from "../src/prompts";
 
 class FakeChannel implements ChannelAdapter {
   name = "fake";
@@ -86,6 +87,11 @@ describe("parseCommand", () => {
   test("确认命令", () => {
     expect(parseCommand("/pisa confirm", "/pisa")).toEqual({ kind: "confirm", body: "" });
   });
+
+  test("提示词查看命令", () => {
+    expect(parseCommand("/pisa prompts", "/pisa")).toEqual({ kind: "prompts", body: "" });
+    expect(parseCommand("/pisa prompts diff", "/pisa")).toEqual({ kind: "prompts", body: "diff" });
+  });
 });
 
 describe("taskGuard", () => {
@@ -143,8 +149,8 @@ describe("Router", () => {
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  function build(worker: WorkerRunner, now?: () => number) {
-    return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel, now });
+  function build(worker: WorkerRunner, now?: () => number, prompts?: PromptBundle) {
+    return new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel, now, prompts });
   }
 
   /** 直接落一条任务，用于构造续跑/占用场景 */
@@ -959,5 +965,56 @@ describe("执行器丢失与合并门禁", () => {
     await router.handle(msg("/pisa merge t_done"));
     expect(channel.sent.at(-1)!.text).toContain("还有 1 个任务在执行");
     store.close();
+  });
+});
+
+describe("/pisa prompts", () => {
+  test("查看版本与覆盖 diff，空命令用内置", async () => {
+    const repo = makeRepo();
+    const stateDir = mkdtempSync(join(tmpdir(), "pisa-state-"));
+    const store = new Store(":memory:");
+    const channel = new FakeChannel();
+    const cfg = makeCfg(repo, stateDir);
+    const prompts: PromptBundle = {
+      version: PROMPT_VERSION,
+      sections: { ...BUILTIN_PROMPTS.sections, team: "## 团队约定\n- 用 bun" },
+      overrides: ["team"],
+      source: "/tmp/prompts/overrides.json",
+    };
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel, prompts });
+    try {
+      await router.handle(msg("/pisa prompts"));
+      expect(channel.sent.at(-1)!.text).toContain(`提示词版本：${PROMPT_VERSION}`);
+      expect(channel.sent.at(-1)!.text).toContain("+## 团队约定");
+
+      await router.handle(msg("/pisa prompts diff"));
+      const diff = channel.sent.at(-1)!.text;
+      expect(diff).toContain("--- 内置/team");
+      expect(diff).toContain("+++ 覆盖/team");
+
+      await router.handle(msg("/pisa prompts nope"));
+      expect(channel.sent.at(-1)!.text).toBe("用法：/pisa prompts [diff]");
+    } finally {
+      store.close();
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  test("未注入提示词时显示全部内置", async () => {
+    const repo = makeRepo();
+    const stateDir = mkdtempSync(join(tmpdir(), "pisa-state-"));
+    const store = new Store(":memory:");
+    const channel = new FakeChannel();
+    const cfg = makeCfg(repo, stateDir);
+    const router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel });
+    try {
+      await router.handle(msg("/pisa prompts"));
+      expect(channel.sent.at(-1)!.text).toContain("无（全部内置）");
+    } finally {
+      store.close();
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 });

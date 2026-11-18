@@ -23,6 +23,7 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 | CI 失败 | `POST /event` 带 `x-pisa-token` | 与 IM 相同的执行链路 |
 | PR 内派活 | PR 评论 `/pisa 把错误处理补上` | 接续原分支并更新原 PR |
 | 到点自动开单 | `schedules` 里的 cron | 队列与执行链路同 IM |
+| 统一团队约定 | `prompts/overrides.json` 覆盖 `team` / `guard` | 所有新任务带同一份约定；`/pisa prompts` 看 diff |
 
 ## 最佳实践
 
@@ -30,6 +31,7 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 - **一个任务一个目标**：同时要改三处，就发三条或先做一条再 `continue`；混在一条需求里，失败时整条回退。
 - **优先 `continue`，不要重开**：续跑复用原分支与上一轮摘要，比新任务多一份上下文；回复那条任务消息等同于续跑。
 - **合并前看 diff**：`delivery.push` / `delivery.pr` 关闭时改动只留在本地分支；开启后才有远程分支与 PR。自举合并前先看 `rewind <任务号>` 的预览确认影响面。
+- **评审标准写进提示词**：团队约定、禁改目录、提交规范放 `prompts/overrides.json` 的 `team` 或 `guard`，不必在每条需求里重复；改完 `/pisa prompts diff` 核对差异。
 - **长任务看 `status`**：排队不是失败；`worker.concurrency` 满了就等。不要因为没秒回就重复派单，重复派单会并行改同一仓库。
 - **单英文词先确认**：`/pisa refactor` 会被拦下要求 `confirm`，这是防误触；需求写成一句完整的话。
 - **给足超时预算**：`worker.timeoutSec` 默认 3600 秒，超时任务按失败收口，分支保留供排查。

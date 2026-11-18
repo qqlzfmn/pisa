@@ -15,6 +15,7 @@
 
 ### 新增
 
+- 提示词分层：`src/prompts.ts` 按 `intro/team/resume/context/task/guard` 拼接，仓库用配置同目录的 `prompts/overrides.json` 覆盖任意段落，启动时校验未知键、版本与占位符，失败即退出；`/pisa prompts [diff]` 查看版本、覆盖来源与逐段 diff（规格 017）
 - `LICENSE`（MIT），徽章与 GitHub 仓库许可字段据此生效
 - `tests/docs-links.test.ts`：所有 Markdown 的相对链接必须有落点，README 的页内锚点必须落在真实标题上
 

@@ -41,6 +41,7 @@ export PISA_TELEGRAM_TOKEN="<bot token>"
 ```
 /pisa <需求>            接一个任务
 /pisa examples          可直接照抄的场景（触发方式 + 预期产出）
+/pisa prompts [diff]    提示词版本、覆盖来源与逐段 diff（私聊可用 /prompts）
 /pisa cancel [任务号]   取消
 /pisa help              按用途分组的命令帮助
 
@@ -224,6 +225,27 @@ cron 到点自动开单，链路与 IM 消息相同：排队、独立工作副�
 - 每 30 秒检查一次；同一分钟只投一次，进程重启也不会重投
 - `id` 重复或 cron 非法的 job 在启动日志告警后跳过，不影响其他 job
 - `/pisa schedules`（私聊 `/schedules`）查看 id、cron、仓库与启用状态
+
+## 提示词覆盖
+
+Worker 提示词由 `src/prompts.ts` 的固定段落按序拼接。仓库可在配置文件同目录放 `prompts/overrides.json` 覆盖任意段落：
+
+```json
+{
+  "version": 1,
+  "sections": {
+    "team": "## 团队约定\n- 包管理用 bun",
+    "guard": "## 新约束\n- 只改前端代码"
+  }
+}
+```
+
+- 段落顺序：`intro`、`team`、`resume`、`context`、`task`、`guard`；未覆盖的段落用内置文本，覆盖时整段替换
+- `version` 必须是 1；未知顶层键、未知段落、空字符串、未知占位符、必需占位符缺失都会拒绝启动并打印 `[pisa] 提示词配置无效：...`
+- `prompts/` 下出现其它 `.json` 视为拼写错误，同样拒绝启动
+- 占位符只有 `{{taskId}}`、`{{repo}}`、`{{prompt}}`、`{{context}}`；`intro` 需含 `{{taskId}}`，`context` 需含 `{{context}}`，`task` 需含 `{{prompt}}`
+- 改完重启生效；`/pisa prompts` 查看版本、来源、段落顺序与 diff，`/pisa prompts diff` 只看 diff
+- 完整格式见 [prompts/README.md](../prompts/README.md)，规格见 [docs/specs/017-prompt-layers/spec.md](./specs/017-prompt-layers/spec.md)
 
 ## 数据保留
 

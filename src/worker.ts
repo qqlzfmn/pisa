@@ -4,6 +4,7 @@ import { DEFAULT_ENV_ALLOW, type Config } from "./config";
 import type { Task, WorkerResult } from "./types";
 import { redact } from "./log";
 import { getAdapter, type WorkerAdapter } from "./adapters";
+import { BUILTIN_PROMPTS, type PromptBundle } from "./prompts";
 
 /**
  * 按白名单从源环境里挑变量：只复制允许且实际存在的键，缺省键不生成空值。
@@ -38,6 +39,7 @@ export class Worker implements WorkerRunner {
   constructor(
     private cfg: Config["worker"],
     private stateDir = ".pisa",
+    private prompts: PromptBundle = BUILTIN_PROMPTS,
   ) {
     this.adapter = getAdapter(cfg.adapter ?? "omp");
   }
@@ -61,6 +63,7 @@ export class Worker implements WorkerRunner {
       cfg: this.cfg,
       resume,
       resumeSessionId: resume ? task.sessionId : null,
+      prompts: this.prompts,
     };
     const proc = Bun.spawn(this.adapter.buildArgs(input), {
       cwd: workdir,

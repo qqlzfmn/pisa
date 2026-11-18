@@ -19,6 +19,7 @@ import {
 } from "./github";
 import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
 import { formatExamples, formatHelp } from "./usage";
+import { BUILTIN_PROMPTS, formatPromptDiff, formatPromptReport, type PromptBundle } from "./prompts";
 import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { continuationContext } from "./task-context";
@@ -36,6 +37,8 @@ export interface RouterDeps {
   ghRunner?: Runner;
   /** 注入以便测试 */
   now?: () => number;
+  /** 启动时加载的提示词分层结果；缺省用内置段落 */
+  prompts?: PromptBundle;
 }
 
 /** 单英文词任务的待确认正文，10 分钟过期 */
@@ -203,7 +206,9 @@ export class Router {
       else if (t === "/status" || t === "状态") cmd = { kind: "status", body: "" };
       else if (t === "/schedules" || t === "定时") cmd = { kind: "schedules", body: "" };
       else if (t === "/examples" || t === "示例") cmd = { kind: "examples", body: "" };
-      else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
+      else if (t === "/prompts" || t === "提示词" || t.startsWith("/prompts ")) {
+        cmd = { kind: "prompts", body: t.startsWith("/prompts ") ? t.slice(9).trim() : "" };
+      } else if (t === "/confirm") cmd = { kind: "confirm", body: "" };
       else if (t === "/cancel" || t.startsWith("/cancel ")) cmd = { kind: "cancel", body: t.slice(7).trim() };
       else if (t === "/resume" || t.startsWith("/resume ")) cmd = { kind: "resume", body: t.slice(7).trim() };
       else if (t === "/rewind" || t.startsWith("/rewind ")) cmd = { kind: "rewind", body: t.slice(7).trim() };
@@ -280,6 +285,17 @@ export class Router {
 
     if (cmd.kind === "rewind") {
       await this.handleRewind(msg, cmd.body);
+      return;
+    }
+
+    if (cmd.kind === "prompts") {
+      const arg = cmd.body.trim();
+      if (arg && arg !== "diff") {
+        await this.reply(msg.chatId, `用法：${cfg.trigger} prompts [diff]`);
+        return;
+      }
+      const prompts = this.deps.prompts ?? BUILTIN_PROMPTS;
+      await this.reply(msg.chatId, arg === "diff" ? formatPromptDiff(prompts) : formatPromptReport(prompts));
       return;
     }
 

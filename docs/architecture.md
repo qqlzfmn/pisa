@@ -57,6 +57,7 @@ core 内部模块关系：
 | `store.ts` | SQLite 持久化：任务、消息映射、事件去重、副作用账本 | `insertTask`、`claimQueued`、`transition`、`taskByPr`、`effectsOf` |
 | `worker.ts` | 拉起 agent 进程、解析输出、超时与取消 | `class Worker implements WorkerRunner` |
 | `adapters/` | 把 pisa 的任务翻译成某个 agent 的命令行与输出格式 | `getAdapter(name)` |
+| `prompts.ts` | 提示词分段、覆盖加载与校验、渲染、diff | `loadPrompts()`、`buildPrompt()`、`formatPromptReport()` |
 | `deliver.ts` | 提交 → 推送 → 开 PR，失败不留半成品状态 | `GitDeliverer.deliver()` |
 | `git.ts` | worktree、分支、提交、推送的封装 | `sh()` 之上的命令封装；`merge`、`rev-parse` 这类一次性命令在 `router.ts` 里直接调 `sh` |
 | `github.ts` | 所有 `gh` 调用与回帖去重标记 | 测试可注入 `Runner` |
@@ -180,7 +181,7 @@ interface WorkerAdapter {
 }
 ```
 
-`AdapterInput` 给 `task`、`workdir`、`extensionPath`、`progressFile`、`cfg`（`worker.*`）、`resumeSessionId`。registry 在 `src/adapters/index.ts`，目前只有 `omp`。
+`AdapterInput` 给 `task`、`workdir`、`extensionPath`、`progressFile`、`cfg`（`worker.*`）、`resumeSessionId`，以及启动时加载好的提示词分层 `prompts`。registry 在 `src/adapters/index.ts`，目前只有 `omp`。
 
 接入一个新 agent 需要满足的契约：
 

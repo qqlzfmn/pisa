@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { getAdapter } from "../src/adapters";
 import type { Task } from "../src/types";
+import { BUILTIN_PROMPTS } from "../src/prompts";
 
 const task: Task = {
   id: "t_1",
@@ -43,6 +44,17 @@ describe("WorkerAdapter", () => {
     expect(args[args.indexOf("--cwd") + 1]).toBe("/tmp/wt");
     expect(args[args.indexOf("-p") + 1]).toContain("修一下登录");
     expect(args).toContain("-e");
+  });
+
+  test("提示词覆盖进入 -p 参数", () => {
+    const prompts = {
+      version: 1,
+      sections: { ...BUILTIN_PROMPTS.sections, team: "## 团队约定\n- 用 bun" },
+      overrides: ["team" as const],
+      source: "/tmp/prompts/overrides.json",
+    };
+    const args = getAdapter("omp").buildArgs({ ...input, prompts });
+    expect(args[args.indexOf("-p") + 1]).toContain("## 团队约定\n- 用 bun");
   });
 
   test("恢复会话时带 -r <id>，位于 --mode=json 之前", () => {
