@@ -22,6 +22,11 @@ export interface IncomingMessage {
   repo?: string;
   /** 私聊（一对一）消息 */
   isDirect?: boolean;
+  /**
+   * 入口已完成本地鉴权（web 用 token 认证操作者）：
+   * 跳过单英文词误触防护与原请求者校验，IM 消息不带此字段。
+   */
+  admin?: boolean;
   /** 回复的是哪条消息（用于接续对应任务） */
   replyToMessageId?: number;
   /** 直接续跑这个任务，跳过命令里的任务号（PR 评论绑定用） */

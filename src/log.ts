@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
@@ -47,4 +47,23 @@ export class TaskLogger {
 
 export function ensureDir(p: string): void {
   mkdirSync(dirname(p), { recursive: true });
+}
+
+/** 读文件尾部；日志可能很大，只取最后 maxBytes */
+export function readTail(path: string, maxBytes = 64 * 1024): string {
+  const size = statSync(path).size;
+  const start = Math.max(0, size - maxBytes);
+  const buf = Buffer.alloc(size - start);
+  const fd = openSync(path, "r");
+  try {
+    readSync(fd, buf, 0, buf.length, start);
+  } finally {
+    closeSync(fd);
+  }
+  return buf.toString("utf8");
+}
+
+/** 非空行里的最后 count 行；尾部可能从半行开始，调用方按解析失败原样处理 */
+export function tailLines(text: string, count: number): string[] {
+  return text.split("\n").filter((line) => line.length > 0).slice(-count);
 }

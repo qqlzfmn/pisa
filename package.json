@@ -10,7 +10,8 @@
     "start": "bun run src/index.ts",
     "dev": "bun run src/index.ts --channel cli",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "web": "bun run src/index.ts --web"
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",

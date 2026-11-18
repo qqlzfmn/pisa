@@ -17,6 +17,46 @@ export function preview(text: string, max: number): string {
 
 const FINISHED_LABEL: Record<string, string> = { succeeded: "成功", failed: "失败", cancelled: "取消", rewound: "已撤销" };
 
+/** 任务 JSON 投影的字段契约：CLI 输出与 Web 看板共用 */
+export interface TaskJson {
+  id: string;
+  status: TaskStatus;
+  repo: string;
+  branch: string | null;
+  prUrl: string | null;
+  baseRef: string | null;
+  prompt: string;
+  summary: string | null;
+  error: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  duration: string;
+}
+
+/**
+ * 任务 JSON 投影：CLI 与 Web 控制台共用，避免两处字段集合漂移。
+ * 只含对外需要且无敏感信息的字段；duration 按结束时间（运行中按当前时间）计算。
+ */
+export function taskJson(t: Task, now = Date.now()): TaskJson {
+  const from = t.startedAt ?? t.createdAt;
+  return {
+    id: t.id,
+    status: t.status,
+    repo: t.repo,
+    branch: t.branch,
+    prUrl: t.prUrl,
+    baseRef: t.baseRef,
+    prompt: t.prompt,
+    summary: t.summary,
+    error: t.error,
+    createdAt: t.createdAt,
+    startedAt: t.startedAt,
+    endedAt: t.endedAt,
+    duration: formatDuration((t.endedAt ?? now) - from),
+  };
+}
+
 export interface StatusSnapshot {
   running: Task[];
   queued: Task[];

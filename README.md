@@ -21,6 +21,7 @@
 - [与 pi 的关系](#与-pi-的关系)
 - [目录结构](#目录结构)
 - [Agent CLI 与 skill](#agent-cli-与-skill)
+- [Web 控制台](#web-控制台)
 - [常驻（launchd）](#常驻launchd)
 - [开发方式](#开发方式)
 - [路线图](#路线图)
@@ -205,6 +206,31 @@ pisa continue <任务号> "按 PR 评论再改"
 - 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
 
 给 agent 的可复用说明在 `skills/pisa/`：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
+
+## Web 控制台
+
+任务多起来后，看板、日志、派活不必再翻聊天记录。控制台是一个单页 HTML，内联样式与原生脚本，没有前端构建步骤：
+
+```bash
+PISA_WEB_TOKEN=<自定义 token> bun run web
+# Web 控制台：http://127.0.0.1:8787/ui?token=<token>
+```
+
+- 只监听 `127.0.0.1`；`/ui` 与 `/api/*` 都要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、cookie 任一），缺失或错误一律 401
+- 用带 token 的 `/ui` 打开后下发 `HttpOnly` cookie，页面随即把地址栏里的 token 抹掉
+- 看板三段：运行中 / 排队 / 最近完成（最多 20 条），可按仓库筛选，5 秒自动刷新
+- 任务详情：prompt、状态、耗时、分支、PR、副作用与最后 200 行日志
+- 支持派活、取消、合并（浏览器二次确认）与复制任务号
+- 没配 `${web.tokenEnv}` 时启动生成一次性 token，只打印到日志，不落盘
+- 写操作走同一个 `Router`：白名单、状态机、合并前的验证与快进逻辑与 IM 完全一致
+
+```json
+{
+  "web": { "enabled": true, "port": 8787, "tokenEnv": "PISA_WEB_TOKEN", "userId": "<telegram user id>" }
+}
+```
+
+`userId` 是页面派出任务的请求者，必须在 `whitelist.users` 里；不配时取 `PISA_CLI_USER` 或 `$USER`。`chatId` 默认 `"web"`，只用于内部记账。也可以 `bun run src/index.ts --web` 临时开启，`--web` 会忽略 `web.enabled`。
 
 ## 多仓库
 
@@ -411,8 +437,9 @@ specify → plan → tasks → implement → converge
 - 主动发现：群聊关键词 + 定时探针
 - 定时任务：cron 到点自动开单，同一分钟只投一次；`/pisa schedules` 查看
 - Worker 适配器：`worker.adapter` 可换，omp 只是其中一个实现
+- Web 控制台：`bun run web` 起单页控制台，看板 / 详情 / 派活 / 取消 / 合并 / 日志，token 鉴权
 - 交付：`delivery.push` 已验证（本地裸仓库）；PR 创建走 `gh`，未配远程时退回对比链接
-- 测试 130 个全绿；`tsc --noEmit` 无报错
+- 测试 215 个全绿；`tsc --noEmit` 无报错
 - 已接入 Telegram（@lzf_pisa_bot）
 
 未完成（路线图原计划）：

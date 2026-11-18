@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, githubRepos, loadConfig } from "./config";
+import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, DEFAULT_WEB, githubRepos, loadConfig, type WebConfig } from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker, workerEnv } from "./worker";
@@ -10,11 +10,14 @@ import { Scheduler } from "./scheduler";
 import { Retention } from "./retention";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
+import { ReplyBus, startWebServer, type WebServer } from "./web";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
+  // `--web` 强制开启控制台；没有可用通道时回落到 CLI 通道，只当服务宿主
+  const web: WebConfig = { ...(cfg.web ?? DEFAULT_WEB), enabled: cfg.web?.enabled === true || process.argv.includes("--web") };
 
   const store = new Store(join(cfg.stateDir, "pisa.db"));
 
@@ -28,7 +31,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     channel = new TelegramChannel(token, process.env.PISA_TELEGRAM_PROXY ?? cfg.channels.telegram.proxy);
-  } else if (cfg.channels.cli) {
+  } else if (cfg.channels.cli || web.enabled) {
     channel = new CliChannel();
   } else {
     console.error("[pisa] 没有启用的通道");
@@ -51,13 +54,31 @@ async function main(): Promise<void> {
     const token = process.env[gh.tokenEnv];
     if (token) process.env.GH_TOKEN = token;
   }
-  const router = new Router({
-    cfg,
-    store,
-    worker: new Worker(cfg.worker, cfg.stateDir),
-    deliverer: new GitDeliverer(cfg),
-    channel,
-  });
+  let router: Router;
+  let webServer: WebServer | null = null;
+  if (web.enabled) {
+    // 控制台的写操作共用 Router，回执由总线收集；其它 chatId 的回执转发给真实通道
+    const bus = new ReplyBus(web.chatId, channel);
+    router = new Router({
+      cfg,
+      store,
+      worker: new Worker(cfg.worker, cfg.stateDir),
+      deliverer: new GitDeliverer(cfg),
+      channel: bus,
+    });
+    if (!cfg.whitelist.users.includes(web.userId)) {
+      console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
+    }
+    webServer = startWebServer({ cfg, store, router, bus }, web);
+  } else {
+    router = new Router({
+      cfg,
+      store,
+      worker: new Worker(cfg.worker, cfg.stateDir),
+      deliverer: new GitDeliverer(cfg),
+      channel,
+    });
+  }
 
   const recovered = router.recoverInterrupted();
   if (recovered.paused > 0 || recovered.failed > 0) {
@@ -70,10 +91,6 @@ async function main(): Promise<void> {
   const githubWatcher = new GithubWatcher({ cfg, store, enqueue: (m) => router.handle(m) });
   const scheduler = new Scheduler({ cfg, store, enqueue: (m) => router.handle(m) });
   const retention = new Retention({ cfg, store });
-  await channel.start((m) => {
-    proactive.observe(m);
-    return router.handle(m);
-  });
   router.start();
   proactive.start();
   githubWatcher.start();
@@ -123,12 +140,19 @@ async function main(): Promise<void> {
   console.log(`[pisa] Worker 环境白名单 · ${allowedEnv.join(",") || "(空)"}`);
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
+  // 通道放在最后启动：CLI 通道会一直等 stdin 结束，放前面会堵住调度、HTTP 入口与 ready 日志
+  await channel.start((m) => {
+    proactive.observe(m);
+    return router.handle(m);
+  });
+
   // 关停：先停调度（最多等 3 秒让执行中的任务收尾），再停通道与数据库，
   // 最后用退出码 75 退出，由 supervisor 重启；遗留的 running 任务下次启动转 paused。
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    if (webServer) await webServer.stop();
     await router.stop(3000);
     proactive.stop();
     githubWatcher.stop();
