@@ -470,46 +470,57 @@ export class Router {
 
     const verifyBranch = `verify/${task.id}`;
     const verifyDir = resolve(cfg.stateDir, "verify", task.id);
+    const base = repo.baseBranch ?? "main";
     const wt = createWorktree(repo.path, verifyDir, verifyBranch, task.branch);
     if (wt.code !== 0) {
       await this.reply(msg.chatId, `验证副本创建失败：${wt.err.slice(0, 300)}`);
       return;
     }
 
-    let ok = true;
-    let detail = "没有测试目录，跳过测试";
     try {
+      // 主干在任务执行期间可能已前进；先 rebase 到最新主干，否则 --ff-only 必然失败
+      const rebase = sh(["git", "-C", verifyDir, "rebase", base]);
+      if (rebase.code !== 0) {
+        sh(["git", "-C", verifyDir, "rebase", "--abort"]);
+        await this.reply(
+          msg.chatId,
+          `未合并 · ${task.id}\n分支与 ${base} 冲突，需要在最新主干重做：\n${(rebase.err || rebase.out).slice(0, 500)}`,
+        );
+        return;
+      }
+
+      let ok = true;
+      let detail = "没有测试目录，跳过测试";
       const hasTests = existsSync(join(verifyDir, "tests")) || existsSync(join(verifyDir, "test"));
       if (hasTests) {
         const test = sh(["bun", "test"], verifyDir);
         ok = test.code === 0;
         detail = ok ? "测试通过" : `测试失败：\n${(test.err || test.out).slice(-600)}`;
       }
+      if (!ok) {
+        await this.reply(msg.chatId, `未合并 · ${task.id}\n${detail}`);
+        return;
+      }
+
+      if (currentBranch(repo.path) !== base) {
+        await this.reply(msg.chatId, `主工作区当前不在 ${base}，请先切回再合并。`);
+        return;
+      }
+      const before = sh(["git", "-C", repo.path, "rev-parse", base]).out;
+      // rebase 后 verify 分支已包含最新主干，可以安全快进
+      const merge = sh(["git", "-C", repo.path, "merge", "--ff-only", verifyBranch]);
+      if (merge.code !== 0) {
+        await this.reply(msg.chatId, `合并失败：${(merge.err || merge.out).slice(0, 600)}`);
+        return;
+      }
+      const after = sh(["git", "-C", repo.path, "rev-parse", base]).out;
+      store.effect(task.id, "merge", base, JSON.stringify({ base, from: before, to: after }));
+
+      await this.reply(msg.chatId, `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}`);
     } finally {
       removeWorktree(repo.path, verifyDir);
       deleteBranch(repo.path, verifyBranch);
     }
-
-    if (!ok) {
-      await this.reply(msg.chatId, `未合并 · ${task.id}\n${detail}`);
-      return;
-    }
-
-    const base = repo.baseBranch ?? "main";
-    if (currentBranch(repo.path) !== base) {
-      await this.reply(msg.chatId, `主工作区当前不在 ${base}，请先切回再合并。`);
-      return;
-    }
-    const before = sh(["git", "-C", repo.path, "rev-parse", base]).out;
-    const merge = sh(["git", "-C", repo.path, "merge", "--ff-only", task.branch]);
-    if (merge.code !== 0) {
-      await this.reply(msg.chatId, `合并失败：${(merge.err || merge.out).slice(0, 600)}`);
-      return;
-    }
-    const after = sh(["git", "-C", repo.path, "rev-parse", base]).out;
-    store.effect(task.id, "merge", base, JSON.stringify({ base, from: before, to: after }));
-
-    await this.reply(msg.chatId, `已合并 · ${task.id}\n${detail}\n分支 ${task.branch} → ${base}`);
 
     // 自举：由看护进程拉起新代码
     if (process.env.PISA_SUPERVISED === "1") {

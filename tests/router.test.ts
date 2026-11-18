@@ -505,6 +505,28 @@ describe("Router", () => {
     }
   });
 
+  test("main 前进后 merge 仍能快进（先 rebase）", async () => {
+    const supervised = process.env.PISA_SUPERVISED;
+    delete process.env.PISA_SUPERVISED;
+    try {
+      const router = build(okWorker);
+      await router.handle(msg("/pisa 新建 out.txt"));
+      await router.drainOnce();
+      const id = store.recentTasks()[0]!.id;
+
+      writeFileSync(join(repo, "later.txt"), "later\n");
+      sh(["git", "-C", repo, "add", "-A"]);
+      sh(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "later"]);
+
+      await router.handle(msg(`/pisa merge ${id}`));
+      expect(channel.sent.some((s) => s.text.includes("已合并"))).toBe(true);
+      expect(sh(["git", "-C", repo, "cat-file", "-e", "main:out.txt"]).code).toBe(0);
+      expect(sh(["git", "-C", repo, "cat-file", "-e", "main:later.txt"]).code).toBe(0);
+    } finally {
+      if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+    }
+  });
+
   test("回复任务消息自动续跑该任务", async () => {
     const router = build(okWorker);
     await router.handle(msg("/pisa 第一轮"));
