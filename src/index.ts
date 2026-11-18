@@ -12,6 +12,7 @@ import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import { ReplyBus, startWebServer, type WebServer } from "./web";
 import { webhookHandler } from "./webhook";
+import { startTriggers, type TriggersRuntime } from "./triggers";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
@@ -130,6 +131,23 @@ async function main(): Promise<void> {
   }
   const allowedEnv = Object.keys(workerEnv(cfg.worker.envAllow ?? DEFAULT_ENV_ALLOW, process.env));
   console.log(`[pisa] Worker 环境白名单 · ${allowedEnv.join(",") || "(空)"}`);
+
+  // 通用触发适配层：GitHub Actions、飞书、企业微信、文件监听，全部归一成同一条消息流
+  let triggers: TriggersRuntime | null = null;
+  try {
+    triggers = startTriggers({ cfg, handle: (m) => router.handle(m) });
+    if (triggers) {
+      const names = [
+        cfg.triggers?.githubActions?.enabled ? "github-actions" : "",
+        cfg.triggers?.feishu?.enabled ? "feishu" : "",
+        cfg.triggers?.wecom?.enabled ? "wecom" : "",
+        cfg.triggers?.fileWatch?.enabled ? "file-watch" : "",
+      ].filter(Boolean);
+      console.log(`[pisa] 触发适配层 · ${names.join(",")}`);
+    }
+  } catch (err) {
+    console.error(`[pisa] 触发适配层启动失败：${(err as Error).message}`);
+  }
   console.log(`[pisa] ready · channel=${activeChannel.name} · repos=${cfg.repos.map((r) => r.alias).join(",")} · concurrency=${cfg.worker.concurrency}`);
 
   // 通道放在最后启动：CLI 通道会一直等 stdin 结束，放前面会堵住调度、HTTP 入口与 ready 日志
@@ -147,6 +165,7 @@ async function main(): Promise<void> {
     if (webServer) await webServer.stop();
     await router.stop(3000);
     proactive.stop();
+    triggers?.stop();
     githubWatcher.stop();
     scheduler.stop();
     retention.stop();

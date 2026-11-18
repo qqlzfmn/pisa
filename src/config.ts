@@ -48,6 +48,70 @@ export interface WebConfig {
   chatId: string;
 }
 
+/** 触发适配层的 HTTP 默认端口；与 webhook（8799）、Web 控制台（8787）错开 */
+export const DEFAULT_TRIGGERS_PORT = 8790;
+
+/** GitHub Actions 入口：HMAC 密钥来自环境变量，仓库白名单即权限边界 */
+export interface GithubActionsTriggerConfig {
+  enabled: boolean;
+  /** 与 GitHub 侧 webhook secret 相同的值所在环境变量 */
+  secretEnv: string;
+  /** 允许的仓库 owner/repo；为空不限制 */
+  repos?: string[];
+  /** 允许开单的结论；缺省 failure、timed_out */
+  conclusions?: string[];
+}
+
+/** 飞书自建应用事件入口：Encrypt Key 用于签名，群与发送者各自成白名单 */
+export interface FeishuTriggerConfig {
+  enabled: boolean;
+  /** Encrypt Key 所在环境变量 */
+  secretEnv: string;
+  /** 允许的群 chat_id；为空不限制 */
+  chats?: string[];
+  /** 允许的发送者 open_id；为空不限制 */
+  users?: string[];
+}
+
+/** 企业微信应用回调：Token 与 EncodingAESKey 都来自环境变量 */
+export interface WecomTriggerConfig {
+  enabled: boolean;
+  tokenEnv: string;
+  aesKeyEnv: string;
+  /** 允许的发送者 userid；为空不限制 */
+  users?: string[];
+}
+
+/** 一条被监听的文件或目录；prompt 里的 {path} 替换为变化的文件 */
+export interface FileWatchPathConfig {
+  path: string;
+  prompt: string;
+  repo?: string;
+}
+
+export interface FileWatchTriggerConfig {
+  enabled: boolean;
+  paths: FileWatchPathConfig[];
+  /** 同一路径多次事件合并窗口，默认 500ms */
+  debounceMs?: number;
+}
+
+/**
+ * 通用触发适配层：GitHub Actions、飞书、企业微信、文件监听。
+ * 任务请求者固定取 userId（必须是 whitelist.users 的一员），平台侧发送者只记进 actor。
+ */
+export interface TriggersConfig {
+  chatId?: string;
+  userId?: string;
+  /** 任务落到哪个仓库别名；缺省用第一个仓库 */
+  repo?: string;
+  http?: { enabled: boolean; port?: number };
+  githubActions?: GithubActionsTriggerConfig;
+  feishu?: FeishuTriggerConfig;
+  wecom?: WecomTriggerConfig;
+  fileWatch?: FileWatchTriggerConfig;
+}
+
 /** events 与 progress 的默认保留天数 */
 export const DEFAULT_RETENTION_DAYS = 30;
 
@@ -75,6 +139,8 @@ export interface Config {
   /** 本机 Web 控制台；缺省值见 DEFAULT_WEB */
   web?: WebConfig;
   webhook?: { enabled: boolean; port: number; tokenEnv: string; chatId: string; userId: string };
+  /** 通用触发适配层；缺省不启用任何入口 */
+  triggers?: TriggersConfig;
   /** 评论 → 任务 → 回帖；repo 形如 owner/repo */
   github?: GithubConfig;
   /** 定时任务的发送方身份；缺省时 schedules 不生效 */
@@ -171,6 +237,20 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
       ...r,
       path: typeof r.path === "string" && !isAbsolute(r.path) ? resolve(baseDir, r.path) : r.path,
     })),
+    triggers: cfg.triggers
+      ? {
+          ...cfg.triggers,
+          fileWatch: cfg.triggers.fileWatch
+            ? {
+                ...cfg.triggers.fileWatch,
+                paths: cfg.triggers.fileWatch.paths.map((p) => ({
+                  ...p,
+                  path: !isAbsolute(p.path) ? resolve(baseDir, p.path) : p.path,
+                })),
+              }
+            : undefined,
+        }
+      : undefined,
   };
   // 环境变量覆盖，便于容器与测试
   if (process.env.PISA_TRIGGER) cfg.trigger = process.env.PISA_TRIGGER;

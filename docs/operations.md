@@ -8,6 +8,7 @@ README 只放 30 秒上手；这份文档是完整的手册：配置项、命令
 - [命令](#命令)
 - [撤销与账本](#撤销与账本)
 - [Webhook 事件入口](#webhook-事件入口)
+- [通用触发适配层](#通用触发适配层)
 - [Agent CLI 与 skill](#agent-cli-与-skill)
 - [Web 控制台](#web-控制台)
 - [多仓库](#多仓库)
@@ -114,6 +115,40 @@ curl -X POST http://127.0.0.1:8799/event \
 ```
 
 同 `threadKey` + `eventId` 再投一次、内容不同视为编辑（任务还在排队就更新需求）；`version` 没有编辑语义时可以不传。
+
+## 通用触发适配层
+
+`triggers` 把外部事件直接接进同一套任务流：GitHub Actions、飞书、企业微信走 HTTP，文件监听走 `fs.watch`。适配器只做「验签 → 归一化 → 去重键」，任务仍由 Router 建，回执投到 `triggers.chatId`。
+
+```jsonc
+"triggers": {
+  "chatId": "<telegram chat id>",     // 回执会话
+  "userId": "<telegram user id>",     // 任务请求者，必须在 whitelist.users
+  "repo": "pisa",                     // 缺省用第一个仓库
+  "http": { "enabled": true, "port": 8790 },
+  "githubActions": { "enabled": true, "secretEnv": "PISA_GH_ACTIONS_SECRET", "repos": ["owner/pisa"] },
+  "feishu": { "enabled": true, "secretEnv": "PISA_FEISHU_ENCRYPT_KEY", "chats": ["oc_xxx"], "users": ["ou_xxx"] },
+  "wecom": { "enabled": true, "tokenEnv": "PISA_WECOM_TOKEN", "aesKeyEnv": "PISA_WECOM_AES_KEY", "users": ["zhangsan"] },
+  "fileWatch": { "enabled": true, "debounceMs": 500, "paths": [{ "path": "build/last.log", "prompt": "构建日志变化，检查失败原因：{path}" }] }
+}
+```
+
+密钥只从环境变量取：GitHub 侧 webhook secret 与 `secretEnv` 指向的值一致；飞书填应用的 Encrypt Key；企业微信填应用的 Token 与 EncodingAESKey。缺任何一个，对应入口回 503，不会退化成免签。
+
+| 入口 | 路径 | 验签 | 白名单 |
+| --- | --- | --- | --- |
+| GitHub Actions | `POST /github/actions` | `X-Hub-Signature-256`（HMAC-SHA256，正文原文） | `repos`；只接 `workflow_run` 的 `failure`/`timed_out`，`conclusions` 可改 |
+| 飞书 | `POST /feishu/event` | `X-Lark-Signature`（`sha256(timestamp + nonce + EncryptKey + body)`），时间戳偏差超 300s 拒绝 | `chats`（群）、`users`（open_id） |
+| 企业微信 | `GET|POST /wecom/event` | `msg_signature`（sha1 排序拼接）+ AES-256-CBC 解密 | `users`（userid） |
+| 文件监听 | 无 | 进程内事件，无外部投递 | `paths` |
+
+行为约定：
+
+- 同一事件重复投递只建一个任务：GitHub 用 run id（换 `X-GitHub-Delivery` 重发也命中），飞书用 `message_id`，企业微信用 `MsgId`，文件监听用「路径 + 事件时刻」。
+- 白名单外一律 403 且不建任务；`eventId` 沿用各入口的命名空间（`github-actions:` / `feishu:` / `wecom:` / `file-watch:`）。
+- 飞书的 `url_verification` 与 `challenge` 原样回显；企业微信 GET 校验回解密后的 `echostr`，POST 一律回 `success`。
+- 文件监听不递归子目录，`{path}` 在 `prompt` 里替换成变化的文件；停机期间的变化不补发，重启后按当下状态计。
+- 端口只监听 127.0.0.1，公网或内网转发由反向代理负责；正文上限 64 KiB（超限 413）。
 
 ## Agent CLI 与 skill
 
@@ -350,6 +385,6 @@ token 不进 plist：`supervise.sh` 启动时从环境变量取，缺省读 `~/.
 
 ## 完整配置项
 
-[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
+[`pisa.config.example.json`](../pisa.config.example.json) 是全量示例，含 `worker`、`delivery`、`channels`、`web`、`webhook`、`triggers`、`github`、`scheduler`、`proactive` 与 `retentionDays`。
 
 解析是浅合并：只写要覆盖的键，其余取 `src/config.ts` 里 `DEFAULT_CONFIG` 的默认值。`webhook`、`github`、`scheduler`、`proactive` 没有默认值，缺省即关闭。
