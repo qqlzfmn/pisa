@@ -1,5 +1,6 @@
 import type { Task, TaskStatus } from "./types";
 import type { Store } from "./store";
+import { STAGE_LABEL, stageText, taskStage, type TaskStage } from "./stage";
 
 /** 毫秒 → 人类可读时长：不足 1 分钟给秒，不足 1 小时给 XmYs，其余 XhYm */
 export function formatDuration(ms: number): string {
@@ -21,6 +22,9 @@ const FINISHED_LABEL: Record<string, string> = { succeeded: "成功", failed: "�
 export interface TaskJson {
   id: string;
   status: TaskStatus;
+  /** 派生阶段：在等谁、需要什么；不写库 */
+  stage: TaskStage;
+  stageLabel: string;
   repo: string;
   branch: string | null;
   prUrl: string | null;
@@ -40,9 +44,12 @@ export interface TaskJson {
  */
 export function taskJson(t: Task, now = Date.now()): TaskJson {
   const from = t.startedAt ?? t.createdAt;
+  const stage = taskStage(t);
   return {
     id: t.id,
     status: t.status,
+    stage,
+    stageLabel: STAGE_LABEL[stage],
     repo: t.repo,
     branch: t.branch,
     prUrl: t.prUrl,
@@ -85,18 +92,18 @@ export function formatStatusBoard(store: Store, now = Date.now()): string {
   if (running.length === 0) lines.push("(无)");
   for (const t of running) {
     const elapsed = formatDuration(now - (t.startedAt ?? t.createdAt));
-    lines.push(`${t.id} · ${t.repo} · 已运行 ${elapsed} · ${preview(t.prompt, 40)}`);
+    lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · 已运行 ${elapsed} · ${preview(t.prompt, 40)}`);
   }
 
   lines.push("", `排队（${queued.length}）`);
   if (queued.length === 0) lines.push("(无)");
-  for (const t of queued.slice(0, 5)) lines.push(`${t.id} · ${t.repo} · ${preview(t.prompt, 40)}`);
+  for (const t of queued.slice(0, 5)) lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · ${preview(t.prompt, 40)}`);
 
   lines.push("", "最近完成");
   if (finished.length === 0) lines.push("(无)");
   for (const t of finished) {
     const spent = formatDuration((t.endedAt ?? t.createdAt) - (t.startedAt ?? t.createdAt));
-    const parts = [FINISHED_LABEL[t.status] ?? t.status, spent, t.repo, preview(t.prompt, 30)];
+    const parts = [FINISHED_LABEL[t.status] ?? t.status, stageText(t), spent, t.repo, preview(t.prompt, 30)];
     if (t.prUrl) parts.push(t.prUrl);
     lines.push(parts.join(" · "));
   }

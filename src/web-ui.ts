@@ -66,17 +66,17 @@ export const WEB_UI = `<!doctype html>
 
   <section>
     <h2>运行中 <span id="count-running" class="badge"></span></h2>
-    <table><thead><tr><th>任务号</th><th>仓库</th><th>状态</th><th>耗时</th><th>内容</th><th>分支</th><th>PR</th></tr></thead><tbody id="rows-running"></tbody></table>
+    <table><thead><tr><th>任务号</th><th>仓库</th><th>状态</th><th>阶段</th><th>耗时</th><th>内容</th><th>分支</th><th>PR</th></tr></thead><tbody id="rows-running"></tbody></table>
   </section>
 
   <section>
     <h2>排队 <span id="count-queued" class="badge"></span></h2>
-    <table><thead><tr><th>任务号</th><th>仓库</th><th>状态</th><th>耗时</th><th>内容</th><th>分支</th><th>PR</th></tr></thead><tbody id="rows-queued"></tbody></table>
+    <table><thead><tr><th>任务号</th><th>仓库</th><th>状态</th><th>阶段</th><th>耗时</th><th>内容</th><th>分支</th><th>PR</th></tr></thead><tbody id="rows-queued"></tbody></table>
   </section>
 
   <section>
     <h2>最近完成 <span id="count-finished" class="badge"></span></h2>
-    <table><thead><tr><th>任务号</th><th>仓库</th><th>状态</th><th>耗时</th><th>内容</th><th>分支</th><th>PR</th></tr></thead><tbody id="rows-finished"></tbody></table>
+    <table><thead><tr><th>任务号</th><th>仓库</th><th>状态</th><th>阶段</th><th>耗时</th><th>内容</th><th>分支</th><th>PR</th></tr></thead><tbody id="rows-finished"></tbody></table>
   </section>
 
   <section id="detail" hidden></section>
@@ -133,6 +133,7 @@ export const WEB_UI = `<!doctype html>
     cell(row, idBtn, 'num');
     cell(row, el('span', null, task.repo));
     cell(row, el('span', task.status === 'failed' ? 'bad' : (task.status === 'succeeded' ? 'ok' : null), task.statusLabel));
+    cell(row, el('span', null, task.stage + '（' + task.stageLabel + '）'), 'num');
     cell(row, el('span', null, task.duration), 'num');
     var prompt = el('div', 'prompt', task.prompt);
     prompt.title = task.prompt;
@@ -155,7 +156,7 @@ export const WEB_UI = `<!doctype html>
     if (!tasks.length) {
       var row = el('tr');
       var td = el('td', 'muted', '（空）');
-      td.colSpan = 7;
+      td.colSpan = 8;
       row.appendChild(td);
       body.appendChild(row);
       return;
@@ -231,6 +232,7 @@ export const WEB_UI = `<!doctype html>
 
     var dl = el('dl');
     detailRow(dl, '状态', data.task.statusLabel);
+    detailRow(dl, '阶段', data.task.stage + '（' + data.task.stageLabel + '）');
     detailRow(dl, '仓库', data.task.repo);
     detailRow(dl, '耗时', data.task.duration);
     detailRow(dl, '分支', data.task.branch);

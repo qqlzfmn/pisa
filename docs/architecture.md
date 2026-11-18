@@ -64,6 +64,7 @@ core 内部模块关系：
 | `scheduler.ts` | cron 到点开单 | 构造时注入 `enqueue` |
 | `proactive.ts` | 群聊关键词与定时探针 | 构造时注入 `enqueue` |
 | `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
+| `stage.ts` / `status.ts` | 任务阶段规则表与对外投影：阶段、JSON 字段、看板文本 | `taskStage()`、`taskJson()`、`formatStatusBoard()` |
 | `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机 | `createWebApp()`、`startWebServer()`、`ReplyBus` |
 | `log.ts` / `config.ts` / `types.ts` | 日志脱敏、配置加载与默认值、共享类型与状态机表 | — |
 
@@ -103,6 +104,7 @@ cancelled ─┘
 
 不变量：
 
+- 阶段不是状态：`src/stage.ts` 由 `status`、`branch`、`prUrl` 只读派生，不写库、不参与 `ALLOWED`，因此新增阶段不会改变状态机或恢复语义。
 - 所有跃迁都是 compare-and-set：`UPDATE … WHERE id=? AND status=<旧值>`，并发认领或重复操作只有一个成功。
 - `queued → running` 只能经 `claimQueued`（在 SQL 里写 `startedAt` 与分支名）；其余跃迁经 `transition`。
 - 终态只有 `rewound` 这一条出边，运行态无法回退；撤销完的任务不能再 resume。
