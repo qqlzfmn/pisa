@@ -47,6 +47,7 @@ function seed(store: Store, id: string, status: TaskStatus, endedAt: number | nu
     createdAt: endedAt ?? NOW - 100 * DAY,
     startedAt: null,
     endedAt,
+    lane: "worker",
     cancelRequested: false,
   };
   store.insertTask(task);

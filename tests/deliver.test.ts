@@ -33,6 +33,7 @@ const baseTask: Task = {
   createdAt: 0,
   startedAt: null,
   endedAt: null,
+  lane: "worker",
   cancelRequested: false,
 };
 

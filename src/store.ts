@@ -5,6 +5,7 @@ import { prNumberFromIssueUrl } from "./github";
 import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
 import { canTransition } from "./types";
+import type { Lane } from "./slots";
 
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
 const FINISHED_IN = "('succeeded','failed','cancelled','rewound')";
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   repo             TEXT NOT NULL,
   prompt           TEXT NOT NULL,
   status           TEXT NOT NULL,
+  lane             TEXT NOT NULL DEFAULT 'worker',
   branch           TEXT,
   pr_url           TEXT,
   session_id       TEXT,
@@ -153,6 +155,7 @@ interface Row {
   repo: string;
   prompt: string;
   status: TaskStatus;
+  lane: Lane;
   branch: string | null;
   pr_url: string | null;
   session_id: string | null;
@@ -217,6 +220,7 @@ function toTask(r: Row): Task {
     repo: r.repo,
     prompt: r.prompt,
     status: r.status,
+    lane: r.lane === "human" ? "human" : "worker",
     branch: r.branch,
     prUrl: r.pr_url,
     sessionId: r.session_id,
@@ -266,6 +270,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "lane")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN lane TEXT NOT NULL DEFAULT 'worker'");
     }
     this.backfillTriggers();
   }
@@ -554,8 +561,8 @@ export class Store {
 
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, lane, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -565,6 +572,7 @@ export class Store {
         t.repo,
         t.prompt,
         t.status,
+        t.lane,
         t.branch,
         t.prUrl,
         t.createdAt,
@@ -624,8 +632,13 @@ export class Store {
     return rows.map(toTask).find((t) => !repo || t.replyRepo === repo) ?? null;
   }
 
-  nextQueued(): Task | null {
-    const row = this.db.query("SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at LIMIT 1").get() as Row | null;
+  /** 排队队首：按通道取，缺省取全场最老的一条 */
+  nextQueued(lane?: Lane): Task | null {
+    const row = lane
+      ? (this.db
+          .query("SELECT * FROM tasks WHERE status = 'queued' AND lane = ? ORDER BY created_at LIMIT 1")
+          .get(lane) as Row | null)
+      : (this.db.query("SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at LIMIT 1").get() as Row | null);
     return row ? toTask(row) : null;
   }
 

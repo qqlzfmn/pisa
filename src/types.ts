@@ -1,3 +1,5 @@
+import type { Lane } from "./slots";
+
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
 /** 任务对外产生的副作用种类：rewind 的依据 */
@@ -61,6 +63,8 @@ export interface Task {
   repo: string;
   prompt: string;
   status: TaskStatus;
+  /** 调度通道：新任务 worker；人的追问 human，占独立槽位 */
+  lane: Lane;
   branch: string | null;
   prUrl: string | null;
   sessionId: string | null;

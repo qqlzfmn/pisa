@@ -6,6 +6,7 @@ import { DEFAULT_WEB, type Config, type WebConfig } from "./config";
 import type { Store } from "./store";
 import type { ChannelAdapter, DeliveryReceipt, IncomingMessage, Task } from "./types";
 import { daemonState, taskJson, type TaskJson } from "./status";
+import { slotUsage } from "./slots";
 import { computeWindowMetrics, METRICS_WINDOW_MS } from "./metrics";
 import { readTail, tailLines } from "./log";
 import { WEB_UI } from "./web-ui";
@@ -258,15 +259,18 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
         const repo = url.searchParams.get("repo") || undefined;
         const at = now();
         const daemon = daemonState(store, at);
+        const running = store.listTasks({ repo, status: "running", limit: 50 });
+        const queued = store.listTasks({ repo, status: "queued", limit: 50 });
         return json(
           {
             ok: true,
             daemon,
             counts: store.countByStatus(),
+            slots: slotUsage([...store.runningTasks(), ...store.queuedTasks()], cfg.worker.concurrency),
             repos: cfg.repos.map((r) => r.alias),
             repo: repo ?? null,
-            running: store.listTasks({ repo, status: "running", limit: 50 }).map((t) => boardTask(t, at)),
-            queued: store.listTasks({ repo, status: "queued", limit: 50 }).map((t) => boardTask(t, at)),
+            running: running.map((t) => boardTask(t, at)),
+            queued: queued.map((t) => boardTask(t, at)),
             finished: store.recentFinished(20, repo).map((t) => boardTask(t, at)),
           },
           200,

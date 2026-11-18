@@ -54,6 +54,7 @@ async function cli(...argv: string[]): Promise<Result> {
 interface TaskJson {
   id: string;
   status: string;
+  lane: string;
   stage: string;
   stageLabel: string;
   repo: string;
@@ -100,6 +101,7 @@ function seed(over: Partial<Task> = {}): Task {
     createdAt: Date.now(),
     startedAt: null,
     endedAt: null,
+    lane: "worker",
     cancelRequested: false,
     ...over,
   };
@@ -244,6 +246,7 @@ describe("pisa continue", () => {
     const child = store.get(body.id)!;
     expect(child.repo).toBe("demo");
     expect(child.baseRef).toBe("pisa/parent");
+    expect(child.lane).toBe("human");
     expect(child.prUrl).toBe(parent.prUrl);
     expect(child.context).toContain(parent.id);
     expect(child.context).toContain("上一轮请求：种子任务");
@@ -265,6 +268,8 @@ describe("查询与操作", () => {
     const text = await cli(...base("status"));
     expect(text.code).toBe(0);
     expect(text.out).toContain("排队（1）");
+    expect(text.out).toContain("槽位：worker 0/1 · 追问 0/1 · 排队 1");
+    expect(text.out).toContain("即将开始");
     expect(text.out).toContain("working/queued（等空闲槽位）");
     expect(text.out).toContain("最近 24h：无完成");
     expect(text.out).toContain("守护进程：未运行");
@@ -272,14 +277,24 @@ describe("查询与操作", () => {
     const store = new Store(join(stateDir, "pisa.db"));
     store.beat();
     store.close();
-    const body = parse<{ daemon: { alive: boolean }; total: number; queued: TaskJson[]; last24h: WindowMetrics }>(
-      await cli(...base("status", "--json")),
-    );
+    const body = parse<{
+      daemon: { alive: boolean };
+      total: number;
+      slots: { limits: Record<string, number>; running: Record<string, number>; queued: Record<string, number> };
+      queued: TaskJson[];
+      last24h: WindowMetrics;
+    }>(await cli(...base("status", "--json")));
     expect(body.daemon.alive).toBe(true);
     expect(body.last24h).toEqual({ finished: 0, succeeded: 0, failed: 0, successRate: null, durationSamples: 0, p50Ms: null, p95Ms: null });
     expect(body.total).toBe(1);
+    expect(body.slots).toEqual({
+      limits: { human: 1, worker: 1 },
+      running: { human: 0, worker: 0 },
+      queued: { human: 0, worker: 1 },
+    });
     expect(body.queued[0]!.prompt).toBe("排队中");
     expect(body.queued[0]!.status).toBe("queued");
+    expect(body.queued[0]!.lane).toBe("worker");
     expect(body.queued[0]!.stage).toBe("working/queued");
     expect(body.queued[0]!.stageLabel).toBe("等空闲槽位");
   });

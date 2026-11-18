@@ -2,6 +2,7 @@ import type { Task, TaskStatus } from "./types";
 import type { Store } from "./store";
 import { STAGE_LABEL, stageText, taskStage, type TaskStage } from "./stage";
 import { windowMetrics, type WindowMetrics } from "./metrics";
+import { formatSlots, queueReason, slotUsage, type Lane, type SlotUsage } from "./slots";
 
 /** 毫秒 → 人类可读时长：不足 1 分钟给秒，不足 1 小时给 XmYs，其余 XhYm */
 export function formatDuration(ms: number): string {
@@ -23,6 +24,8 @@ const FINISHED_LABEL: Record<string, string> = { succeeded: "成功", failed: "�
 export interface TaskJson {
   id: string;
   status: TaskStatus;
+  /** 调度通道：worker 是新任务，human 是人的追问 */
+  lane: Lane;
   /** 派生阶段：在等谁、需要什么；不写库 */
   stage: TaskStage;
   stageLabel: string;
@@ -49,6 +52,7 @@ export function taskJson(t: Task, now = Date.now()): TaskJson {
   return {
     id: t.id,
     status: t.status,
+    lane: t.lane,
     stage,
     stageLabel: STAGE_LABEL[stage],
     repo: t.repo,
@@ -71,23 +75,28 @@ export interface StatusSnapshot {
   finished: Task[];
   counts: Record<TaskStatus, number>;
   total: number;
+  /** 各通道的槽位上限与占用，看板与 CLI 共用 */
+  slots: SlotUsage;
 }
 
 /** 看板数据：Router 与 CLI 共用，唯一事实源 */
-export function statusSnapshot(store: Store): StatusSnapshot {
+export function statusSnapshot(store: Store, concurrency?: number): StatusSnapshot {
   const counts = store.countByStatus();
+  const running = store.runningTasks();
+  const queued = store.queuedTasks();
   return {
-    running: store.runningTasks(),
-    queued: store.queuedTasks(),
+    running,
+    queued,
     finished: store.recentFinished(5),
     counts,
     total: Object.values(counts).reduce((sum, n) => sum + n, 0),
+    slots: slotUsage([...running, ...queued], concurrency),
   };
 }
 
-/** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
-export function formatStatusBoard(store: Store, now = Date.now()): string {
-  const { running, queued, finished, counts, total } = statusSnapshot(store);
+/** 任务看板：槽位 / 运行中 / 排队 / 最近完成，末尾汇总 */
+export function formatStatusBoard(store: Store, now = Date.now(), concurrency?: number): string {
+  const { running, queued, finished, counts, total, slots } = statusSnapshot(store, concurrency);
 
   const lines = ["运行中"];
   if (running.length === 0) lines.push("(无)");
@@ -96,9 +105,12 @@ export function formatStatusBoard(store: Store, now = Date.now()): string {
     lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · 已运行 ${elapsed} · ${preview(t.prompt, 40)}`);
   }
 
-  lines.push("", `排队（${queued.length}）`);
+  lines.push("", formatSlots(slots), "", `排队（${queued.length}）`);
   if (queued.length === 0) lines.push("(无)");
-  for (const t of queued.slice(0, 5)) lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · ${preview(t.prompt, 40)}`);
+  for (const t of queued.slice(0, 5)) {
+    const reason = queueReason(t.lane, slots);
+    lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · ${preview(t.prompt, 40)} · ${reason}`);
+  }
 
   lines.push("", "最近完成");
   if (finished.length === 0) lines.push("(无)");

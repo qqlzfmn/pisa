@@ -26,6 +26,7 @@ function task(id: string, status: TaskStatus, startedAt: number | null, endedAt:
     createdAt: startedAt ?? endedAt ?? 0,
     startedAt,
     endedAt,
+    lane: "worker",
     cancelRequested: false,
   };
 }

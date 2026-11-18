@@ -58,6 +58,7 @@ interface BoardResponse {
   ok: boolean;
   daemon: { alive: boolean; ageMs: number | null };
   counts: Record<string, number>;
+  slots: { limits: Record<string, number>; running: Record<string, number>; queued: Record<string, number> };
   repos: string[];
   repo: string | null;
   running: Array<{ id: string; prompt: string; statusLabel: string; stage: string; stageLabel: string }>;
@@ -156,6 +157,7 @@ describe("web 控制台", () => {
       createdAt: 0,
       startedAt: null,
       endedAt: null,
+      lane: "worker",
       cancelRequested: false,
       ...rest,
     };
@@ -240,6 +242,11 @@ describe("web 控制台", () => {
       expect(body.daemon.alive).toBe(true);
       expect(body.counts.running).toBe(1);
       expect(body.counts.queued).toBe(2);
+      expect(body.slots).toEqual({
+        limits: { human: 1, worker: 1 },
+        running: { human: 0, worker: 1 },
+        queued: { human: 0, worker: 2 },
+      });
       expect(body.running.map((t) => t.id)).toEqual(["t_run"]);
       expect(body.running[0]!.statusLabel).toBe("运行中");
       expect(body.running[0]!.stage).toBe("working");
@@ -252,6 +259,7 @@ describe("web 控制台", () => {
       const filtered = (await (await call("/api/tasks?repo=demo", { headers: auth })).json()) as BoardResponse;
       expect(filtered.repo).toBe("demo");
       expect(filtered.queued.map((t) => t.id)).toEqual(["t_queue"]);
+      expect(filtered.slots).toEqual(body.slots);
     });
 
     test("详情带 prompt、字段与日志尾部", async () => {

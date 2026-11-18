@@ -167,6 +167,7 @@ describe("Router.rewind", () => {
       createdAt: 0,
       startedAt: null,
       endedAt: null,
+      lane: "worker",
       cancelRequested: false,
       ...rest,
     };

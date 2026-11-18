@@ -168,7 +168,9 @@ export const WEB_UI = `<!doctype html>
     daemon.className = data.daemon.alive ? 'muted' : 'muted bad';
     daemon.textContent = '守护进程' + (data.daemon.alive ? '在线' : '离线') +
       '（心跳 ' + (data.daemon.ageMs === null ? '无记录' : Math.round(data.daemon.ageMs / 1000) + 's 前') + '）' +
-      ' · 运行 ' + data.counts.running + ' / 排队 ' + data.counts.queued + ' / 中断 ' + data.counts.paused;
+      ' · 运行 ' + data.counts.running + ' / 排队 ' + data.counts.queued + ' / 中断 ' + data.counts.paused +
+      ' · 槽位 worker ' + data.slots.running.worker + '/' + data.slots.limits.worker +
+      ' · 追问 ' + data.slots.running.human + '/' + data.slots.limits.human;
     var select = document.getElementById('repo');
     if (select.options.length <= 1 && data.repos.length) {
       data.repos.forEach(function (alias) {

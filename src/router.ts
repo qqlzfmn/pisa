@@ -35,6 +35,7 @@ import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
 import { formatStatusBoard } from "./status";
+import { LANES, LANE_LABEL, slotLimits, type Lane } from "./slots";
 
 export { formatDuration } from "./status";
 
@@ -62,7 +63,7 @@ interface PendingTask {
 }
 
 export class Router {
-  private active = new Map<string, Promise<void>>();
+  private active = new Map<string, { lane: Lane; promise: Promise<void> }>();
   /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
   private stopping = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -147,7 +148,7 @@ export class Router {
     this.timer = null;
     const cap = Promise.withResolvers<void>();
     const capTimer = setTimeout(cap.resolve, timeoutMs);
-    await Promise.race([Promise.all([...this.active.values()]), cap.promise]);
+    await Promise.race([Promise.all([...this.active.values()].map((a) => a.promise)), cap.promise]);
     clearTimeout(capTimer);
   }
 
@@ -207,19 +208,33 @@ export class Router {
     const p = this.runTask(task, branch)
       .catch(() => {})
       .finally(() => this.active.delete(task.id));
-    this.active.set(task.id, p);
+    this.active.set(task.id, { lane: task.lane, promise: p });
   }
 
-  /** 按并发上限补位；不等待任务完成 */
+  /** 本进程内每条通道已占用的槽位 */
+  private usedSlots(): Record<Lane, number> {
+    const used: Record<Lane, number> = { human: 0, worker: 0 };
+    for (const a of this.active.values()) used[a.lane] += 1;
+    return used;
+  }
+
+  /**
+   * 按通道上限补位；不等待任务完成。
+   * 追问通道优先：人的追问永远先于排队的新任务拿到槽位，新任务不能占用追问槽位。
+   */
   private async fill(): Promise<void> {
     if (this.stopping) return;
-    const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
-    while (this.active.size < limit) {
-      const task = this.deps.store.nextQueued();
-      if (!task) break;
-      const branch = task.branch ?? `pisa/${task.id}`;
-      if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
-      this.launch({ ...task, branch, status: "running" });
+    const limits = slotLimits(this.deps.cfg.worker.concurrency);
+    const used = this.usedSlots();
+    for (const lane of LANES) {
+      while (used[lane] < limits[lane]) {
+        const task = this.deps.store.nextQueued(lane);
+        if (!task) break;
+        const branch = task.branch ?? `pisa/${task.id}`;
+        if (!this.deps.store.claimQueued(task.id, this.now(), branch)) break;
+        this.launch({ ...task, branch, status: "running" });
+        used[lane] += 1;
+      }
     }
   }
 
@@ -408,7 +423,7 @@ export class Router {
     }
 
     if (cmd.kind === "status") {
-      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now()));
+      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now(), cfg.worker.concurrency));
       return;
     }
 
@@ -507,6 +522,7 @@ export class Router {
       repo: repo.alias,
       prompt,
       status: "queued",
+      lane: cmd.kind === "continue" || msg.continueFrom ? "human" : "worker",
       branch,
       prUrl,
       sessionId: null,
@@ -989,9 +1005,9 @@ export class Router {
       await this.reply(msg.chatId, `任务 ${id} 的工作副本已不存在，无法恢复。`);
       return;
     }
-    const limit = Math.max(1, cfg.worker.concurrency ?? 1);
-    if (this.active.size >= limit) {
-      await this.reply(msg.chatId, `当前并发已满（${limit}），稍后再恢复 ${id}。`);
+    const limit = slotLimits(cfg.worker.concurrency)[task.lane];
+    if (this.usedSlots()[task.lane] >= limit) {
+      await this.reply(msg.chatId, `当前${LANE_LABEL[task.lane]}槽位已满（${limit}），稍后再恢复 ${id}。`);
       return;
     }
 
@@ -1012,7 +1028,7 @@ export class Router {
       await this.fill();
       if (this.active.size === 0) break;
       started = true;
-      await Promise.all([...this.active.values()]);
+      await Promise.all([...this.active.values()].map((a) => a.promise));
       if (!this.deps.store.nextQueued()) break;
     }
     return started;
