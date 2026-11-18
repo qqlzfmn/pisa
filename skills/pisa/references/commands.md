@@ -34,6 +34,8 @@
 {
   "id": "t_20261118_ab12cd",
   "status": "queued",
+  "stage": "working/queued",
+  "stageLabel": "等空闲槽位",
   "repo": "demo",
   "branch": null,
   "prUrl": null,
@@ -63,7 +65,7 @@
 }
 ```
 
-`list --json`、`show --json`、`repos --json` 都是数组或对象，字段与上面一致。
+`list --json`、`show --json`、`repos --json` 都是数组或对象，字段与上面一致。每个任务都带只读的 `stage` / `stageLabel`（由 `status`、分支、PR 派生，回答在等谁），`status` 保持不变。
 
 ## 退出码
 

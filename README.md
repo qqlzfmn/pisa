@@ -150,7 +150,7 @@ Core 与 Runtime 之间只有一个 `WorkerRunner.run()`；换成别的 agent �
 分支：pisa/t_20261118_79f103
 ```
 
-`/status` 随后变成 `成功 · 5s · demo · 给 README 加一节「安装」，并补一条测试`。
+`/status` 随后变成 `成功 · person/review（等你评审） · 5s · demo · 给 README 加一节「安装」，并补一条测试`。
 
 ### 2. CI 失败自动开单
 
