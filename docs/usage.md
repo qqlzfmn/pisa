@@ -57,7 +57,7 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 
 - **IM**：`whitelist.users` 与 `whitelist.repos` 双重白名单，未授权用户不建任务（24 小时内只提示一次）。群里仍需要触发词；私聊可直接说需求。
 - **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，所以它也必须进白名单。要从外网调用，自己加反向代理与 TLS。
-- **Web 控制台**：只监听 `127.0.0.1`，`/ui` 与 `/api/*` 全部要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、`HttpOnly` cookie 任一），否则 401。页面派出的任务归 `web.userId`，同样要进白名单；取消与合并不再校验原请求者，因为浏览器里的操作由 token 直接认证。
+- **管理 API 与 Web 控制台**：只监听 `127.0.0.1`，`/ui`、`/state`、`/tickets*`、`/executor/*` 全部要 token（请求头或 `HttpOnly` cookie），否则 401；token 只在 `/ui?token=` 出现一次，查询参数在 API 上会被拒绝。页面派出的任务归 `web.userId`，同样要进白名单；取消与合并不再校验原请求者，因为浏览器里的操作由 token 直接认证。
 - **GitHub**：只处理正文以 `/pisa ` 开头的评论；评论作者不参与鉴权，任务归属由各仓库条目配置的 `chatId` / `userId` 决定。`gh` token 从 `tokenEnv` 指定的环境变量读取。
 - **定时、探针、关键词**：都用配置里的身份开单，同样走白名单；触发不了的根因通常是身份不在白名单或缺少 `scheduler` 配置。
 - **密钥**：Telegram bot token、webhook token 只从环境变量或 `~/.pisa/` 下的文件读取，不写入配置文件与 launchd plist。

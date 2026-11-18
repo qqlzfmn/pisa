@@ -87,7 +87,8 @@ flowchart TB
         tg["Telegram 通道<br/>src/channels/telegram.ts"]
         hook["Webhook<br/>POST /event"]
         gh["GitHub 评论轮询<br/>src/github-watcher.ts"]
-        web["Web 控制台<br/>src/web.ts"]
+        web["管理 API + Web 控制台<br/>src/web.ts"]
+        pcli["pisa 命令<br/>src/cli.ts"]
     end
 
     subgraph core["Core：不认识通道，也不认识 agent"]
@@ -108,6 +109,7 @@ flowchart TB
     hook --> router
     gh --> router
     web --> router
+    pcli -->|"HTTP · 127.0.0.1"| web
     router --> store
     router -->|"run(task, workdir)"| runner
     runner --> wt

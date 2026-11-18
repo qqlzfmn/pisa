@@ -84,15 +84,59 @@ export function statusSnapshot(store: Store): StatusSnapshot {
   };
 }
 
+/** 执行器闸门：暂停落库，重启后保持 */
+export const EXECUTOR_PAUSE_KEY = "executor.paused";
+
+export interface ExecutorState {
+  paused: boolean;
+  /** 当前处于 running 的任务数 */
+  running: number;
+  concurrency: number;
+}
+
+export function executorPaused(store: Store): boolean {
+  return store.getMeta(EXECUTOR_PAUSE_KEY) === "1";
+}
+
+export function executorState(store: Store, concurrency: number): ExecutorState {
+  return { paused: executorPaused(store), running: store.countByStatus().running, concurrency };
+}
+
+/**
+ * 看板数据：守护进程状态 + 执行器闸门 + 三段任务列表。
+ * 任务已是 JSON 投影，CLI 与 Web 直接消费，不再各自映射。
+ */
+export interface BoardView {
+  daemon: DaemonState;
+  executor: ExecutorState;
+  counts: Record<TaskStatus, number>;
+  total: number;
+  running: TaskJson[];
+  queued: TaskJson[];
+  finished: TaskJson[];
+}
+
+export function boardView(store: Store, concurrency: number, now = Date.now()): BoardView {
+  const snapshot = statusSnapshot(store);
+  return {
+    daemon: daemonState(store, now),
+    executor: executorState(store, concurrency),
+    counts: snapshot.counts,
+    total: snapshot.total,
+    running: snapshot.running.map((t) => taskJson(t, now)),
+    queued: snapshot.queued.map((t) => taskJson(t, now)),
+    finished: snapshot.finished.map((t) => taskJson(t, now)),
+  };
+}
+
 /** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
-export function formatStatusBoard(store: Store, now = Date.now()): string {
-  const { running, queued, finished, counts, total } = statusSnapshot(store);
+export function formatBoard(view: BoardView): string {
+  const { running, queued, finished, counts, total } = view;
 
   const lines = ["运行中"];
   if (running.length === 0) lines.push("(无)");
   for (const t of running) {
-    const elapsed = formatDuration(now - (t.startedAt ?? t.createdAt));
-    lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · 已运行 ${elapsed} · ${preview(t.prompt, 40)}`);
+    lines.push(`${t.id} · ${stageText(t)} · ${t.repo} · 已运行 ${t.duration} · ${preview(t.prompt, 40)}`);
   }
 
   lines.push("", `排队（${queued.length}）`);
@@ -102,14 +146,18 @@ export function formatStatusBoard(store: Store, now = Date.now()): string {
   lines.push("", "最近完成");
   if (finished.length === 0) lines.push("(无)");
   for (const t of finished) {
-    const spent = formatDuration((t.endedAt ?? t.createdAt) - (t.startedAt ?? t.createdAt));
-    const parts = [FINISHED_LABEL[t.status] ?? t.status, stageText(t), spent, t.repo, preview(t.prompt, 30)];
+    const parts = [FINISHED_LABEL[t.status] ?? t.status, stageText(t), t.duration, t.repo, preview(t.prompt, 30)];
     if (t.prUrl) parts.push(t.prUrl);
     lines.push(parts.join(" · "));
   }
 
   lines.push("", `汇总：${total} 个任务 · 成功 ${counts.succeeded} · 失败 ${counts.failed} · 暂停 ${counts.paused}`);
   return lines.join("\n");
+}
+
+/** 兼容入口：Router 的 `/status` 只关心三段任务，不需要并发配置 */
+export function formatStatusBoard(store: Store, now = Date.now()): string {
+  return formatBoard(boardView(store, 0, now));
 }
 
 /** 守护进程心跳超过该时长视为未运行 */

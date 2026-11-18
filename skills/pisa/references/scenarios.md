@@ -49,8 +49,8 @@ pisa wait "$ID" --timeout 1200 --json
 ```
 
 - 退出码 0：读 `summary`，再自己跑一遍 `bun test` 验收。
-- 退出码 1：`pisa logs "$ID" --tail 200`，按 [failures.md](failures.md) 判断。
-- 退出码 5：`pisa show "$ID" --json`，仍在 running 就继续等，不要重提。
+- 退出码 2 且任务 failed：`pisa logs "$ID" --tail 200`，按 [failures.md](failures.md) 判断，必要时 `pisa retry "$ID"`。
+- 退出码 2 且 `timeout:true`：`pisa show "$ID" --json`，仍在 running 就继续等，不要重提。
 
 **补一轮修改**：
 
@@ -96,7 +96,7 @@ pisa show "$PARENT" --json | jq '{id,status,branch,prUrl,summary,error}'
 
 - 新任务会落在父任务分支与同一 `prUrl`；有推送权限时 PR 自动更新。
 - 若 `list --pr` 为空：该 PR 不是 pisa 建的，先新建任务并把 PR 内容写进 brief；不要让续跑去猜分支。
-- 若退出码 4：父任务 paused/cancelled，交给人处理。
+- 若报"没有可续跑的分支"：父任务还没成功或分支已清理，先用 `show` 确认状态，不要猜分支名。
 
 **回写评论**（需人类同意后再执行）：
 
@@ -154,9 +154,9 @@ git log --oneline -1 "$(pisa show "$ID" --json | jq -r '.branch')"
 ## 三个场景的共同检查
 
 ```bash
-pisa status --json | jq '{daemon:.daemon.alive, running:(.running|length), queued:(.queued|length)}'
+pisa status --json | jq '{daemon:.daemon.alive, paused:.executor.paused, running:(.running|length), queued:(.queued|length)}'
 ```
 
-- 提交前：`daemon.alive=true`、仓库 `allowed=true`
+- 提交前：`daemon.alive=true`、`executor.paused=false`、仓库 `allowed=true`、`web.tokenEnv` 指定的 token 已导出
 - 提交后：保存返回的 `id`；重试必须复用 `--event-id`
 - 结束时：核对 `status`、`summary`、`branch`、`prUrl`，再决定是否继续或汇报

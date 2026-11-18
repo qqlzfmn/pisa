@@ -143,7 +143,7 @@ cancelled ─┘
 1. **事件进入**。六类触发源都产生 `IncomingMessage`；入口能给出更稳定的身份就填 `threadKey` / `messageKey` / `version` / `actor`，缺省由 core 补齐（见 4.2）：
    - IM：`channel.start(onMessage)` 回调里先喂 `Proactive.observe`，再 `router.handle`（`src/index.ts`）。
    - webhook：`Bun.serve` 只接 127.0.0.1 的 `POST /event`，校验 `x-pisa-token`，body `{prompt, repo?, eventId?, threadKey?, version?}`，缺省 `eventId` 为 `webhook:<ts>:<rand>`（`src/index.ts`）；带上 `threadKey`（业务单号）就能和别的入口命中同一个任务。
-   - Web 控制台：`Bun.serve` 只接 127.0.0.1 的 `/ui` 与 `/api/*`，token 鉴权通过后把派活/取消/合并拼成 `IncomingMessage`（`admin: true`）交给 `router.handle`，回执经 `ReplyBus` 收集后回给页面（`src/web.ts`）。`admin` 让 Router 跳过单英文词误触防护与原请求者校验——浏览器里的操作由 token 直接认证，没有可回 `confirm` 的聊天。
+   - 管理 API 与 Web 控制台：`Bun.serve` 只接 127.0.0.1 的 `/ui`、`/state`、`/tickets*`、`/executor/*`；token 鉴权通过后把派活、停止、重试、合并、撤销、暂停拼成 `IncomingMessage`（`admin: true`）或 `meta` 写入。`pisa` 命令（`src/cli.ts`）是这套接口的客户端，不读库。`admin` 让 Router 跳过单英文词误触防护与原请求者校验——浏览器里的操作由 token 直接认证，没有可回 `confirm` 的聊天。
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由触发身份去重，编辑按 `updated_at` 区分）。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 线程解析（`threadKeyOf`：入口声明 > 被回复任务 > 本条消息）→ 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。

@@ -24,7 +24,7 @@ import { TaskLogger } from "./log";
 import { newTaskId } from "./ids";
 import { makeTrigger, threadKeyOf } from "./trigger";
 import { continuationContext } from "./task-context";
-import { formatStatusBoard } from "./status";
+import { executorPaused, formatStatusBoard } from "./status";
 
 export { formatDuration } from "./status";
 
@@ -203,6 +203,8 @@ export class Router {
   /** 按并发上限补位；不等待任务完成 */
   private async fill(): Promise<void> {
     if (this.stopping) return;
+    // 执行器暂停：不再领取新任务，运行中的照常收尾
+    if (executorPaused(this.deps.store)) return;
     const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
     while (this.active.size < limit) {
       const task = this.deps.store.nextQueued();
