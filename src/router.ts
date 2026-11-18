@@ -3,16 +3,14 @@ import { existsSync, readFileSync } from "node:fs";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
-import type { EffectRow, Store } from "./store";
+import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
-import { EffectQueue, type CommentPayload, type PrPayload, type PushPayload } from "./effects";
+import { EffectQueue, type CommentPayload } from "./effects";
 import { createWorktree, currentBranch, deleteBranch, isGitRepo, removeWorktree, sh } from "./git";
 import {
   defaultRunner,
   formatReply,
-  postComment,
-  postIssueComment,
   postReplyOnce,
   prNumberFromIssueUrl,
   prStatus,

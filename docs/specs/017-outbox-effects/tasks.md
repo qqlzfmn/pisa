@@ -17,6 +17,8 @@
       验证：`bun test tests/github-comments.test.ts`
 - [x] T006 失败/取消路径丢弃未完成 effect (FR-010)
       验证：`bun test tests/effects.test.ts`
+- [x] T010 push effect 键带提交号：中断后 resume 产生的新提交仍推送到远端，同一提交重放只推一次
+      验证：`bun test tests/github-comments.test.ts -t 续跑后同一分支`
 
 ## 文档与回归
 

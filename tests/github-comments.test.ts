@@ -18,7 +18,7 @@ import { Store } from "../src/store";
 import { Router } from "../src/router";
 import { GitDeliverer, prBody } from "../src/deliver";
 import { EffectQueue } from "../src/effects";
-import { commitAll, compareUrl, createWorktree, sh, type ExecResult } from "../src/git";
+import { commitAll, compareUrl, createWorktree, headSha, sh, type ExecResult } from "../src/git";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
@@ -1064,6 +1064,28 @@ describe("GitDeliverer 更新既有 PR", () => {
     expect(res.prUrl).toBe("https://github.com/o/r/pull/12");
     expect(res.pushed).toBe(true);
     expect(sh(["git", "--git-dir", bare, "rev-parse", "--verify", "pisa/parent"]).code).toBe(0);
+  });
+
+  test("续跑后同一分支的新提交仍会推送：push 键按提交区分", async () => {
+    const workdir = setup();
+    const store = new Store(":memory:");
+    const deliverer = new GitDeliverer(cfg, { hasGh: () => false });
+    const handlers = deliverer.effectHandlers();
+    const effects = new EffectQueue(store).register("push", handlers.push).register("pr", handlers.pr);
+    const task = { ...baseTask, id: "t_repush", branch: "pisa/parent" };
+
+    await deliverer.deliver(task, workdir, cfg.repos[0]!, effects);
+    const first = sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out;
+    expect(first).toBe(headSha(workdir)!);
+
+    // 中断后 resume：同一任务、同一分支再多一个提交，远端必须跟着更新
+    writeFileSync(join(workdir, "more.txt"), "more\n");
+    const res = await deliverer.deliver(task, workdir, cfg.repos[0]!, effects);
+
+    expect(res.pushed).toBe(true);
+    expect(headSha(workdir)).not.toBe(first);
+    expect(sh(["git", "--git-dir", bare, "rev-parse", "pisa/parent"]).out).toBe(headSha(workdir)!);
+    store.close();
   });
 
   test("没有 prUrl 时按原有逻辑创建 PR", async () => {

@@ -21,6 +21,12 @@ export function currentBranch(path: string): string {
   return sh(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"]).out;
 }
 
+/** 当前提交；取不到时返回 null，调用方退回按分支去重 */
+export function headSha(workdir: string): string | null {
+  const res = sh(["git", "-C", workdir, "rev-parse", "HEAD"]);
+  return res.code === 0 && res.out ? res.out : null;
+}
+
 export function createWorktree(repoPath: string, workdir: string, branch: string, base = "HEAD"): ExecResult {
   const add = sh(["git", "-C", repoPath, "worktree", "add", "-b", branch, workdir, base]);
   if (add.code === 0) return add;
