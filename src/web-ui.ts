@@ -188,7 +188,7 @@ export const WEB_UI = `<!doctype html>
   async function loadBoard() {
     try {
       var query = state.repo ? '?repo=' + encodeURIComponent(state.repo) : '';
-      renderBoard(await api('/api/tasks' + query));
+      renderBoard(await api('/api/board' + query));
     } catch (err) {
       document.getElementById('daemon').textContent = '加载失败：' + err.message;
       document.getElementById('daemon').className = 'bad';

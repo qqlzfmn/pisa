@@ -1,4 +1,14 @@
-export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
+/** 状态清单唯一事实源：类型、扫描顺序与参数校验都从这里来 */
+export const TASK_STATUSES = ["queued", "running", "paused", "succeeded", "failed", "cancelled", "rewound"] as const;
+
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+const STATUS_SET = new Set<string>(TASK_STATUSES);
+
+/** 外部输入的窄化：接口与 CLI 共用，不做内联断言 */
+export function isTaskStatus(value: string): value is TaskStatus {
+  return STATUS_SET.has(value);
+}
 
 /** 任务对外产生的副作用种类：rewind 的依据 */
 export type EffectKind = "branch" | "push" | "pr" | "comment" | "worktree" | "merge";

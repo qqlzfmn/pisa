@@ -49,8 +49,8 @@ pisa wait "$ID" --timeout 1200 --json
 ```
 
 - 退出码 0：读 `summary`，再自己跑一遍 `bun test` 验收。
-- 退出码 1：`pisa logs "$ID" --tail 200`，按 [failures.md](failures.md) 判断。
-- 退出码 5：`pisa show "$ID" --json`，仍在 running 就继续等，不要重提。
+- 退出码 2：任务失败，`pisa logs "$ID" --tail 200`，按 [failures.md](failures.md) 判断。
+- 退出码 1：等待超时或任务中断，`pisa show "$ID" --json`；仍在 running 就继续等，不要重提。
 
 **补一轮修改**：
 
@@ -96,7 +96,7 @@ pisa show "$PARENT" --json | jq '{id,status,branch,prUrl,summary,error}'
 
 - 新任务会落在父任务分支与同一 `prUrl`；有推送权限时 PR 自动更新。
 - 若 `list --pr` 为空：该 PR 不是 pisa 建的，先新建任务并把 PR 内容写进 brief；不要让续跑去猜分支。
-- 若退出码 4：父任务 paused/cancelled，交给人处理。
+- 若退出码 2/3：父任务 paused/cancelled 或任务号不对；paused 可 `pisa resume`，其余交给人处理。
 
 **回写评论**（需人类同意后再执行）：
 

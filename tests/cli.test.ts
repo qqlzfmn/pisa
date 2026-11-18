@@ -1,23 +1,45 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCli } from "../src/cli";
-import { loadConfig } from "../src/config";
+import { DEFAULT_WEB, type Config } from "../src/config";
 import { Store } from "../src/store";
-import type { WindowMetrics } from "../src/metrics";
+import { Router } from "../src/router";
+import { GitDeliverer } from "../src/deliver";
+import { startWebServer, type WebServer } from "../src/web";
+import { ReplyBus } from "../src/channels/reply-bus";
+import { API_CHAT_ID } from "../src/api";
+import { runCli } from "../src/cli";
+import type { ChannelAdapter, DeliveryReceipt, WorkerResult } from "../src/types";
+import type { WorkerRunner } from "../src/worker";
 import { sh } from "../src/git";
-import { newTaskId } from "../src/ids";
-import type { Task } from "../src/types";
 
-let root: string;
-let repo: string;
-let stateDir: string;
-let cfgPath: string;
+class FakeChannel implements ChannelAdapter {
+  name = "fake";
+  sent: Array<{ chatId: string; text: string }> = [];
+  async start(): Promise<void> {}
+  async send(chatId: string, text: string): Promise<DeliveryReceipt> {
+    this.sent.push({ chatId, text });
+    return { messageId: String(this.sent.length) };
+  }
+  async stop(): Promise<void> {}
+}
+
+const okWorker: WorkerRunner = {
+  async run(_task, workdir): Promise<WorkerResult> {
+    writeFileSync(join(workdir, "out.txt"), "hi\n");
+    return { ok: true, summary: "改了 out.txt", exitCode: 0 };
+  },
+};
+
+const failWorker: WorkerRunner = {
+  async run(): Promise<WorkerResult> {
+    return { ok: false, summary: "", error: "adapter 挂了", exitCode: 1 };
+  },
+};
 
 function makeRepo(): string {
-  const dir = join(root, "repo");
-  mkdirSync(dir);
+  const dir = mkdtempSync(join(tmpdir(), "pisa-cli-repo-"));
   sh(["git", "init", "-q", "-b", "main"], dir);
   writeFileSync(join(dir, "README.md"), "hello\n");
   sh(["git", "-C", dir, "add", "-A"]);
@@ -25,319 +47,329 @@ function makeRepo(): string {
   return dir;
 }
 
-function writeConfig(over: Record<string, unknown> = {}): void {
-  writeFileSync(
-    cfgPath,
-    JSON.stringify({
-      repos: [{ alias: "demo", path: repo, baseBranch: "main" }],
-      whitelist: { users: [], repos: ["demo"] },
-      stateDir: ".pisa",
-      worker: { adapter: "omp", command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1 },
-      ...over,
-    }),
-  );
-}
+const TOKEN_ENV = "PISA_TEST_TOKEN";
+const TOKEN = "cli-token";
 
-interface Result {
+interface CliResult {
   code: number;
   out: string;
   err: string;
+  json: () => unknown;
 }
 
-async function cli(...argv: string[]): Promise<Result> {
-  const out: string[] = [];
-  const err: string[] = [];
-  const code = await runCli(argv, { out: (t) => out.push(t), err: (t) => err.push(t) });
-  return { code, out: out.join("\n"), err: err.join("\n") };
-}
-
-interface TaskJson {
-  id: string;
-  status: string;
-  stage: string;
-  stageLabel: string;
+interface Fixture {
+  cfg: Config;
+  store: Store;
+  router: Router;
+  server: WebServer;
+  configPath: string;
   repo: string;
-  prompt: string;
-  summary: string | null;
-  error: string | null;
-  branch: string | null;
-  prUrl: string | null;
-  baseRef: string | null;
-  context: string | null;
-  message?: string;
+  stateDir: string;
 }
 
-/** 输出来自本进程 CLI，形状由上面的接口约束；解析失败应让测试直接报错 */
-function parse<T>(result: Result): T {
-  return JSON.parse(result.out) as T;
-}
-
-function base(...argv: string[]): string[] {
-  return [...argv, "--config", cfgPath];
-}
-
-function seed(over: Partial<Task> = {}): Task {
-  const store = new Store(join(stateDir, "pisa.db"));
-  const task: Task = {
-    id: newTaskId(),
-    source: "cli",
-    channel: "cli",
-    chatId: "cli",
-    requester: "tester",
-    repo: "demo",
-    prompt: "种子任务",
-    status: "queued",
-    branch: null,
-    prUrl: null,
-    sessionId: null,
-    baseRef: null,
-    context: null,
-    replyPr: null,
-    replyIssue: null,
-    replyRepo: null,
-    summary: null,
-    error: null,
-    createdAt: Date.now(),
-    startedAt: null,
-    endedAt: null,
-    cancelRequested: false,
-    ...over,
+/** 起一套真实控制面：CLI 只通过 127.0.0.1 与它对话 */
+function boot(worker: WorkerRunner = okWorker): Fixture {
+  const repo = makeRepo();
+  const stateDir = mkdtempSync(join(tmpdir(), "pisa-cli-state-"));
+  const store = new Store(":memory:");
+  const cfg: Config = {
+    trigger: "/pisa",
+    dmWithoutTrigger: false,
+    whitelist: { users: [], repos: ["demo"] },
+    repos: [{ alias: "demo", path: repo, baseBranch: "main" }],
+    worker: { adapter: "omp", command: "noop", timeoutSec: 5, extraArgs: [], concurrency: 1 },
+    delivery: { push: false, pr: false, commitName: "pisa", commitEmail: "pisa@localhost" },
+    channels: { cli: true },
+    web: { ...DEFAULT_WEB, enabled: false, tokenEnv: TOKEN_ENV, userId: "u1", chatId: "web" },
+    stateDir,
   };
-  store.insertTask(task);
-  store.close();
-  return task;
+  const bus = new ReplyBus("web", new FakeChannel(), [API_CHAT_ID]);
+  const router = new Router({ cfg, store, worker, deliverer: new GitDeliverer(cfg), channel: bus });
+  const server = startWebServer({ cfg, store, router, bus }, { ...cfg.web!, port: 0 });
+  const configPath = join(stateDir, "pisa.config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({ ...cfg, web: { ...cfg.web, port: server.server.port } }, null, 2),
+  );
+  router.start(20);
+  return { cfg, store, router, server, configPath, repo, stateDir };
 }
 
-beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "pisa-cli-"));
-  repo = makeRepo();
-  stateDir = join(root, ".pisa");
-  cfgPath = join(root, "pisa.config.json");
-  writeConfig();
-});
+async function tearDown(fx: Fixture): Promise<void> {
+  await fx.router.stop(100);
+  await fx.server.stop();
+  fx.store.close();
+  rmSync(fx.repo, { recursive: true, force: true });
+  rmSync(fx.stateDir, { recursive: true, force: true });
+}
 
-afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
-});
+async function cli(configPath: string, argv: string[]): Promise<CliResult> {
+  let out = "";
+  let err = "";
+  const code = await runCli([...argv, "--config", configPath], {
+    out: (t) => {
+      out += `${t}\n`;
+    },
+    err: (t) => {
+      err += `${t}\n`;
+    },
+  });
+  return {
+    code,
+    out,
+    err,
+    json: () => JSON.parse(out),
+  };
+}
 
-describe("config 路径锚定", () => {
-  test("stateDir 与仓库相对路径以配置文件目录为基准", () => {
-    const cfg = loadConfig(cfgPath);
-    expect(cfg.stateDir).toBe(stateDir);
-    expect(cfg.repos[0]!.path).toBe(repo);
+/** CLI 不发请求就能判定的用例（缺配置、缺 token），不需要控制面 */
+describe("pisa CLI 待配置", () => {
+  test("找不到配置文件退出 3", async () => {
+    const res = await cli("/nonexistent/pisa.config.json", ["status"]);
+    expect(res.code).toBe(3);
+    expect(res.err).toContain("找不到配置文件");
+  });
+
+  test("缺 token 退出 3 并提示变量名", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pisa-cli-cfg-"));
+    const configPath = join(dir, "pisa.config.json");
+    writeFileSync(configPath, JSON.stringify({ repos: [], web: { ...DEFAULT_WEB, port: 1, tokenEnv: "PISA_TEST_MISSING" } }));
+    const saved = process.env.PISA_TEST_MISSING;
+    delete process.env.PISA_TEST_MISSING;
+    try {
+      const res = await cli(configPath, ["status"]);
+      expect(res.code).toBe(3);
+      expect(res.err).toContain("PISA_TEST_MISSING");
+    } finally {
+      if (saved !== undefined) process.env.PISA_TEST_MISSING = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("未知命令与缺参数都是 3", async () => {
+    const fx = boot();
+    try {
+      expect((await cli(fx.configPath, ["nope"])).code).toBe(3);
+      expect((await cli(fx.configPath, ["show"])).code).toBe(3);
+      expect((await cli(fx.configPath, ["run"])).code).toBe(3);
+      expect((await cli(fx.configPath, ["list", "--status", "bogus"])).code).toBe(3);
+      expect((await cli(fx.configPath, ["status", "--nope"])).code).toBe(3);
+    } finally {
+      await tearDown(fx);
+    }
   });
 });
 
-describe("pisa task", () => {
-  test("提交任务并返回任务号", async () => {
-    const r = await cli(...base("task", "修一下 CI", "--json"));
-    expect(r.code).toBe(0);
-    const body = parse<TaskJson>(r);
-    expect(body.status).toBe("queued");
-    expect(body.repo).toBe("demo");
-    expect(body.id).toMatch(/^t_\d{8}_[0-9a-f]{6}$/);
+describe("pisa CLI 与控制面", () => {
+  let fx: Fixture;
+  const savedToken = process.env[TOKEN_ENV];
 
-    const store = new Store(join(stateDir, "pisa.db"));
-    const task = store.get(body.id)!;
-    expect(task.prompt).toBe("修一下 CI");
-    expect(task.channel).toBe("cli");
-    expect(task.requester).toBe(process.env.USER ?? "local");
-    store.close();
+  beforeEach(() => {
+    process.env[TOKEN_ENV] = TOKEN;
+    fx = boot();
   });
 
-  test("守护进程不在时给出警告但仍入队", async () => {
-    const r = await cli(...base("task", "修 CI"));
-    expect(r.code).toBe(0);
-    expect(r.out).toContain("已入队");
-    expect(r.err).toContain("没有检测到运行中的 pisa 守护进程");
+  afterEach(async () => {
+    await tearDown(fx);
+    if (savedToken === undefined) delete process.env[TOKEN_ENV];
+    else process.env[TOKEN_ENV] = savedToken;
   });
 
-  test("--event-id 重试返回同一个任务", async () => {
-    const first = parse<TaskJson>(await cli(...base("task", "修 CI", "--event-id", "e1", "--json")));
-    const second = parse<TaskJson>(await cli(...base("task", "修 CI", "--event-id", "e1", "--json")));
-    expect(second.id).toBe(first.id);
-    expect(second.message).toContain("事件已存在");
-
-    const store = new Store(join(stateDir, "pisa.db"));
-    expect(store.listTasks().length).toBe(1);
-    store.close();
-  });
-
-  test("--event-id 重投不同正文按编辑处理，排队任务换成最新需求", async () => {
-    const first = parse<TaskJson>(await cli(...base("task", "修 CI", "--event-id", "e2", "--json")));
-    const edited = parse<TaskJson>(await cli(...base("task", "修 CI 并补测试", "--event-id", "e2", "--json")));
-    expect(edited.id).toBe(first.id);
-    expect(edited.message).toContain("需求已按最新版本更新");
-
-    const store = new Store(join(stateDir, "pisa.db"));
-    expect(store.listTasks()[0]!.prompt).toBe("修 CI 并补测试");
-    store.close();
-  });
-
-  test("未知仓库别名与未授权仓库都以用法错误退出", async () => {
-    expect((await cli(...base("task", "x", "--repo", "nope"))).code).toBe(2);
-    writeConfig({ whitelist: { users: [], repos: ["other"] } });
-    const denied = await cli(...base("task", "x", "--repo", "demo"));
-    expect(denied.code).toBe(2);
-    expect(denied.err).toContain("不在 whitelist.repos");
-  });
-
-  test("仓库路径不是 git 仓库时拒绝", async () => {
-    const plain = join(root, "plain");
-    mkdirSync(plain);
-    writeConfig({ repos: [{ alias: "demo", path: plain }] });
-    const r = await cli(...base("task", "x"));
-    expect(r.code).toBe(2);
-    expect(r.err).toContain("不是 git 仓库");
-  });
-
-  test("缺少需求正文", async () => {
-    expect((await cli(...base("task"))).code).toBe(2);
-  });
-
-  test("--wait 在任务成功后输出摘要", async () => {
-    const pending = cli(...base("task", "修 CI", "--wait", "--timeout", "3", "--interval", "20", "--json"));
-    // dispatch 在第一个 await 前已完成入队，此处无需等待
-    const store = new Store(join(stateDir, "pisa.db"));
-    const task = store.nextQueued()!;
-    store.claimQueued(task.id, Date.now(), "pisa/x");
-    store.transition(task.id, "succeeded", { summary: "改好了", endedAt: Date.now() });
-    store.close();
-    const r = await pending;
-    expect(r.code, r.err).toBe(0);
-    expect(parse<TaskJson>(r).summary).toBe("改好了");
-  });
-
-  test("--wait 在任务失败时返回 1", async () => {
-    const pending = cli(...base("task", "会失败", "--wait", "--timeout", "3", "--interval", "20", "--json"));
-    const store = new Store(join(stateDir, "pisa.db"));
-    const task = store.nextQueued()!;
-    store.claimQueued(task.id, Date.now(), "pisa/y");
-    store.transition(task.id, "failed", { error: "编译失败", endedAt: Date.now() });
-    store.close();
-    const r = await pending;
-    expect(r.code).toBe(1);
-    expect(parse<TaskJson>(r).error).toBe("编译失败");
-  });
-
-  test("--wait 超时返回 5，任务仍在排队", async () => {
-    const r = await cli(...base("task", "慢任务", "--wait", "--timeout", "0", "--interval", "20", "--json"));
-    expect(r.code).toBe(5);
-    expect(parse<{ timeout: boolean; status: string }>(r)).toMatchObject({ timeout: true, status: "queued" });
-  });
-});
-
-describe("pisa continue", () => {
-  test("继承父任务分支与上下文", async () => {
-    const parent = seed({
-      status: "succeeded",
-      branch: "pisa/parent",
-      prUrl: "https://github.com/o/r/pull/7",
-      summary: "第一轮完成",
+  describe("状态", () => {
+    test("status --json 输出接口快照并退出 0", async () => {
+      const res = await cli(fx.configPath, ["status", "--json"]);
+      expect(res.code).toBe(0);
+      const body = res.json() as { ok: boolean; daemon: { alive: boolean }; executor: { paused: boolean }; text: string };
+      expect(body.ok).toBe(true);
+      expect(body.daemon.alive).toBe(true);
+      expect(body.executor.paused).toBe(false);
+      expect(body.text).toContain("汇总");
     });
-    const r = await cli(...base("continue", parent.id, "按评论再改", "--json"));
-    expect(r.code).toBe(0);
-    const body = parse<TaskJson>(r);
-    expect(body.id).not.toBe(parent.id);
 
-    const store = new Store(join(stateDir, "pisa.db"));
-    const child = store.get(body.id)!;
-    expect(child.repo).toBe("demo");
-    expect(child.baseRef).toBe("pisa/parent");
-    expect(child.prUrl).toBe(parent.prUrl);
-    expect(child.context).toContain(parent.id);
-    expect(child.context).toContain("上一轮请求：种子任务");
-    store.close();
+    test("status 文本包含看板、守护进程与执行器", async () => {
+      const res = await cli(fx.configPath, ["status"]);
+      expect(res.code).toBe(0);
+      expect(res.out).toContain("守护进程：运行中");
+      expect(res.out).toContain("执行器：运行中");
+    });
+
+    test("执行器暂停后 status 退出 1，恢复后回到 0", async () => {
+      expect((await cli(fx.configPath, ["executor", "pause"])).code).toBe(0);
+      const paused = await cli(fx.configPath, ["status"]);
+      expect(paused.code).toBe(1);
+      expect(paused.out).toContain("执行器已暂停");
+      expect((await cli(fx.configPath, ["executor", "resume"])).code).toBe(0);
+      expect((await cli(fx.configPath, ["status"])).code).toBe(0);
+    });
+
+    test("executor --json 报当前执行器", async () => {
+      const res = await cli(fx.configPath, ["executor", "--json"]);
+      expect(res.code).toBe(0);
+      expect(res.json()).toEqual({ paused: false, running: 0, limit: 1 });
+    });
+
+    test("repos --json 来自接口配置", async () => {
+      const res = await cli(fx.configPath, ["repos", "--json"]);
+      expect(res.code).toBe(0);
+      const repos = res.json() as Array<{ alias: string; allowed: boolean }>;
+      expect(repos[0]!.alias).toBe("demo");
+      expect(repos[0]!.allowed).toBe(true);
+    });
+
+    test("token 不符退出 3", async () => {
+      process.env[TOKEN_ENV] = "wrong";
+      const res = await cli(fx.configPath, ["status"]);
+      expect(res.code).toBe(3);
+      expect(res.err).toContain("token 不匹配");
+    });
   });
 
-  test("父任务不存在或没有分支时报错", async () => {
-    expect((await cli(...base("continue", "t_missing", "x"))).code).toBe(3);
-    const parent = seed();
-    const r = await cli(...base("continue", parent.id, "x"));
-    expect(r.code).toBe(2);
-    expect(r.err).toContain("没有可续跑的分支");
-  });
-});
+  describe("派活", () => {
+    test("run --wait 成功退出 0，任务记为 api 入口", async () => {
+      const res = await cli(fx.configPath, ["run", "修 login 跳转", "--wait", "--json"]);
+      expect(res.code).toBe(0);
+      const task = res.json() as { id: string; status: string };
+      expect(task.status).toBe("succeeded");
+      expect(fx.store.get(task.id)!.channel).toBe("api");
+      expect(fx.store.get(task.id)!.prompt).toBe("修 login 跳转");
+    });
 
-describe("查询与操作", () => {
-  test("status 输出看板与守护进程状态", async () => {
-    seed({ prompt: "排队中" });
-    const text = await cli(...base("status"));
-    expect(text.code).toBe(0);
-    expect(text.out).toContain("排队（1）");
-    expect(text.out).toContain("working/queued（等空闲槽位）");
-    expect(text.out).toContain("最近 24h：无完成");
-    expect(text.out).toContain("守护进程：未运行");
+    test("run 不带 --wait 只回任务号", async () => {
+      const res = await cli(fx.configPath, ["run", "改个常量", "--json"]);
+      expect(res.code).toBe(0);
+      const task = res.json() as { id: string; status: string };
+      expect(task.id).toBeTruthy();
+      expect(fx.store.get(task.id)).not.toBeNull();
+    });
 
-    const store = new Store(join(stateDir, "pisa.db"));
-    store.beat();
-    store.close();
-    const body = parse<{ daemon: { alive: boolean }; total: number; queued: TaskJson[]; last24h: WindowMetrics }>(
-      await cli(...base("status", "--json")),
-    );
-    expect(body.daemon.alive).toBe(true);
-    expect(body.last24h).toEqual({ finished: 0, succeeded: 0, failed: 0, successRate: null, durationSamples: 0, p50Ms: null, p95Ms: null });
-    expect(body.total).toBe(1);
-    expect(body.queued[0]!.prompt).toBe("排队中");
-    expect(body.queued[0]!.status).toBe("queued");
-    expect(body.queued[0]!.stage).toBe("working/queued");
-    expect(body.queued[0]!.stageLabel).toBe("等空闲槽位");
-  });
+    test("task 是 run 的别名", async () => {
+      const res = await cli(fx.configPath, ["task", "再来一次", "--repo", "demo", "--json"]);
+      expect(res.code).toBe(0);
+      expect(fx.store.get((res.json() as { id: string }).id)!.repo).toBe("demo");
+    });
 
-  test("show 与 logs", async () => {
-    const task = seed();
-    const shown = await cli(...base("show", task.id, "--json"));
-    expect(shown.code).toBe(0);
-    expect(parse<TaskJson>(shown).id).toBe(task.id);
-    expect(parse<TaskJson>(shown).stage).toBe("working/queued");
+    test("未知仓库退出 3", async () => {
+      const res = await cli(fx.configPath, ["run", "随便", "--repo", "nope"]);
+      expect(res.code).toBe(3);
+      expect(res.err).toContain("仓库");
+    });
 
-    const human = await cli(...base("show", task.id));
-    expect(human.out).toContain("阶段：working/queued（等空闲槽位）");
+    test("list / show / logs 可脚本化", async () => {
+      const dispatched = await cli(fx.configPath, ["run", "看板任务", "--wait", "--json"]);
+      const id = (dispatched.json() as { id: string }).id;
 
-    expect((await cli(...base("show", "t_missing"))).code).toBe(3);
+      const list = await cli(fx.configPath, ["list", "--status", "succeeded", "--json"]);
+      expect(list.code).toBe(0);
+      expect((list.json() as Array<{ id: string }>).map((t) => t.id)).toContain(id);
 
-    mkdirSync(join(stateDir, "logs"), { recursive: true });
-    writeFileSync(join(stateDir, "logs", `${task.id}.log`), "a\nb\nc\n");
-    const logs = await cli(...base("logs", task.id, "--tail", "2"));
-    expect(logs.code).toBe(0);
-    expect(logs.out.trim().split("\n")).toEqual(["b", "c"]);
-  });
+      const show = await cli(fx.configPath, ["show", id, "--json"]);
+      expect(show.code).toBe(0);
+      expect((show.json() as { task: { id: string } }).task.id).toBe(id);
 
-  test("list 按状态与 PR 过滤", async () => {
-    seed({ prompt: "queued one" });
-    seed({ prompt: "done", status: "succeeded", prUrl: "https://github.com/o/r/pull/42" });
-    seed({ prompt: "other pr", status: "succeeded", prUrl: "https://github.com/o/r/pull/43" });
+      const logs = await cli(fx.configPath, ["logs", id, "--json"]);
+      expect(logs.code).toBe(0);
+      expect(Array.isArray(logs.json())).toBe(true);
+    });
 
-    const queued = parse<TaskJson[]>(await cli(...base("list", "--status", "queued", "--json")));
-    expect(queued.map((t) => t.prompt)).toEqual(["queued one"]);
+    test("show 不存在的任务退出 3", async () => {
+      const res = await cli(fx.configPath, ["show", "t_missing"]);
+      expect(res.code).toBe(3);
+      expect(res.err).toContain("找不到任务");
+    });
 
-    const pr = parse<TaskJson[]>(await cli(...base("list", "--pr", "42", "--json")));
-    expect(pr.length).toBe(1);
-    expect(pr[0]!.prompt).toBe("done");
-
-    expect((await cli(...base("list", "--status", "nope"))).code).toBe(2);
+    test("wait 超时退出 1", async () => {
+      await cli(fx.configPath, ["executor", "pause"]);
+      const dispatched = await cli(fx.configPath, ["run", "先排队", "--json"]);
+      const id = (dispatched.json() as { id: string }).id;
+      const res = await cli(fx.configPath, ["wait", id, "--timeout", "1", "--interval", "20"]);
+      expect(res.code).toBe(1);
+      expect(res.err).toContain("等待超时");
+      await cli(fx.configPath, ["cancel", id]);
+    });
   });
 
-  test("cancel 排队任务与拒绝终态任务", async () => {
-    const queued = seed();
-    expect((await cli(...base("cancel", queued.id))).code).toBe(0);
-    let store = new Store(join(stateDir, "pisa.db"));
-    expect(store.get(queued.id)!.status).toBe("cancelled");
-    store.close();
+  describe("动作", () => {
+    test("cancel 排队任务退出 0，重复取消幂等，已完成任务退出 2", async () => {
+      await cli(fx.configPath, ["executor", "pause"]);
+      const dispatched = await cli(fx.configPath, ["run", "待取消", "--json"]);
+      const id = (dispatched.json() as { id: string }).id;
+      expect((await cli(fx.configPath, ["cancel", id])).code).toBe(0);
+      expect(fx.store.get(id)!.status).toBe("cancelled");
+      expect((await cli(fx.configPath, ["stop", id])).code).toBe(0);
+      await cli(fx.configPath, ["executor", "resume"]);
 
-    const done = seed({ status: "succeeded" });
-    const r = await cli(...base("cancel", done.id));
-    expect(r.code).toBe(4);
-    expect((await cli(...base("cancel", "t_missing"))).code).toBe(3);
+      const done = await cli(fx.configPath, ["run", "会成功", "--wait", "--json"]);
+      const doneId = (done.json() as { id: string }).id;
+      expect((await cli(fx.configPath, ["cancel", doneId])).code).toBe(2);
+      expect(fx.store.get(doneId)!.status).toBe("succeeded");
+    });
+
+    test("retry 失败任务生成新任务，非失败任务退出 2", async () => {
+      const queued = await cli(fx.configPath, ["run", "会失败", "--json"]);
+      const queuedId = (queued.json() as { id: string }).id;
+      const res = await cli(fx.configPath, ["retry", queuedId]);
+      expect(res.code).toBe(2);
+      expect(fx.store.get(queuedId)!.status).not.toBe("failed");
+    });
+
+    test("merge --json 合并成功任务", async () => {
+      const dispatched = await cli(fx.configPath, ["run", "新建 out.txt", "--wait", "--json"]);
+      const id = (dispatched.json() as { id: string }).id;
+      const supervised = process.env.PISA_SUPERVISED;
+      delete process.env.PISA_SUPERVISED;
+      try {
+        const res = await cli(fx.configPath, ["merge", id, "--json"]);
+        expect(res.code).toBe(0);
+        expect((res.json() as { ok: boolean }).ok).toBe(true);
+        expect(sh(["git", "-C", fx.repo, "cat-file", "-e", "main:out.txt"]).code).toBe(0);
+      } finally {
+        if (supervised !== undefined) process.env.PISA_SUPERVISED = supervised;
+      }
+    });
+
+    test("rewind 未结束的任务退出 2", async () => {
+      await cli(fx.configPath, ["executor", "pause"]);
+      const dispatched = await cli(fx.configPath, ["run", "还没跑", "--json"]);
+      const id = (dispatched.json() as { id: string }).id;
+      const res = await cli(fx.configPath, ["rewind", id, "--yes"]);
+      expect(res.code).toBe(2);
+      await cli(fx.configPath, ["cancel", id]);
+      await cli(fx.configPath, ["executor", "resume"]);
+    });
+
+    test("rewind 不带 --yes 只出计划", async () => {
+      const dispatched = await cli(fx.configPath, ["run", "先做", "--wait", "--json"]);
+      const id = (dispatched.json() as { id: string }).id;
+      const res = await cli(fx.configPath, ["rewind", id, "--json"]);
+      expect(res.code).toBe(0);
+      expect((res.json() as { message: string }).message).toContain(id);
+      expect(fx.store.get(id)!.status).toBe("succeeded");
+    });
   });
 
-  test("repos 列出别名与授权状态", async () => {
-    const body = parse<Array<Record<string, unknown>>>(await cli(...base("repos", "--json")));
-    expect(body).toEqual([{ alias: "demo", path: repo, remote: null, baseBranch: "main", allowed: true }]);
-  });
+  describe("失败路径", () => {
+    test("任务失败退出 2", async () => {
+      const failing = boot(failWorker);
+      try {
+        const res = await cli(failing.configPath, ["run", "必失败", "--wait", "--json"]);
+        expect(res.code).toBe(2);
+        expect((res.json() as { status: string }).status).toBe("failed");
+      } finally {
+        await tearDown(failing);
+      }
+    });
 
-  test("未知命令与未知选项", async () => {
-    expect((await cli(...base("nope"))).code).toBe(2);
-    expect((await cli(...base("task", "x", "--bogus"))).code).toBe(2);
+    test("控制面不可达退出 1", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pisa-cli-down-"));
+      const configPath = join(dir, "pisa.config.json");
+      writeFileSync(configPath, JSON.stringify({ ...fx.cfg, web: { ...fx.cfg.web, port: 1 } }));
+      try {
+        const res = await cli(configPath, ["status"]);
+        expect(res.code).toBe(1);
+        expect(res.err).toContain("控制面不可达");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 });

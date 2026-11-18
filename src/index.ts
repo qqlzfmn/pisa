@@ -10,7 +10,9 @@ import { Scheduler } from "./scheduler";
 import { Retention } from "./retention";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
-import { ReplyBus, startWebServer, type WebServer } from "./web";
+import { startWebServer, type WebServer } from "./web";
+import { ReplyBus } from "./channels/reply-bus";
+import { API_CHAT_ID } from "./api";
 import { webhookHandler } from "./webhook";
 import type { ChannelAdapter } from "./types";
 
@@ -57,28 +59,20 @@ async function main(): Promise<void> {
   }
   let router: Router;
   let webServer: WebServer | null = null;
-  if (web.enabled) {
-    // 控制台的写操作共用 Router，回执由总线收集；其它 chatId 的回执转发给真实通道
-    const bus = new ReplyBus(web.chatId, channel);
-    router = new Router({
-      cfg,
-      store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
-      deliverer: new GitDeliverer(cfg),
-      channel: bus,
-    });
-    if (!cfg.whitelist.users.includes(web.userId)) {
-      console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
-    }
+  // 控制面的写操作共用 Router，回执由总线收集；本机会话（接口、页面）缓冲，其它 chatId 转发给真实通道
+  const bus = new ReplyBus(web.chatId, channel, [API_CHAT_ID]);
+  router = new Router({
+    cfg,
+    store,
+    worker: new Worker(cfg.worker, cfg.stateDir),
+    deliverer: new GitDeliverer(cfg),
+    channel: bus,
+  });
+  // 控制面常驻：CLI 与脚本只走 HTTP，端口被占时任务照常执行，但 CLI 会连不上
+  try {
     webServer = startWebServer({ cfg, store, router, bus }, web);
-  } else {
-    router = new Router({
-      cfg,
-      store,
-      worker: new Worker(cfg.worker, cfg.stateDir),
-      deliverer: new GitDeliverer(cfg),
-      channel,
-    });
+  } catch (err) {
+    console.error(`[pisa] 控制面启动失败（127.0.0.1:${web.port}）：${(err as Error).message}`);
   }
 
   const recovered = router.recoverInterrupted();

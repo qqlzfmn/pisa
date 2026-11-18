@@ -119,7 +119,7 @@ flowchart TB
 
 | 层 | 代码 | 职责 | 刻意不做 |
 | --- | --- | --- | --- |
-| 入口 | `src/index.ts`、`src/channels/`、`src/web.ts` | 把外部消息翻成 `IncomingMessage`，把回执写回来源 | 不做调度、不碰数据库细节 |
+| 入口 | `src/index.ts`、`src/channels/`、`src/api.ts`、`src/web.ts` | 把外部消息与 HTTP 请求翻成 `IncomingMessage`，把回执写回来源 | 不做调度、不碰数据库细节 |
 | Core | `src/router.ts`、`src/store.ts` | 鉴权、命令、状态机（queued → running → succeeded/failed/paused）、去重、账本 | 不认识 Telegram 与 omp |
 | Runtime | `src/worker.ts`、`src/adapters/`、`extensions/` | 起进程、喂 prompt、收进度、超时与卡死判定 | 不改任务状态 |
 | 交付 | `src/git.ts`、`src/deliver.ts` | worktree、提交、push、PR 链接 | 不判断任务成功与否 |
@@ -195,6 +195,19 @@ curl -X POST http://127.0.0.1:8799/event \
 
 <摘要，最多 3000 字>
 ```
+
+### 4. 脚本与 agent 读同一份状态
+
+守护进程在 `127.0.0.1:8787` 上常驻管理接口，`pisa` CLI 是它的客户端，不再直连数据库：
+
+```bash
+pisa run "修掉 CI 的 flaky 测试" --json     # 入队，返回任务号
+pisa wait <任务号> --timeout 900 --json    # 阻塞到终态
+pisa status --json | jq .ok                # 守护进程与执行器的健康快照
+curl -H "x-pisa-token: $PISA_WEB_TOKEN" 127.0.0.1:8787/api/state
+```
+
+退出码即契约：`0` 正常、`1` 需重启（接口不可达、心跳过期、执行器暂停、任务中断、等待超时）、`2` 部件错误（任务失败、动作被状态拒绝）、`3` 待配置（缺配置、token 不符、仓库不可用、任务不存在）。接口只监听本机，`/api/*` 只认请求头 token。
 
 更多可直接照抄的触发语句见 `/pisa examples`，或者 [skills/pisa/references/scenarios.md](./skills/pisa/references/scenarios.md)。
 

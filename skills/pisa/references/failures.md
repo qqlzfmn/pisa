@@ -2,37 +2,41 @@
 
 先看退出码，再看任务状态与 `error`，最后看日志。不要在所有失败上重试同一个命令。
 
-## 1. 提交时 stderr 出现"没有检测到运行中的 pisa 守护进程"
+## 1. 退出码 1：控制面不可达
 
-- 含义：10 秒内没有心跳，任务已入队但不会被执行。
-- 确认：`pisa status --json` 的 `daemon.alive`。
-- 处理：让人类启动 `bun run src/index.ts` 或对应 launchd 服务；启动后任务会自动被取走。不要重复提交。
+- 现象：`控制面不可达（127.0.0.1:<port>）：…`，或 `pisa status` 报心跳过期。
+- 含义：守护进程没在跑、端口被别的进程占了，或配置里的 `web.port` 与守护进程不一致。
+- 确认：`pisa status --json` 的 `daemon.alive` 与 `executor.paused`。
+- 处理：让人类启动 `bun run src/index.ts` 或对应 launchd 服务；确认配置文件是同一份。不要重复提交——接口都没连上，任务根本没入队。
 
 ## 2. 任务一直是 queued
 
 按顺序查：
 
 ```bash
-pisa status --json                 # daemon.alive？running 数量是否达到 worker.concurrency？
+pisa status --json                 # ok？executor.paused？running 数量是否达到 worker.concurrency？
 pisa show <id> --json              # status 是否仍为 queued
 pisa repos --json                  # 仓库是否 allowed
 ```
 
+- `executor.paused=true`：有人执行了 `pisa executor pause`，`pisa executor resume` 恢复，或重启守护进程。
 - 守护进程在跑但 `running` 已满：排队是正常的，等。
 - `allowed=false`：`whitelist.repos` 没包含该别名，改配置后重新提交。
-- 仓库路径不是 git 仓库：`pisa task` 会直接以 2 退出，不会入队。
+- 仓库路径不是 git 仓库：`pisa run` 直接以 3 退出，不会入队。
 
-## 3. 退出码 2
+## 3. 退出码 3：配置、鉴权或用错
 
-用法或配置错误，原样重试不会成功：
+原样重试不会成功：
 
+- `找不到配置文件`：用 `--config` 指定，或从包含配置的目录调用。
+- `缺少环境变量 PISA_WEB_TOKEN`：设置 `web.tokenEnv` 指向的变量。
+- `token 不匹配`：CLI、页面、脚本要用同一个 token；守护进程没配 tokenEnv 时打印的是一次性 token，不能复用。
 - `未知仓库别名`：用 `pisa repos --json` 里的 alias。
 - `不在 whitelist.repos`：让人类加白名单。
 - `仓库路径不是 git 仓库`：检查 `repos[].path`。
-- `找不到配置文件`：用 `--config` 指定，或从包含配置的目录调用。
-- `未知选项` / 缺少正文：修命令。
+- `未知选项` / 缺少正文 / `找不到任务`：修命令或任务号。
 
-## 4. 退出码 1：任务 failed
+## 4. 退出码 2：任务 failed
 
 读 `pisa show <id> --json` 的 `error` 与 `pisa logs <id> --tail 200`。常见分类：
 
@@ -44,24 +48,27 @@ pisa repos --json                  # 仓库是否 allowed
 | 编译/测试失败 | 代码没过验证 | 根据日志补 brief，`continue` 或新任务 |
 | 空摘要 + 非零退出 | Worker 崩溃/认证失败 | 查日志末尾，必要时让人类检查 worker 命令 |
 
-失败任务的分支与工作副本：失败时会删除工作副本；只有自建的 `pisa/<任务号>` 分支会被删，续跑共享的父分支保留。不要依赖失败任务的分支继续改。要续跑，先确认父任务 `branch` 非空。
+想把失败任务的需求原样重开：`pisa retry <id>`，会生成新任务；原任务有分支与 PR 时沿用同一分支与 PR。失败任务的工作副本会被删除；只有自建的 `pisa/<任务号>` 分支会被删，续跑共享的父分支保留。
 
-## 5. 退出码 5：wait 超时
+## 5. 退出码 1：wait 超时
 
 任务可能仍在 running。处理顺序：
 
 1. `pisa show <id> --json` 看当前状态
-2. 仍 running：继续 `pisa wait <id> --timeout ...`，或先做别的事
-3. paused：见第 6 条
+2. 仍 running：`pisa wait <id> --timeout <更大值>`，或先做别的事
+3. paused：`pisa resume <id>`（需要工作副本与会话都在），否则让人类处理
 4. 已终态：按对应退出码处理
 
 不要因为超时就重复提交同一需求。
 
-## 6. 退出码 4：任务不可运行
+## 6. 退出码 2：任务不可运行
 
-- `paused`：进程重启且工作副本与会话都在时进入。当前只能由人类在 pisa 会话里执行 `resume <任务号>`；CLI 不能恢复。
-- `cancelled`：已取消，需要就新建任务。
-- `rewound`：副作用已被撤销，不能继续。
+动作被状态拒绝，通常是命令用错了状态：
+
+- `paused`：`pisa resume <id>`；重启后无法恢复的会直接落 `failed`，用 `pisa retry <id>`。
+- `cancelled`：需要就 `pisa retry <id>` 或新建任务。
+- `succeeded`：不能 `cancel`；要撤销副作用用 `pisa rewind <id> --yes`。
+- `rewound`：副作用已撤销，不能继续，重新提交。
 
 ## 7. `continue` 报"没有可续跑的分支"
 
@@ -69,7 +76,7 @@ pisa repos --json                  # 仓库是否 allowed
 
 ## 8. 重复提交返回原任务
 
-`--event-id` 已存在时，CLI 返回原任务并带 `message: "事件已存在，返回原任务"`。这是幂等保护，不是错误。要建新任务，换一个 event id 或省略该参数。
+`--event-id` 已存在时，返回原任务号而不是新建。这是幂等保护，不是错误。要建新任务，换一个 event id 或省略该参数。
 
 ## 9. 拿不到 PR 链接
 
@@ -80,13 +87,11 @@ pisa repos --json                  # 仓库是否 allowed
 
 这些是配置结果，不是失败。读 `show --json` 的 `branch` 与 `prUrl` 判断实际产物。
 
-## 10. 数据库锁 / 读不到任务
+## 10. 接口 5xx 或控制面起不来
 
-CLI 与守护进程共用 SQLite（WAL）。正常并发不会锁死。若出现 `database is locked`：
-
-- 确认没有脚本长时间持有事务
-- 不要删除 `pisa.db`；先让人类停守护进程再排查
-- 不要手工改库
+- 守护进程日志里的 `控制面启动失败（127.0.0.1:<port>）`：端口被占用或没有权限。任务照常执行，但 CLI 与脚本全部连不上；换 `web.port` 或杀掉占用者后重启。
+- 单个请求 500（`reason: "component"`）：通常是合并/撤销这类动作内部失败，读 `error` 原文，再看守护进程日志。
+- 不要直接改 `pisa.db`；状态只由守护进程写入。
 
 ## 11. 日志不存在
 

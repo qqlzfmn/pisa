@@ -1,6 +1,6 @@
 # 015 · Web 控制台 Phase 1：任务看板、派活、取消/合并、日志
 
-- 状态：specified
+- 状态：implemented（控制面自 [019-management-api](../019-management-api/spec.md) 起常驻，页面入口受 `web.enabled` 控制）
 - 关联：README「用法」中的 `/pisa status`、`docs/specs/010-status-board`（看板数据来自同一份快照语义）
 - 依赖：011 多仓库（仓库筛选与派活的目标仓库来自同一份仓库配置）
 
@@ -45,14 +45,14 @@ pisa core 的全部能力目前只能经聊天通道使用：定位任务、看�
 
 | ID | 需求 |
 | --- | --- |
-| FR-001 | 守护进程启动时，若 `web.enabled` 为真，在 `127.0.0.1:<web.port>` 提供 HTTP 服务；`bun run web` 以同样的默认值直接启动带 Web 控制台的守护进程 |
+| FR-001 | 守护进程启动时无条件在 `127.0.0.1:<web.port>` 提供 HTTP 服务（控制面常驻，见 019）；`web.enabled` 决定 `/ui` 与 `/` 是否开放；端口不可用时只告警，任务照常运行 |
 | FR-002 | `GET /ui` 返回单页控制台 HTML；`GET /` 重定向到 `/ui` |
-| FR-003 | 除 `/health` 外的路由要求 token：请求携带 `?token=`、`Authorization: Bearer`、`x-pisa-token` 头或 `pisa_web` cookie 之一；缺失或不匹配返回 401。`/health` 是监控采集入口，不鉴权，见 018-health-metrics |
+| FR-003 | 除 `/health` 外的路由要求 token：`/api/*` 只认 `Authorization: Bearer`、`x-pisa-token` 头或 cookie，`/ui` 与 `/` 另可用 `?token=` 引导；缺失或不匹配返回 401。`/health` 是监控采集入口，不鉴权，见 018-health-metrics |
 | FR-004 | `GET /ui?token=<token>` 用 `Set-Cookie` 记住 token，之后的同源请求不再需要 URL 参数 |
-| FR-005 | `GET /api/tasks?repo=<别名>` 返回 `{ daemon, counts, total, repos, running, queued, finished }`；`repo` 只过滤三个列表，不过滤汇总计数 |
-| FR-006 | 任务 JSON 字段：`id`、`status`、`repo`、`prompt`、`branch`、`prUrl`、`createdAt`、`startedAt`、`endedAt`、`duration`（人类可读，运行中按当前时间算）、`summary`、`error` |
+| FR-005 | `GET /api/board?repo=<别名>` 返回 `{ ok, daemon, counts, repos, repo, running, queued, finished }`；`repo` 只过滤三个列表，不过滤汇总计数 |
+| FR-006 | 任务 JSON 字段：`id`、`status`、`statusLabel`、`stage`、`stageLabel`、`repo`、`prompt`、`branch`、`prUrl`、`baseRef`、`createdAt`、`startedAt`、`endedAt`、`duration`（人类可读，运行中按当前时间算）、`summary`、`error`，与 CLI 同一份投影 |
 | FR-007 | `GET /api/tasks/<id>` 返回 `{ task, logTail }`；日志尾部取 `.pisa/logs/<id>.log` 的最后 200 行，`{ts,stage,msg}` 行格式化为 `HH:MM:SS stage msg`，解析失败原样保留；任务不存在返回 404 |
-| FR-008 | `POST /api/tasks` 接收 `{ prompt, repo? }`，按 IM 派活同一套路径（仓库/用户白名单、事件去重、入队）建任务，返回 `{ ok, taskId, message }`；空 prompt 返回 400 |
+| FR-008 | `POST /api/tasks` 接收 `{ prompt, repo? }`，按 IM 派活同一套路径（仓库白名单、事件去重、入队）建任务，返回 `{ ok, taskId, message, task }`；空 prompt 返回 400 |
 | FR-009 | `POST /api/tasks/<id>/cancel` 走与 `/pisa cancel` 相同的判定；返回 `{ ok, status, message }`，运行中任务只置取消请求也算成功 |
 | FR-010 | `POST /api/tasks/<id>/merge` 走与 `/pisa merge` 相同的校验、临时副本测试与快进合并；请求体必须带 `confirm: true`，否则返回 400；结果以是否落下 `merge` 副作用判断 |
 | FR-011 | 页面展示三组表格：任务号（可点开详情、可复制）、耗时、仓库、需求单行预览、PR 链接、操作按钮；取消与合并按钮按状态出现 |

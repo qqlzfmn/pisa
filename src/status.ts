@@ -20,9 +20,21 @@ export function preview(text: string, max: number): string {
 const FINISHED_LABEL: Record<string, string> = { succeeded: "成功", failed: "失败", cancelled: "取消", rewound: "已撤销" };
 
 /** 任务 JSON 投影的字段契约：CLI 输出与 Web 看板共用 */
+/** 状态的中文名：页面、CLI 与 IM 看板共用一份 */
+export const STATUS_LABEL: Record<TaskStatus, string> = {
+  queued: "排队",
+  running: "运行中",
+  paused: "已中断",
+  succeeded: "成功",
+  failed: "失败",
+  cancelled: "已取消",
+  rewound: "已撤销",
+};
+
 export interface TaskJson {
   id: string;
   status: TaskStatus;
+  statusLabel: string;
   /** 派生阶段：在等谁、需要什么；不写库 */
   stage: TaskStage;
   stageLabel: string;
@@ -49,6 +61,7 @@ export function taskJson(t: Task, now = Date.now()): TaskJson {
   return {
     id: t.id,
     status: t.status,
+    statusLabel: STATUS_LABEL[t.status],
     stage,
     stageLabel: STAGE_LABEL[stage],
     repo: t.repo,
@@ -85,11 +98,12 @@ export function statusSnapshot(store: Store): StatusSnapshot {
   };
 }
 
-/** 任务看板：运行中 / 排队 / 最近完成，末尾汇总 */
-export function formatStatusBoard(store: Store, now = Date.now()): string {
+/** 任务看板：运行中 / 排队 / 最近完成，末尾汇总；执行器暂停时单独提示 */
+export function formatStatusBoard(store: Store, now = Date.now(), opts: { paused?: boolean } = {}): string {
   const { running, queued, finished, counts, total } = statusSnapshot(store);
 
   const lines = ["运行中"];
+  if (opts.paused) lines.push("(执行器已暂停：不再领取排队任务，恢复或重启后继续)");
   if (running.length === 0) lines.push("(无)");
   for (const t of running) {
     const elapsed = formatDuration(now - (t.startedAt ?? t.createdAt));

@@ -6,6 +6,9 @@
 
 ### 新增
 
+- 本机管理接口：守护进程启动即常驻 `127.0.0.1:<web.port>`，提供 `GET /api/state`、`GET /api/board`、`GET|POST /api/tasks`、`GET /api/tasks/:id[/logs]`、`POST /api/tasks/:id/{cancel,resume,retry,continue,merge,rewind}` 与 `POST /api/executor/pause`；错误统一 `{error, reason}`，`reason` 取 `auth`/`config`/`state`/`not_found`/`component`（`src/api.ts`，spec 019）
+- 执行器暂停：`Router.pause()/resume()` 只停补位循环，排队任务保留，重启即恢复；看板与 `pisa status` 显示暂停状态
+- `retry` 命令：复制失败或已取消任务的需求重开，原任务有分支与 PR 时沿用同一分支与 PR；支持 IM 命令、接口与 CLI 三个入口
 - 健康与任务指标：`GET /health` 返回 `ok`、`uptimeSec`、队列深度、running 数与最近 24h 成功率/耗时分位/每仓库任务数；`ok` 取守护进程心跳，心跳停止时返回 503。看板与 `pisa status --json` 附带同一口径的 24h 汇总（`src/metrics.ts`）
 - `triggers` 表：任务创建改为按触发身份（`source` + 线程 + 消息 + 版本 + 载荷指纹）落库，触发器与任务同一事务；旧库在 `Store` 构造时按任务自身信息补齐，重放旧事件不会重复建单
 - 编辑与线程归属：同一消息的新版本按 `version` 留痕，任务仍在排队就更新需求正文；同线程不带命令的后续消息并进未结束任务的上下文
@@ -20,6 +23,11 @@
 
 ### 变更
 
+- `pisa` CLI 改为管理接口的客户端：不再读写 SQLite，新增 `run`（`task` 同义）、`stop`（`cancel` 同义）、`resume`、`retry`、`merge`、`rewind`、`executor` 子命令，`--json` 覆盖全部查询与动作
+- 退出码重新定义为三类：`0` 正常、`1` 需要重启（控制面不可达、心跳过期、执行器暂停、任务 paused、等待超时）、`2` 部件错误（任务失败、动作被状态拒绝、接口 5xx）、`3` 待配置或用错（缺配置、token 不符、仓库不可用、任务不存在、参数错）；旧码 4/5 取消
+- 控制面与页面拆开：接口常驻，`web.enabled` 只决定 `/ui` 与 `/`；`/api/*` 只认请求头与 cookie，`?token=` 只用于打开页面。接口投递的任务 `channel=api`，回执由 `ReplyBus` 就地收集，不再需要私聊直通开关或触发词
+- 管理接口的调用方由 token 认证，Router 对其跳过用户白名单、`@别名` 路由与单英文词误触防护；仓库白名单与状态机照旧生效；`web.userId` 退化为记账字段
+- 任务 JSON 投影收口到 `src/status.ts`：`STATUS_LABEL` 与 `statusLabel` 进 `taskJson`，看板、详情、CLI 共用一份字段；页面看板改拉 `/api/board`
 - 交付提交按路径拦截敏感文件：`.github/workflows/**`、`.github/actions/**`、`.env*`、`*.pem`、`*.key`、`id_*`、`.npmrc`、`.netrc`、`**/secrets*` 用 `git reset` 剔出索引，回执列出未提交路径；全部被拦时不产生空提交
 - 推送、建 PR、回帖改为经 outbox 执行：失败不再只记日志，退避到期后自动补发；建 PR 失败仍退回 `compare` 链接，任务终态不变
 - README 从配置说明改为产品首页：一句话定位、三类读者路径、30 秒上手、架构图与分层表、三个带预期输出的场景、与 CNB NPC / Copilot cloud agent 的边界对比、FAQ、已知限制、演示 GIF（`docs/assets/demo.gif`）

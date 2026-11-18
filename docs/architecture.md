@@ -68,7 +68,8 @@ core 内部模块关系：
 | `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
 | `stage.ts` / `status.ts` | 任务阶段规则表与对外投影：阶段、JSON 字段、看板文本 | `taskStage()`、`taskJson()`、`formatStatusBoard()` |
 | `metrics.ts` | 24h 指标聚合：成功率、耗时分位；看板、CLI 与 `/health` 共用 | `computeWindowMetrics()`、`windowMetrics()`、`percentile()` |
-| `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机 | `createWebApp()`、`startWebServer()`、`ReplyBus` |
+| `api.ts` / `web.ts` / `web-ui.ts` | 本机控制面：管理接口 + 页面外壳 + 单页；写操作转成 `IncomingMessage`（`admin: true`）交给 `router.handle`，不复制鉴权与状态机 | `createApi()`、`createWebApp()`、`startWebServer()` |
+| `channels/reply-bus.ts` | 本机会话回执总线：接口与页面的 chatId 就地收集，其余转发给真实通道 | `ReplyBus.take()` |
 | `log.ts` / `config.ts` / `types.ts` | 日志脱敏、配置加载与默认值、共享类型与状态机表 | — |
 
 ## 2. 任务状态机与恢复语义
@@ -144,7 +145,7 @@ cancelled ─┘
 1. **事件进入**。六类触发源都产生 `IncomingMessage`；入口能给出更稳定的身份就填 `threadKey` / `messageKey` / `version` / `actor`，缺省由 core 补齐（见 4.2）：
    - IM：`channel.start(onMessage)` 回调里先喂 `Proactive.observe`，再 `router.handle`（`src/index.ts`）。
    - webhook：`Bun.serve` 只接 127.0.0.1 的 `POST /event`（`src/webhook.ts`），先做 token 常量时间比较（403）、`Content-Length` 与正文 64 KiB 上限（413），再校验 body `{prompt, repo?, eventId?, threadKey?, version?}`；`eventId` 必须是 `webhook:` 前缀（`events` 表跨通道共享，`cron:`/`github:comment:`/`telegram:` 归各自入口，越界 400），缺省为 `webhook:<ts>:<rand>`。校验全过后才交给 `router.handle`，被拒的请求不解析正文、不占事件号；带上 `threadKey`（业务单号）就能和别的入口命中同一个任务。
-   - Web 控制台：`Bun.serve` 只接 127.0.0.1 的 `/ui` 与 `/api/*`，token 鉴权通过后把派活/取消/合并拼成 `IncomingMessage`（`admin: true`）交给 `router.handle`，回执经 `ReplyBus` 收集后回给页面（`src/web.ts`）。`admin` 让 Router 跳过单英文词误触防护与原请求者校验——浏览器里的操作由 token 直接认证，没有可回 `confirm` 的聊天。
+   - 控制面：`Bun.serve` 只接 127.0.0.1（`src/web.ts` 托管外壳，路由在 `src/api.ts`），守护进程启动时就监听，`web.enabled` 只决定 `/ui` 与 `/` 是否开放。`/api/*` 只认请求头与 cookie，鉴权通过后把派活/动作拼成 `IncomingMessage`（`admin: true`）交给 `router.handle`，回执经 `ReplyBus` 收集后回到调用方。`admin` 让 Router 跳过单英文词误触防护、用户白名单与 `@别名` 路由——调用方已由 token 认证，没有可回 `confirm` 的聊天；仓库白名单与状态机照旧生效。
    - GitHub 评论：`GithubWatcher` 每 `intervalSec`（默认 120s）按仓库轮询 `gh api …/issues/comments?since=`，命中触发词的评论转成事件；PR 评论带 `continueFrom`（按 `taskByPr` 找父任务）与 `replyPr`，Issue 评论带 `replyIssue`。各仓库的 `since` 游标落在 `meta` 表的 `github:since:<repo>`，整轮成功才推进；重启后从这里继续，停机期间发布的评论会被补拉（重复由触发身份去重，编辑按 `updated_at` 区分）。
    - cron 与主动发现：`Scheduler` 每 30s 扫一次表达式，`Proactive` 观察群聊关键词或跑探针，命中就 `enqueue`。
 2. **归一化与路由**（`Router.handle`，`src/router.ts`）。顺序固定：`@别名` 提取仓库 → 回复消息映射到父任务并改写为 `continue` → 线程解析（`threadKeyOf`：入口声明 > 被回复任务 > 本条消息）→ 命令解析（`config.ts` 的 `COMMANDS`）→ 待确认态 → 拼写校验 → 命令分支 → 建任务。

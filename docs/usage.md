@@ -21,6 +21,7 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 | 撤销副作用 | `/pisa rewind t_xxx` → 加 `--yes` | 关 PR、删分支；已合并用 revert |
 | 合入主干 | `/pisa merge t_xxx` | 临时副本跑测试，通过后 `--ff-only` 合并 |
 | CI 失败 | `POST /event` 带 `x-pisa-token` | 与 IM 相同的执行链路 |
+| 脚本读状态 | `pisa status --json`，或 `curl -H "x-pisa-token: $PISA_WEB_TOKEN" 127.0.0.1:8787/api/state` | 与看板同源的快照，退出码表明是否需重启 |
 | PR 内派活 | PR 评论 `/pisa 把错误处理补上` | 接续原分支并更新原 PR |
 | 到点自动开单 | `schedules` 里的 cron | 队列与执行链路同 IM |
 
@@ -47,7 +48,7 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 
 ### 单机
 
-任务状态存本地 SQLite（`stateDir/pisa.db`），队列是进程内轮询，工作副本在本地磁盘。没有跨机调度，也没有多副本一致性：同一份状态目录只应有一个 pisa 进程在跑。设备离线期间任务停摆，重启后 `running` 任务转 `paused`，需要 `/pisa resume` 拉回。
+任务状态存本地 SQLite（`stateDir/pisa.db`），唯一写入口是守护进程：CLI 与脚本经本机管理接口提交，不直接改库。队列是进程内轮询，工作副本在本地磁盘。没有跨机调度，也没有多副本一致性：同一份状态目录只应有一个 pisa 进程在跑，控制面端口也就只有一份。设备离线期间任务停摆，重启后 `running` 任务转 `paused`，需要 `/pisa resume` 拉回。
 
 ### 并发
 
@@ -57,7 +58,8 @@ Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命�
 
 - **IM**：`whitelist.users` 与 `whitelist.repos` 双重白名单，未授权用户不建任务（24 小时内只提示一次）。群里仍需要触发词；私聊可直接说需求。
 - **webhook**：只监听 `127.0.0.1`，请求头 `x-pisa-token` 必须等于环境变量里的 token；任务身份固定为配置的 `chatId` / `userId`，所以它也必须进白名单。要从外网调用，自己加反向代理与 TLS。
-- **Web 控制台**：只监听 `127.0.0.1`，`/ui` 与 `/api/*` 全部要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、`HttpOnly` cookie 任一），否则 401。页面派出的任务归 `web.userId`，同样要进白名单；取消与合并不再校验原请求者，因为浏览器里的操作由 token 直接认证。
+- **管理接口**：常驻 `127.0.0.1:<web.port>`，`/api/*` 只认请求头（`Authorization: Bearer`、`x-pisa-token`）或 `HttpOnly` cookie，`?token=` 只用于打开 `/ui`，缺凭证一律 401。接口与页面派出的任务归 `web.userId`，token 已认证操作者，所以不再查 `whitelist.users`；`whitelist.repos` 与任务状态机照旧生效。
+- **CLI**：`pisa` 是管理接口的客户端，只读配置文件与 `PISA_WEB_TOKEN`。除 `help` 外的命令都需要守护进程在跑，连不上时退出 1；缺 token 退出 3。
 - **GitHub**：只处理正文以 `/pisa ` 开头的评论；评论作者不参与鉴权，任务归属由各仓库条目配置的 `chatId` / `userId` 决定。`gh` token 从 `tokenEnv` 指定的环境变量读取。
 - **定时、探针、关键词**：都用配置里的身份开单，同样走白名单；触发不了的根因通常是身份不在白名单或缺少 `scheduler` 配置。
 - **密钥**：Telegram bot token、webhook token 只从环境变量或 `~/.pisa/` 下的文件读取，不写入配置文件与 launchd plist。

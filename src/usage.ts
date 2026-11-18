@@ -65,6 +65,8 @@ const TASK_ENTRIES: ReadonlyArray<{ usage: string; description: string }> = [
 /** 集成组没有斜杠命令：入口来自 webhook、评论轮询与定时器 */
 const INTEGRATION_ENTRIES: ReadonlyArray<{ usage: string; description: string }> = [
   { usage: "webhook POST /event", description: "CI/监控投递任务，头 x-pisa-token，可带 repo 别名" },
+  { usage: "pisa status|list|show|logs --json", description: "脚本读状态；退出码 0 正常 / 1 需重启 / 2 部件错误 / 3 待配置" },
+  { usage: "本机接口 /api/state、/api/tasks/:id", description: "CLI 与脚本共用，127.0.0.1 + 请求头 token" },
   { usage: "PR/Issue 评论 {trigger} <需求>", description: "评论里派活；PR 上已有任务则接续原分支" },
   { usage: "定时触发", description: "schedules 到点自动开单，查看用 schedules 命令" },
 ];

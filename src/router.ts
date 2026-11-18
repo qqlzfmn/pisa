@@ -55,6 +55,8 @@ export class Router {
   private active = new Map<string, Promise<void>>();
   /** 关停中：不再调度新任务；执行中的任务完成后保持 running，交由下次启动的 recoverInterrupted 分流 */
   private stopping = false;
+  /** 执行器暂停：照常接单与心跳，只是不再领取排队任务；只在内存里，重启即恢复 */
+  private paused = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** 上次孤儿任务巡检时间 */
   private lastReconcile = 0;
@@ -123,6 +125,20 @@ export class Router {
       }
       void this.fill();
     }, intervalMs);
+  }
+
+  /** 暂停/恢复取任务：排队中的任务留在队列，心跳与看板照常 */
+  pause(): void {
+    this.paused = true;
+  }
+
+  resume(): void {
+    this.paused = false;
+    void this.fill();
+  }
+
+  isPaused(): boolean {
+    return this.paused;
   }
 
   /**
@@ -202,7 +218,7 @@ export class Router {
 
   /** 按并发上限补位；不等待任务完成 */
   private async fill(): Promise<void> {
-    if (this.stopping) return;
+    if (this.stopping || this.paused) return;
     const limit = Math.max(1, this.deps.cfg.worker.concurrency ?? 1);
     while (this.active.size < limit) {
       const task = this.deps.store.nextQueued();
@@ -219,6 +235,8 @@ export class Router {
    */
   private routeByAlias(msg: IncomingMessage): IncomingMessage {
     const { cfg } = this.deps;
+    // 本机接口（admin）已经显式给出仓库，正文里的 @别名 属于需求文字，不做路由
+    if (msg.admin) return msg;
     const lead = splitRepoAlias(msg.text, cfg.repos);
     if (lead) return { ...msg, repo: lead.alias, text: lead.body };
 
@@ -249,6 +267,9 @@ export class Router {
     msg = { ...msg, threadKey };
 
     let cmd = parseCommand(msg.text, cfg.trigger);
+
+    // 本机接口提交的是正文：token 已认证操作者，不要求触发词，也不受私聊直通开关限制
+    if (!cmd && msg.admin && msg.text.trim()) cmd = { kind: "task", body: msg.text.trim() };
 
     // 专用 bot 的私聊：不需要触发词，直接说话就是任务
     if (!cmd && msg.isDirect && cfg.dmWithoutTrigger) {
@@ -354,6 +375,11 @@ export class Router {
       return;
     }
 
+    if (cmd.kind === "retry") {
+      await this.handleRetry(msg, cmd.body);
+      return;
+    }
+
     if (cmd.kind === "verbose") {
       const v = cmd.body.trim().toLowerCase();
       if (v === "on" || v === "开") this.progressOn = true;
@@ -391,7 +417,7 @@ export class Router {
     }
 
     if (cmd.kind === "status") {
-      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now()));
+      await this.reply(msg.chatId, formatStatusBoard(this.deps.store, this.now(), { paused: this.paused }));
       return;
     }
 
@@ -456,7 +482,26 @@ export class Router {
       return;
     }
 
-    // 触发身份只看「线程 + 消息 + 版本 + 载荷」：重复投递与编辑都命中同一条
+    await this.enqueue(msg, threadKey, { repo, prompt, baseRef, context, branch, prUrl });
+  }
+
+  /**
+   * 落库并回执；返回任务号（重复投递时是已存在的任务）。
+   * 触发身份只看「线程 + 消息 + 版本 + 载荷」：重复投递与编辑都命中同一条。
+   */
+  private async enqueue(
+    msg: IncomingMessage,
+    threadKey: string,
+    spec: {
+      repo: RepoConfig;
+      prompt: string;
+      baseRef?: string | null;
+      context?: string | null;
+      branch?: string | null;
+      prUrl?: string | null;
+    },
+  ): Promise<string> {
+    const { store } = this.deps;
     const at = msg.receivedAt ?? this.now();
     const trigger = makeTrigger({
       source: msg.channel,
@@ -464,7 +509,7 @@ export class Router {
       messageKey: msg.messageKey ?? msg.eventId,
       actor: msg.actor ?? msg.userId,
       at,
-      text: prompt,
+      text: spec.prompt,
       version: msg.version,
     });
     const task: Task = {
@@ -473,14 +518,14 @@ export class Router {
       channel: msg.channel,
       chatId: msg.chatId,
       requester: msg.userId,
-      repo: repo.alias,
-      prompt,
+      repo: spec.repo.alias,
+      prompt: spec.prompt,
       status: "queued",
-      branch,
-      prUrl,
+      branch: spec.branch ?? null,
+      prUrl: spec.prUrl ?? null,
       sessionId: null,
-      baseRef,
-      context,
+      baseRef: spec.baseRef ?? null,
+      context: spec.context ?? null,
       replyPr: msg.replyPr ?? null,
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
@@ -498,9 +543,55 @@ export class Router {
     if (!claim.created) {
       if (claim.promptUpdated) await this.reply(msg.chatId, `任务 ${claim.taskId} 还没开跑，已按最新版本更新需求。`);
       else if (claim.edited) await this.reply(msg.chatId, `任务 ${claim.taskId} 已在执行，这次修改只做了留痕。`);
+      return claim.taskId;
+    }
+    await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库：${spec.repo.alias}\n排队中。`);
+    return task.id;
+  }
+
+  /**
+   * 重试：复制需求、仓库与基线开一条新任务。
+   * 带 PR 的任务（PR 评论续跑）落在原分支与原 PR，与续跑同构；普通失败任务重开分支。
+   * 只接受 failed / cancelled：succeeded 该走 merge，paused 该走 resume。
+   */
+  private async handleRetry(msg: IncomingMessage, body: string): Promise<void> {
+    const { cfg, store } = this.deps;
+    const id = body.trim().split(/\s+/)[0] ?? "";
+    if (!id) {
+      await this.reply(msg.chatId, `用法：${cfg.trigger} retry <任务号>`);
       return;
     }
-    await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库：${repo.alias}\n排队中。`);
+    const task = store.get(id);
+    if (!task) {
+      await this.reply(msg.chatId, `找不到任务 ${id}`);
+      return;
+    }
+    if (!msg.admin && task.requester !== msg.userId) {
+      await this.reply(msg.chatId, "只有原请求者可以重试。");
+      return;
+    }
+    if (task.status !== "failed" && task.status !== "cancelled") {
+      await this.reply(msg.chatId, `任务 ${task.id} 处于 ${task.status}，只有失败或已取消的任务可以重试。`);
+      return;
+    }
+    const repo = repoByAlias(cfg, task.repo);
+    const denied = this.checkAccess({ ...msg, repo: task.repo }, repo);
+    if (denied) {
+      await this.reply(msg.chatId, denied);
+      return;
+    }
+    const onPr = Boolean(task.branch && task.prUrl);
+    const context = [`重试自任务 ${task.id}${task.error ? `：${task.error.slice(0, 200)}` : ""}`, task.context]
+      .filter(Boolean)
+      .join("\n");
+    await this.enqueue({ ...msg, repo: task.repo }, threadKeyOf(msg, null), {
+      repo: repo!,
+      prompt: task.prompt,
+      baseRef: onPr ? task.branch : task.baseRef,
+      context,
+      branch: onPr ? task.branch : null,
+      prUrl: onPr ? task.prUrl : null,
+    });
   }
 
   /** 待确认任务按人与会话隔离，避免群里互相确认别人的任务 */
@@ -614,7 +705,8 @@ export class Router {
 
   private checkAccess(msg: IncomingMessage, repo: RepoConfig | undefined): string | null {
     const { cfg } = this.deps;
-    if (!cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
+    // admin 入口（本机 token 已认证操作者）不看用户白名单；仓库维度照旧校验
+    if (!msg.admin && !cfg.whitelist.users.includes(msg.userId)) return "无权限：该用户不在白名单。";
     if (!repo) return `仓库未配置：${msg.repo ?? "(默认)"}`;
     if (!cfg.whitelist.repos.includes(repo.alias)) return `无权限：仓库 ${repo.alias} 不在白名单。`;
     if (!isGitRepo(repo.path)) return `仓库路径不是 git 仓库：${repo.path}`;

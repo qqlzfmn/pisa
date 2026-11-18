@@ -48,7 +48,7 @@
 | FR-004 | `ok` 取守护进程心跳（`daemonState`）：心跳在 10s 内为 `true` 并返回 200，否则 `false` 并返回 503；`/health` 其它方法返回 405 且 `allow: GET` |
 | FR-005 | `uptimeSec` 从进程启动时刻算起，整数秒；由 `WebDeps.startedAt` 注入，缺省取创建 Web 应用的时刻 |
 | FR-006 | `/pisa status` 看板在 `汇总` 行后增加一行 `最近 24h：完成 N · 成功 n · 失败 n · 成功率 X% · P50 a · P95 b`；无样本时输出 `最近 24h：无完成` |
-| FR-007 | `pisa status --json` 增加 `last24h` 字段，内容与 `/health` 的 `last24h` 一致 |
+| FR-007 | `pisa status --json`（019 起读 `GET /api/state`）增加 `last24h` 字段，内容与 `/health` 的 `last24h` 一致；执行器暂停时 `ok` 为 false |
 | FR-008 | 聚合与格式化不复制：`src/status.ts` 的 `formatWindowMetrics()` 负责文本，`windowMetrics()` 负责取数与计算 |
 | FR-009 | 不新增表、不新增状态、不写入任何指标数据；全部按查询时计算 |
 
