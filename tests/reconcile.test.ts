@@ -213,6 +213,27 @@ describe("planReconcile", () => {
     expect(missing?.action).toBeNull();
   });
 
+  test("登记残留（目录已删）按缺失与可清理处理，不再装作工作副本还在", () => {
+    const running = task({ id: "t_1", status: "running", branch: "pisa/t_1" });
+    const failed = task({ id: "t_2", status: "failed", branch: "pisa/t_2" });
+    const findings = planReconcile(
+      baseInput([running, failed], {
+        worktrees: [
+          { path: "/state/worktrees/t_1", repo: "demo", repoPath: "/repos/demo", branch: "pisa/t_1", present: false },
+          { path: "/state/worktrees/t_2", repo: "demo", repoPath: "/repos/demo", branch: "pisa/t_2", present: false },
+        ],
+      }),
+    );
+    const worktrees = findings.filter((f) => f.kind === "worktree");
+    // 运行中的不保留：登记不能当作目录还在，缺失由反向差集报出
+    expect(worktrees.some((f) => f.taskIds[0] === "t_1" && f.disposition === "keep")).toBe(false);
+    expect(worktrees.find((f) => f.taskIds[0] === "t_1")?.disposition).toBe("missing");
+    const stale = worktrees.find((f) => f.taskIds[0] === "t_2");
+    expect(stale?.disposition).toBe("fixable");
+    expect(stale?.note).toContain("登记残留");
+    expect(stale?.action).toEqual({ kind: "remove-worktree", repoPath: "/repos/demo", path: "/state/worktrees/t_2" });
+  });
+
   test("预览文本给出差异与 --fix 提示", () => {
     const t = task({ id: "t_1", status: "cancelled", branch: "pisa/t_1" });
     const input = baseInput([t], {
@@ -413,6 +434,31 @@ describe("Router.reconcile", () => {
     expect(channel.last).toContain("1 项失败");
     expect(channel.last).toContain("gh: close refused");
     expect(channel.last).toContain("修正后重试");
+  });
+
+  test("工作副本被手工删掉：运行中任务报缺失，--fix 不动它的分支", async () => {
+    seedRealities();
+    rmSync(worktree(RUNNING), { recursive: true, force: true });
+    // 目录没了，git 仍登记着这个工作副本
+    expect(sh(["git", "-C", repo, "worktree", "list", "--porcelain"]).out).toContain(worktree(RUNNING));
+
+    const { router } = build([{ number: 12, head: `pisa/${FAILED}` }]);
+    await router.handle(msg(`/pisa reconcile ${RUNNING}`));
+    expect(channel.last).toContain("缺失（1）");
+    expect(channel.last).toContain("需要工作副本，但目录不存在");
+
+    await router.handle(msg(`/pisa reconcile ${RUNNING} --fix`));
+    expect(sh(["git", "-C", repo, "rev-parse", "--verify", "--quiet", `refs/heads/pisa/${RUNNING}`]).code).toBe(0);
+  });
+
+  test("--fix 先 prune 登记残留，再删本地分支", async () => {
+    seedRealities();
+    rmSync(worktree(FAILED), { recursive: true, force: true });
+    const { router } = build([{ number: 12, head: `pisa/${FAILED}` }]);
+    await router.handle(msg("/pisa reconcile --fix"));
+
+    expect(channel.last).toContain("清理完成。");
+    expect(sh(["git", "-C", repo, "rev-parse", "--verify", "--quiet", `refs/heads/pisa/${FAILED}`]).code).not.toBe(0);
   });
 });
 

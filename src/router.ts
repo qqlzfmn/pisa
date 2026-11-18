@@ -686,7 +686,7 @@ export class Router {
         const path = resolve(w.path);
         if (!realPath(path).startsWith(`${root}${sep}`)) continue;
         registered.add(realPath(path));
-        worktrees.push({ path, repo: repo.alias, repoPath: repo.path, branch: w.branch });
+        worktrees.push({ path, repo: repo.alias, repoPath: repo.path, branch: w.branch, present: existsSync(path) });
       }
       repos.push({
         alias: repo.alias,

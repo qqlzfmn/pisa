@@ -1,5 +1,5 @@
 import { existsSync, realpathSync, rmSync } from "node:fs";
-import { basename, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type { Task, TaskStatus } from "./types";
 import { closePr, prNumberFromIssueUrl, type Runner } from "./github";
 import { sh } from "./git";
@@ -53,6 +53,8 @@ export interface WorktreeReality {
   repo: string | null;
   repoPath: string | null;
   branch: string | null;
+  /** 目录是否真的在磁盘上；git 还登记着、目录已被手工删掉时为 false */
+  present?: boolean;
 }
 
 export interface ReconcileInput {
@@ -121,19 +123,34 @@ function derivedId(branch: string): string | null {
 /**
  * 同一路径可能有软链与真实路径两种写法（macOS 的 /var 指向 /private/var），
  * 比较前统一成真实路径，否则会把已登记的工作副本当成孤儿。
+ * 路径已被删掉时 realpath 会失败，就规范化最长的存在祖先再拼回剩余段，
+ * 否则被删的工作副本同样会因两种写法对不上而漏报。
  */
 export function realPath(path: string): string {
+  const abs = resolve(path);
+  let cur = abs;
+  const rest: string[] = [];
+  while (!existsSync(cur)) {
+    const parent = dirname(cur);
+    if (parent === cur) return abs;
+    rest.unshift(basename(cur));
+    cur = parent;
+  }
   try {
-    return realpathSync(path);
+    return join(realpathSync(cur), ...rest);
   } catch {
-    return resolve(path);
+    return abs;
   }
 }
 
 export function planReconcile(input: ReconcileInput): Finding[] {
   const byId = new Map(input.tasks.map((t) => [t.id, t]));
   const findings: Finding[] = [];
-  const worktreePaths = new Set(input.worktrees.map((w) => realPath(w.path)));
+  // 只有磁盘上真在的目录才算工作副本存在；git 登记残留（手工删了目录）
+  // 如果还按存在处理，运行中任务的缺失就永远查不出来
+  const worktreePaths = new Set(
+    input.worktrees.filter((w) => w.present !== false).map((w) => realPath(w.path)),
+  );
 
   for (const w of input.worktrees) {
     const path = resolve(w.path);
@@ -141,13 +158,17 @@ export function planReconcile(input: ReconcileInput): Finding[] {
     const task = byId.get(id);
     const owners = task ? [task] : [];
     const verdict = judge(owners);
+    const absent = w.present === false;
+    // 保留类的登记残留不虚报成一条工作副本：运行中/暂停任务的缺失由下面
+    // 的反向差集报出，其余（成功待合并）的登记由 gc 的 prune 收拾
+    if (absent && verdict.disposition === "keep") continue;
     findings.push({
       kind: "worktree",
       target: path,
       repo: w.repo,
       taskIds: [id],
       disposition: verdict.disposition,
-      note: verdict.note,
+      note: absent ? `${verdict.note}（登记残留，目录已不存在）` : verdict.note,
       action:
         verdict.disposition === "fixable" ? { kind: "remove-worktree", repoPath: w.repoPath, path } : null,
     });
