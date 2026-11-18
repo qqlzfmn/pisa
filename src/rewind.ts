@@ -220,6 +220,15 @@ export interface RewindDeps {
   commitEmail: string;
 }
 
+/** 撤销预览结果；Web 与 IM 共用，失败原因是给使用者看的整句 */
+export type RewindPreviewResult = { ok: true; plan: RewindPlan } | { ok: false; error: string };
+
+export interface RewindExecution {
+  results: RewindOutcome[];
+  /** 任务已标记为 rewound；计划里有无法确认的 PR 状态时为 false */
+  rewound: boolean;
+}
+
 /** 逐条执行，失败不中断后续步骤：部分失败可修正后重试 */
 export function applyRewind(plan: RewindPlan, deps: RewindDeps): RewindOutcome[] {
   return plan.actions.map((a) => ({ label: a.label, effect: a.effect, ...run(a, deps) }));

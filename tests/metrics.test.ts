@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Store } from "../src/store";
 import type { Task, TaskStatus } from "../src/types";
-import { computeWindowMetrics, METRICS_WINDOW_MS, percentile, windowMetrics } from "../src/metrics";
+import { computeWindowMetrics, METRICS_WINDOW_MS, metricHistory, percentile, windowMetrics } from "../src/metrics";
 
 function task(id: string, status: TaskStatus, startedAt: number | null, endedAt: number | null): Task {
   return {
@@ -139,5 +139,78 @@ describe("metrics 查询窗口", () => {
     // inside 耗时 10s；legacy 没有 startedAt/endedAt 不进耗时
     expect(m.durationSamples).toBe(1);
     expect(m.p50Ms).toBe(10_000);
+  });
+});
+
+describe("metrics 历史", () => {
+  const HOUR = 3_600_000;
+
+  test("桶按结束时间归位，队列与运行数在桶起点采样", () => {
+    const now = 1_700_000_123_000;
+    const last = Math.floor(now / HOUR) * HOUR;
+    const first = last - 2 * HOUR;
+    const tasks: Task[] = [
+      task("done_now", "succeeded", last + 1000, last + 61_000),
+      task("failed_prev", "failed", last - HOUR + 1000, last - HOUR + 21_000),
+      { ...task("long_run", "running", first + 2000, null), createdAt: first - 1000 },
+      { ...task("waiting", "queued", null, null), createdAt: last - 1000 },
+    ];
+
+    const history = metricHistory(tasks, now, 3, HOUR);
+    expect(history.buckets.map((b) => b.start)).toEqual([first, last - HOUR, last]);
+    expect(history.buckets.map((b) => b.finished)).toEqual([0, 1, 1]);
+    expect(history.buckets[1]!.successRate).toBe(0);
+    expect(history.buckets[1]!.p50Ms).toBe(20_000);
+    expect(history.buckets[2]!.successRate).toBe(1);
+    expect(history.buckets[2]!.p50Ms).toBe(60_000);
+    // 首桶起点：long_run 已创建未开始 → 排队
+    expect(history.buckets[0]!.queueDepth).toBe(1);
+    expect(history.buckets[0]!.running).toBe(0);
+    // 末桶起点：long_run 在跑，waiting 在排队
+    expect(history.buckets[2]!.queueDepth).toBe(1);
+    expect(history.buckets[2]!.running).toBe(1);
+    expect(history.summary.finished).toBe(2);
+    expect(history.summary.successRate).toBe(0.5);
+  });
+
+  test("窗口末尾与桶尾对齐到当前时间", () => {
+    const now = 1_700_000_123_000;
+    const history = metricHistory([], now, 2, HOUR);
+    expect(history.to).toBe(now);
+    expect(history.from).toBe(history.buckets[0]!.start);
+    expect(history.buckets.at(-1)!.start).toBe(Math.floor(now / HOUR) * HOUR);
+    expect(history.summary.finished).toBe(0);
+    expect(history.summary.successRate).toBeNull();
+  });
+
+  test("小时数至少为 1", () => {
+    const now = 1_700_000_123_000;
+    expect(metricHistory([], now, 0, HOUR).buckets).toHaveLength(1);
+  });
+});
+
+describe("store.tasksInWindow", () => {
+  const HOUR = 3_600_000;
+  let store: Store;
+
+  afterEach(() => {
+    store.close();
+  });
+
+  test("取与窗口有交集的任务，含跨窗口仍在跑的", () => {
+    store = new Store(":memory:");
+    const now = 1_700_000_000_000;
+    const seed = (t: Task, createdAt: number) => {
+      store.insertTask({ ...t, createdAt });
+      store.db
+        .query("UPDATE tasks SET status = ?, started_at = ?, ended_at = ? WHERE id = ?")
+        .run(t.status, t.startedAt, t.endedAt, t.id);
+    };
+    seed(task("before", "succeeded", now - HOUR, now - HOUR + 10), now - 2 * HOUR);
+    seed(task("straddle", "running", now - 3 * HOUR, null), now - 3 * HOUR);
+    seed(task("after", "queued", null, null), now + HOUR);
+
+    const ids = store.tasksInWindow(now - HOUR, now).map((t) => t.id);
+    expect(ids).toEqual(["straddle", "before"]);
   });
 });

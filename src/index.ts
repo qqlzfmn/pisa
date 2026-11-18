@@ -1,5 +1,13 @@
 import { join } from "node:path";
-import { BOT_COMMANDS, DEFAULT_ENV_ALLOW, DEFAULT_WEB, githubRepos, loadConfig, type WebConfig } from "./config";
+import {
+  BOT_COMMANDS,
+  DEFAULT_ENV_ALLOW,
+  DEFAULT_WEB,
+  githubRepos,
+  loadConfig,
+  resolveConfigPath,
+  type WebConfig,
+} from "./config";
 import { Store } from "./store";
 import { Router } from "./router";
 import { Worker, workerEnv } from "./worker";
@@ -11,12 +19,14 @@ import { Retention } from "./retention";
 import { CliChannel } from "./channels/cli";
 import { TelegramChannel } from "./channels/telegram";
 import { ReplyBus, startWebServer, type WebServer } from "./web";
+import { AuditLog } from "./audit";
 import { webhookHandler } from "./webhook";
 import { startTriggers, type TriggersRuntime } from "./triggers";
 import type { ChannelAdapter } from "./types";
 
 async function main(): Promise<void> {
-  const cfg = loadConfig();
+  const configPath = resolveConfigPath();
+  const cfg = loadConfig(configPath);
   const wantCli = process.argv.includes("--channel") && process.argv[process.argv.indexOf("--channel") + 1] === "cli";
   // `--web` 强制开启控制台；没有可用通道时回落到 CLI 通道，只当服务宿主
   const web: WebConfig = { ...(cfg.web ?? DEFAULT_WEB), enabled: cfg.web?.enabled === true || process.argv.includes("--web") };
@@ -71,7 +81,7 @@ async function main(): Promise<void> {
     if (!cfg.whitelist.users.includes(web.userId)) {
       console.warn(`[pisa] web.userId=${web.userId} 不在 whitelist.users，页面派活会被拒绝`);
     }
-    webServer = startWebServer({ cfg, store, router, bus }, web);
+    webServer = startWebServer({ cfg, store, router, bus, configPath, audit: new AuditLog(cfg.stateDir) }, web);
   } else {
     router = new Router({
       cfg,

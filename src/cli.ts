@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { findConfig, loadConfig, repoByAlias, type Config } from "./config";
+import { loadConfig, repoByAlias, resolveConfigPath, type Config } from "./config";
 import { Store } from "./store";
 import { isGitRepo } from "./git";
 import type { Task, TaskStatus } from "./types";
@@ -107,10 +107,6 @@ function json(io: Io, value: unknown): void {
 function openState(configPath: string): { cfg: Config; store: Store } {
   const cfg = loadConfig(configPath);
   return { cfg, store: new Store(join(cfg.stateDir, "pisa.db")) };
-}
-
-function resolveConfigPath(args: ParsedArgs): string {
-  return flagString(args, "config") ?? process.env.PISA_CONFIG ?? findConfig(process.cwd());
 }
 
 function repoForTask(cfg: Config, alias: string | undefined) {
@@ -274,7 +270,7 @@ async function dispatch(io: Io, argv: string[]): Promise<number> {
     return EXIT.ok;
   }
 
-  const configPath = resolveConfigPath(args);
+  const configPath = resolveConfigPath(flagString(args, "config"));
   if (!existsSync(configPath)) {
     throw new UsageError(`找不到配置文件：${configPath}；可用 --config 指定`);
   }

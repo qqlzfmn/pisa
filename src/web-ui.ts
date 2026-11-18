@@ -16,6 +16,7 @@ export const WEB_UI = `<!doctype html>
   header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 2; flex-wrap: wrap; }
   h1 { font-size: 16px; margin: 0; }
   h2 { font-size: 14px; margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
+  h3 { font-size: 13px; margin: 14px 0 6px; }
   main { padding: 16px; display: grid; gap: 16px; max-width: 1400px; }
   section { border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
   .spacer { flex: 1; }
@@ -28,7 +29,7 @@ export const WEB_UI = `<!doctype html>
   th { color: var(--muted); font-weight: 500; white-space: nowrap; }
   td.prompt { max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   td.num { white-space: nowrap; }
-  button, select, textarea { font: inherit; color: inherit; }
+  button, select, textarea, input { font: inherit; color: inherit; }
   button { border: 1px solid var(--line); background: transparent; border-radius: 6px; padding: 3px 10px; cursor: pointer; }
   button:hover { border-color: var(--accent); color: var(--accent); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -36,12 +37,32 @@ export const WEB_UI = `<!doctype html>
   button:disabled { opacity: .45; cursor: default; border-color: var(--line); color: inherit; }
   button.link { border: 0; padding: 0; color: var(--accent); }
   textarea { width: 100%; min-height: 68px; resize: vertical; border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: transparent; }
+  input { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; background: transparent; }
+  input[type=checkbox] { width: auto; }
+  td textarea { min-height: 40px; }
   .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 12px; }
+  .form-grid label { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
   pre { margin: 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; overflow: auto; max-height: 360px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
   dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0 0 12px; font-size: 13px; }
   dt { color: var(--muted); }
   dd { margin: 0; word-break: break-all; }
   #detail { border-color: var(--accent); }
+  .charts { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .chart { border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+  .chart h3 { margin: 0 0 4px; }
+  .legend { display: flex; gap: 10px; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .chip::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 2px; background: var(--accent); vertical-align: middle; }
+  .bars { display: flex; align-items: flex-end; gap: 1px; height: 72px; border-bottom: 1px solid var(--line); }
+  .bar-col { flex: 1; display: flex; align-items: flex-end; gap: 1px; height: 100%; }
+  .bar { flex: 1; background: var(--accent); }
+  .bar.p95 { background: #8250df; }
+  .bar.queue { background: #bf8700; }
+  .bar.running, .bar.rate { background: var(--ok); }
+  .chip.p95::before { background: #8250df; }
+  .chip.queue::before { background: #bf8700; }
+  .chip.running::before, .chip.rate::before { background: var(--ok); }
+  .axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 2px; }
   #toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); box-shadow: 0 4px 16px rgba(0,0,0,.15); font-size: 13px; white-space: pre-wrap; }
 </style>
 </head>
@@ -65,6 +86,11 @@ export const WEB_UI = `<!doctype html>
   </section>
 
   <section>
+    <h2>趋势 <span id="metrics-range" class="badge"></span></h2>
+    <div class="charts" id="charts"></div>
+  </section>
+
+  <section>
     <h2>运行中 <span id="count-running" class="badge"></span></h2>
     <table><thead><tr><th>任务号</th><th>仓库</th><th>状态</th><th>阶段</th><th>耗时</th><th>内容</th><th>分支</th><th>PR</th></tr></thead><tbody id="rows-running"></tbody></table>
   </section>
@@ -80,6 +106,36 @@ export const WEB_UI = `<!doctype html>
   </section>
 
   <section id="detail" hidden></section>
+
+  <section>
+    <h2>配置 <span id="config-path" class="muted"></span></h2>
+    <div class="muted" id="config-note"></div>
+    <h3>仓库</h3>
+    <table><thead><tr><th>别名</th><th>路径</th><th>主干</th><th>remote</th><th></th></tr></thead><tbody id="config-repos"></tbody></table>
+    <h3>Worker</h3>
+    <div class="form-grid">
+      <label>adapter<input id="worker-adapter"></label>
+      <label>command<input id="worker-command"></label>
+      <label>并发<input id="worker-concurrency" type="number" min="1" max="64"></label>
+      <label>超时（秒）<input id="worker-timeout" type="number" min="1"></label>
+    </div>
+    <div class="muted" id="worker-extra"></div>
+    <h3>定时任务</h3>
+    <table><thead><tr><th>id</th><th>cron</th><th>仓库</th><th>内容</th><th>启用</th><th></th></tr></thead><tbody id="config-schedules"></tbody></table>
+    <div class="row">
+      <button id="add-repo">添加仓库</button>
+      <button id="add-schedule">添加定时任务</button>
+      <div class="spacer"></div>
+      <button id="load-config">重新读取</button>
+      <button id="save-config" class="primary">保存配置</button>
+    </div>
+    <div id="config-errors" class="bad"></div>
+  </section>
+
+  <section>
+    <h2>审计 <span id="audit-path" class="muted"></span></h2>
+    <table><thead><tr><th>时间</th><th>动作</th><th>对象</th><th>结果</th><th>详情</th></tr></thead><tbody id="rows-audit"></tbody></table>
+  </section>
 </main>
 <div id="toast" hidden></div>
 
@@ -87,6 +143,7 @@ export const WEB_UI = `<!doctype html>
 (function () {
   'use strict';
   var state = { repo: '', busy: false, detail: null };
+  var config = { repos: [], schedules: [] };
   var token = new URLSearchParams(location.search).get('token');
   if (token) history.replaceState(null, '', location.pathname);
 
@@ -117,13 +174,24 @@ export const WEB_UI = `<!doctype html>
     var res = await fetch(withToken(path), opts);
     if (res.status === 401) { showAuth(); throw new Error('未授权'); }
     var data = await res.json().catch(function () { return {}; });
-    if (!res.ok || data.ok === false) throw new Error(data.message || data.error || ('HTTP ' + res.status));
+    if (!res.ok || data.ok === false) {
+      var err = new Error(data.message || data.error || ('HTTP ' + res.status));
+      err.data = data;
+      throw err;
+    }
     return data;
   }
   function cell(row, child, cls) {
     var td = el('td', cls);
     td.appendChild(child);
     row.appendChild(td);
+  }
+  function inputEl(value, placeholder, type) {
+    var input = el('input');
+    input.type = type || 'text';
+    input.value = value === undefined || value === null ? '' : String(value);
+    if (placeholder) input.placeholder = placeholder;
+    return input;
   }
   function taskRow(task, index) {
     var row = el('tr');
@@ -194,6 +262,271 @@ export const WEB_UI = `<!doctype html>
       document.getElementById('daemon').className = 'bad';
     }
   }
+  function fmtMs(ms) {
+    if (ms === null || ms === undefined) return '-';
+    return ms >= 60000 ? (ms / 60000).toFixed(1) + ' 分' : Math.round(ms / 1000) + ' 秒';
+  }
+  function fmtRate(rate) {
+    return rate === null || rate === undefined ? '-' : Math.round(rate * 100) + '%';
+  }
+  function hourLabel(ts) {
+    var d = new Date(ts);
+    var pad = function (n) { return n < 10 ? '0' + n : String(n); };
+    return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + pad(d.getHours()) + ':00';
+  }
+  function chartBlock(title, buckets, series, fixedMax) {
+    var block = el('div', 'chart');
+    block.appendChild(el('h3', null, title));
+    var legend = el('div', 'legend');
+    series.forEach(function (s) { legend.appendChild(el('span', 'chip ' + s.cls, s.label)); });
+    block.appendChild(legend);
+    var max = fixedMax || 0;
+    buckets.forEach(function (b) {
+      series.forEach(function (s) {
+        var v = s.value(b);
+        if (typeof v === 'number' && v > max) max = v;
+      });
+    });
+    var bars = el('div', 'bars');
+    buckets.forEach(function (b) {
+      var col = el('div', 'bar-col');
+      col.title = [hourLabel(b.start)].concat(series.map(function (s) { return s.label + ' ' + s.text(b); })).join('\\n');
+      series.forEach(function (s) {
+        var v = s.value(b);
+        var bar = el('div', 'bar ' + s.cls);
+        var ratio = max > 0 && typeof v === 'number' ? v / max : 0;
+        bar.style.height = Math.round(ratio * 100) + '%';
+        col.appendChild(bar);
+      });
+      bars.appendChild(col);
+    });
+    block.appendChild(bars);
+    var axis = el('div', 'axis');
+    if (buckets.length) {
+      axis.appendChild(el('span', null, hourLabel(buckets[0].start)));
+      axis.appendChild(el('span', null, hourLabel(buckets[Math.floor(buckets.length / 2)].start)));
+      axis.appendChild(el('span', null, hourLabel(buckets[buckets.length - 1].start)));
+    }
+    block.appendChild(axis);
+    return block;
+  }
+  function renderMetrics(data) {
+    var summary = data.summary;
+    document.getElementById('metrics-range').textContent = data.hours + ' 小时 · 完成 ' + summary.finished +
+      ' · 成功率 ' + fmtRate(summary.successRate) + ' · P50 ' + fmtMs(summary.p50Ms) + ' · P95 ' + fmtMs(summary.p95Ms);
+    var box = document.getElementById('charts');
+    box.textContent = '';
+    var buckets = data.buckets || [];
+    box.appendChild(chartBlock('成功率', buckets, [{
+      label: '成功率', cls: 'rate',
+      value: function (b) { return b.successRate; },
+      text: function (b) { return fmtRate(b.successRate) + '（完成 ' + b.finished + '）'; }
+    }], 1));
+    box.appendChild(chartBlock('耗时', buckets, [
+      { label: 'P50', cls: 'p50', value: function (b) { return b.p50Ms; }, text: function (b) { return fmtMs(b.p50Ms); } },
+      { label: 'P95', cls: 'p95', value: function (b) { return b.p95Ms; }, text: function (b) { return fmtMs(b.p95Ms); } }
+    ]));
+    box.appendChild(chartBlock('队列', buckets, [
+      { label: '排队', cls: 'queue', value: function (b) { return b.queueDepth; }, text: function (b) { return String(b.queueDepth); } },
+      { label: '运行', cls: 'running', value: function (b) { return b.running; }, text: function (b) { return String(b.running); } }
+    ]));
+  }
+  async function loadMetrics() {
+    try {
+      renderMetrics(await api('/api/metrics?hours=24'));
+    } catch (err) {
+      toast('指标加载失败：' + err.message, true);
+    }
+  }
+  function renderRepoRows() {
+    var body = document.getElementById('config-repos');
+    body.textContent = '';
+    if (!config.repos.length) {
+      var empty = el('tr');
+      var td = el('td', 'muted', '（未配置仓库）');
+      td.colSpan = 5;
+      empty.appendChild(td);
+      body.appendChild(empty);
+      return;
+    }
+    config.repos.forEach(function (repo, index) {
+      var row = el('tr');
+      var alias = inputEl(repo.alias, '别名');
+      alias.addEventListener('input', function () { repo.alias = alias.value; });
+      var path = inputEl(repo.path, '/abs/path');
+      path.addEventListener('input', function () { repo.path = path.value; });
+      var branch = inputEl(repo.baseBranch, 'main');
+      branch.addEventListener('input', function () { repo.baseBranch = branch.value; });
+      var remote = inputEl(repo.remote, 'origin');
+      remote.addEventListener('input', function () { repo.remote = remote.value; });
+      cell(row, alias); cell(row, path); cell(row, branch); cell(row, remote);
+      var del = el('button', 'danger', '删除');
+      del.addEventListener('click', function () {
+        config.repos.splice(index, 1);
+        renderRepoRows();
+        renderScheduleRows();
+      });
+      cell(row, del);
+      body.appendChild(row);
+    });
+  }
+  function renderScheduleRows() {
+    var body = document.getElementById('config-schedules');
+    body.textContent = '';
+    if (!config.schedules.length) {
+      var empty = el('tr');
+      var td = el('td', 'muted', '（未配置定时任务）');
+      td.colSpan = 6;
+      empty.appendChild(td);
+      body.appendChild(empty);
+      return;
+    }
+    config.schedules.forEach(function (job, index) {
+      var row = el('tr');
+      var id = inputEl(job.id, 'id');
+      id.addEventListener('input', function () { job.id = id.value; });
+      var cron = inputEl(job.cron, '*/30 * * * *');
+      cron.addEventListener('input', function () { job.cron = cron.value; });
+      var repoSelect = el('select');
+      var none = el('option', null, '（默认）');
+      none.value = '';
+      repoSelect.appendChild(none);
+      config.repos.forEach(function (repo) {
+        var option = el('option', null, repo.alias);
+        option.value = repo.alias;
+        repoSelect.appendChild(option);
+      });
+      repoSelect.value = job.repo || '';
+      repoSelect.addEventListener('change', function () { job.repo = repoSelect.value; });
+      var prompt = el('textarea');
+      prompt.value = job.prompt;
+      prompt.addEventListener('input', function () { job.prompt = prompt.value; });
+      var enabled = el('input');
+      enabled.type = 'checkbox';
+      enabled.checked = job.enabled !== false;
+      enabled.addEventListener('change', function () { job.enabled = enabled.checked; });
+      cell(row, id); cell(row, cron); cell(row, repoSelect); cell(row, prompt, 'prompt'); cell(row, enabled);
+      var del = el('button', 'danger', '删除');
+      del.addEventListener('click', function () {
+        config.schedules.splice(index, 1);
+        renderScheduleRows();
+      });
+      cell(row, del);
+      body.appendChild(row);
+    });
+  }
+  function renderConfig(data) {
+    document.getElementById('config-path').textContent = data.path;
+    document.getElementById('config-note').textContent = data.schedulerConfigured
+      ? '保存后需要重启 pisa 才生效。extraArgs 与 envAllow 请直接改文件。'
+      : '保存后需要重启 pisa 才生效。当前文件没有 scheduler 身份（chatId/userId），定时任务不会运行。';
+    config.repos = data.repos.map(function (repo) {
+      return { alias: repo.alias, path: repo.path, remote: repo.remote || '', baseBranch: repo.baseBranch || '' };
+    });
+    config.schedules = data.schedules.map(function (job) {
+      return { id: job.id, cron: job.cron, prompt: job.prompt, repo: job.repo || '', enabled: job.enabled !== false };
+    });
+    renderRepoRows();
+    renderScheduleRows();
+    document.getElementById('worker-adapter').value = data.worker.adapter;
+    document.getElementById('worker-command').value = data.worker.command;
+    document.getElementById('worker-concurrency').value = data.worker.concurrency;
+    document.getElementById('worker-timeout').value = data.worker.timeoutSec;
+    document.getElementById('worker-extra').textContent = 'extraArgs ' +
+      (data.worker.extraArgs.length ? data.worker.extraArgs.join(' ') : '（空）') +
+      ' · envAllow ' + data.worker.envAllow.join(',');
+  }
+  function showConfigErrors(message) {
+    var box = document.getElementById('config-errors');
+    box.textContent = '';
+    var list = Array.isArray(message) ? message : message ? [message] : [];
+    list.forEach(function (line) { box.appendChild(el('div', null, '· ' + line)); });
+  }
+  async function loadConfigForm() {
+    try {
+      renderConfig(await api('/api/config'));
+      showConfigErrors([]);
+    } catch (err) {
+      showConfigErrors(['读取配置失败：' + err.message]);
+    }
+  }
+  function collectPatch() {
+    function intValue(id, label) {
+      var raw = document.getElementById(id).value.trim();
+      var n = Number(raw);
+      if (!raw || !Number.isFinite(n) || Math.floor(n) !== n) throw new Error(label + ' 需要整数，当前：' + raw);
+      return n;
+    }
+    return {
+      repos: config.repos.map(function (repo) {
+        return { alias: repo.alias.trim(), path: repo.path.trim(), remote: repo.remote.trim(), baseBranch: repo.baseBranch.trim() };
+      }),
+      worker: {
+        adapter: document.getElementById('worker-adapter').value.trim(),
+        command: document.getElementById('worker-command').value.trim(),
+        concurrency: intValue('worker-concurrency', '并发'),
+        timeoutSec: intValue('worker-timeout', '超时')
+      },
+      schedules: config.schedules.map(function (job) {
+        return { id: job.id.trim(), cron: job.cron.trim(), prompt: job.prompt.trim(), repo: job.repo, enabled: job.enabled !== false };
+      })
+    };
+  }
+  async function saveConfig() {
+    var patch;
+    try {
+      patch = collectPatch();
+    } catch (err) {
+      showConfigErrors([err.message]);
+      return;
+    }
+    var path = document.getElementById('config-path').textContent;
+    if (!confirm('保存配置到 ' + path + '？\\n\\n保存只改文件，重启 pisa 后才生效。')) return;
+    state.busy = true;
+    toast('保存中…');
+    try {
+      var res = await api('/api/config', { method: 'POST', body: JSON.stringify({ confirm: true, patch: patch }) });
+      showConfigErrors([]);
+      toast(res.message || '已保存，重启后生效');
+      await loadConfigForm();
+      await loadAudit();
+    } catch (err) {
+      showConfigErrors((err.data && err.data.errors) || [err.message]);
+      toast(err.message, true);
+    } finally {
+      state.busy = false;
+    }
+  }
+  function renderAudit(data) {
+    document.getElementById('audit-path').textContent = data.file;
+    var body = document.getElementById('rows-audit');
+    body.textContent = '';
+    var entries = data.entries || [];
+    if (!entries.length) {
+      var empty = el('tr');
+      var td = el('td', 'muted', '（还没有记录）');
+      td.colSpan = 5;
+      empty.appendChild(td);
+      body.appendChild(empty);
+      return;
+    }
+    entries.slice().reverse().forEach(function (entry) {
+      var row = el('tr');
+      cell(row, el('span', null, timeText(entry.ts)), 'num');
+      cell(row, el('span', null, entry.action));
+      cell(row, el('span', null, entry.target), 'num');
+      cell(row, el('span', entry.ok ? 'ok' : 'bad', entry.ok ? '成功' : '失败'));
+      cell(row, el('span', entry.ok ? 'muted' : 'bad', entry.detail || '-'), 'prompt');
+      body.appendChild(row);
+    });
+  }
+  async function loadAudit() {
+    try {
+      renderAudit(await api('/api/audit?limit=50'));
+    } catch (err) {
+      toast('审计加载失败：' + err.message, true);
+    }
+  }
   function timeText(value) {
     return value ? new Date(value).toLocaleString() : '-';
   }
@@ -258,7 +591,7 @@ export const WEB_UI = `<!doctype html>
     cancel.disabled = !cancellable;
     cancel.addEventListener('click', function () {
       if (!confirm('取消任务 ' + data.task.id + '？')) return;
-      writeAction('/api/tasks/' + data.task.id + '/cancel', null, '已取消 ' + data.task.id);
+      writeAction('/api/tasks/' + data.task.id + '/cancel', { confirm: true }, '已取消 ' + data.task.id);
     });
     var merge = el('button', 'primary', '合并到主干');
     merge.disabled = data.task.status !== 'succeeded' || !data.task.branch;
@@ -267,8 +600,31 @@ export const WEB_UI = `<!doctype html>
       if (!confirm(tips)) return;
       writeAction('/api/tasks/' + data.task.id + '/merge', { confirm: true }, '已合并 ' + data.task.id);
     });
+    var rewind = el('button', 'danger', '撤销…');
+    rewind.disabled = !(data.task.status === 'succeeded' || data.task.status === 'failed' || data.task.status === 'cancelled');
+    rewind.addEventListener('click', async function () {
+      state.busy = true;
+      try {
+        var preview = await api('/api/tasks/' + encodeURIComponent(data.task.id) + '/rewind');
+        if (!confirm(preview.text)) return;
+        toast('撤销中…');
+        var res = await api('/api/tasks/' + encodeURIComponent(data.task.id) + '/rewind', {
+          method: 'POST',
+          body: JSON.stringify({ confirm: true })
+        });
+        toast(res.message);
+        await loadBoard();
+        await openDetail(data.task.id);
+        await loadAudit();
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        state.busy = false;
+      }
+    });
     actions.appendChild(cancel);
     actions.appendChild(merge);
+    actions.appendChild(rewind);
     box.appendChild(actions);
 
     box.appendChild(el('h2', null, 'Prompt'));
@@ -298,6 +654,7 @@ export const WEB_UI = `<!doctype html>
       document.body.style.cursor = '';
       await loadBoard();
       if (state.detail) await openDetail(state.detail.id);
+      await loadAudit();
     }
   }
   async function dispatch() {
@@ -305,19 +662,21 @@ export const WEB_UI = `<!doctype html>
     var text = area.value.trim();
     var msg = document.getElementById('dispatch-msg');
     if (!text) { msg.textContent = '任务内容不能为空'; msg.className = 'bad'; return; }
+    if (!confirm('派活到 ' + (state.repo || '默认仓库') + '？\\n\\n' + text)) return;
     var button = document.getElementById('send');
     button.disabled = true;
     msg.className = 'muted';
     msg.textContent = '提交中…';
     state.busy = true;
     try {
-      var body = { prompt: text };
+      var body = { prompt: text, confirm: true };
       if (state.repo) body.repo = state.repo;
       var res = await api('/api/tasks', { method: 'POST', body: JSON.stringify(body) });
       area.value = '';
       msg.textContent = '已接单 · ' + (res.taskId || '');
       msg.className = 'ok';
       await loadBoard();
+      await loadAudit();
     } catch (err) {
       msg.textContent = err.message;
       msg.className = 'bad';
@@ -326,7 +685,12 @@ export const WEB_UI = `<!doctype html>
       button.disabled = false;
     }
   }
-  document.getElementById('refresh').addEventListener('click', loadBoard);
+  function refreshAll() {
+    loadBoard();
+    loadMetrics();
+    loadAudit();
+  }
+  document.getElementById('refresh').addEventListener('click', refreshAll);
   document.getElementById('repo').addEventListener('change', function (event) {
     state.repo = event.target.value;
     loadBoard();
@@ -338,9 +702,23 @@ export const WEB_UI = `<!doctype html>
       dispatch();
     }
   });
+  document.getElementById('add-repo').addEventListener('click', function () {
+    config.repos.push({ alias: '', path: '', remote: '', baseBranch: '' });
+    renderRepoRows();
+    renderScheduleRows();
+  });
+  document.getElementById('add-schedule').addEventListener('click', function () {
+    config.schedules.push({ id: '', cron: '', prompt: '', repo: '', enabled: true });
+    renderScheduleRows();
+  });
+  document.getElementById('load-config').addEventListener('click', loadConfigForm);
+  document.getElementById('save-config').addEventListener('click', saveConfig);
   loadBoard();
+  loadMetrics();
+  loadAudit();
+  loadConfigForm();
   setInterval(function () {
-    if (!state.busy && !document.hidden) loadBoard();
+    if (!state.busy && !document.hidden) refreshAll();
   }, 5000);
 })();
 </script>

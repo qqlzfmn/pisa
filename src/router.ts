@@ -29,7 +29,16 @@ import {
   prStatus,
   type Runner,
 } from "./github";
-import { applyRewind, formatRewindPlan, formatRewindResult, planRewind, type RewindProbes } from "./rewind";
+import {
+  applyRewind,
+  formatRewindPlan,
+  formatRewindResult,
+  planRewind,
+  type RewindExecution,
+  type RewindPlan,
+  type RewindPreviewResult,
+  type RewindProbes,
+} from "./rewind";
 import {
   applyReconcile,
   formatReconcile,
@@ -877,6 +886,49 @@ export class Router {
     };
   }
 
+  /** 撤销预览：只读判定，IM 与 Web 共用 */
+  rewindPreview(id: string): RewindPreviewResult {
+    const { cfg, store } = this.deps;
+    const task = store.get(id);
+    if (!task) return { ok: false, error: `找不到任务 ${id}` };
+    if (task.status === "rewound") return { ok: false, error: `任务 ${id} 已撤销。` };
+    if (task.status === "queued" || task.status === "running" || task.status === "paused") {
+      return { ok: false, error: `任务 ${id} 还没结束（${task.status}），先 ${cfg.trigger} cancel ${id}。` };
+    }
+    const repo = repoByAlias(cfg, task.repo);
+    if (!repo) return { ok: false, error: `仓库未配置：${task.repo}` };
+    const plan = planRewind(task, store.effectsOf(id), {
+      repoPath: repo.path,
+      baseBranch: repo.baseBranch ?? "main",
+      probes: this.rewindProbes(this.deps.ghRunner ?? defaultRunner),
+    });
+    return { ok: true, plan };
+  }
+
+  /** 执行撤销计划：成功的副作用从账本删掉，全部成功才标记任务已撤销 */
+  rewindExecute(plan: RewindPlan): RewindExecution {
+    const { cfg, store } = this.deps;
+    const id = plan.task.id;
+    if (plan.actions.length === 0) {
+      const rewound = plan.merge !== "unknown";
+      if (rewound) store.transition(id, "rewound");
+      return { results: [], rewound };
+    }
+    const results = applyRewind(plan, {
+      taskId: id,
+      runner: this.deps.ghRunner ?? defaultRunner,
+      commitName: cfg.delivery.commitName,
+      commitEmail: cfg.delivery.commitEmail,
+    });
+    // 成功的副作用已不存在，从账本删掉；失败的保留以便重试
+    for (const r of results) {
+      if (r.ok && r.effect) store.removeEffect(id, r.effect.kind, r.effect.target);
+    }
+    const rewound = plan.merge !== "unknown" && results.every((r) => r.ok);
+    if (rewound) store.transition(id, "rewound");
+    return { results, rewound };
+  }
+
   /**
    * `/pisa rewind <任务号> [--yes]`：先给预览，带 --yes 才执行。
    * 已合并的任务用 revert 提交回退；无法确认 PR 状态时不动分支，避免误删已合并成果。
@@ -899,51 +951,27 @@ export class Router {
       await this.reply(msg.chatId, "只有原请求者可以撤销。");
       return;
     }
-    if (task.status === "rewound") {
-      await this.reply(msg.chatId, `任务 ${id} 已撤销。`);
+    const preview = this.rewindPreview(id);
+    if (!preview.ok) {
+      await this.reply(msg.chatId, preview.error);
       return;
     }
-    if (task.status === "queued" || task.status === "running" || task.status === "paused") {
-      await this.reply(msg.chatId, `任务 ${id} 还没结束（${task.status}），先 ${cfg.trigger} cancel ${id}。`);
-      return;
-    }
-    const repo = repoByAlias(cfg, task.repo);
-    if (!repo) {
-      await this.reply(msg.chatId, `仓库未配置：${task.repo}`);
-      return;
-    }
-
-    const runner = this.deps.ghRunner ?? defaultRunner;
-    const plan = planRewind(task, store.effectsOf(id), {
-      repoPath: repo.path,
-      baseBranch: repo.baseBranch ?? "main",
-      probes: this.rewindProbes(runner),
-    });
+    const plan = preview.plan;
     if (!yes) {
       await this.reply(msg.chatId, formatRewindPlan(plan, cfg.trigger));
       return;
     }
 
     if (plan.actions.length === 0) {
-      if (plan.merge !== "unknown") store.transition(id, "rewound");
-      const lines = [plan.merge === "unknown" ? `未完成撤销 · ${id}` : `已标记撤销 · ${id}`, "没有需要执行的撤销动作。"];
+      const { rewound } = this.rewindExecute(plan);
+      const lines = [rewound ? `已标记撤销 · ${id}` : `未完成撤销 · ${id}`, "没有需要执行的撤销动作。"];
       if (plan.irreversible.length > 0) lines.push("", "不可撤销", ...plan.irreversible.map((s) => `- ${s}`));
       if (plan.notes.length > 0) lines.push("", "保留", ...plan.notes.map((s) => `- ${s}`));
       await this.reply(msg.chatId, lines.join("\n"));
       return;
     }
 
-    const results = applyRewind(plan, {
-      taskId: id,
-      runner,
-      commitName: cfg.delivery.commitName,
-      commitEmail: cfg.delivery.commitEmail,
-    });
-    // 成功的副作用已不存在，从账本删掉；失败的保留以便重试
-    for (const r of results) {
-      if (r.ok && r.effect) store.removeEffect(id, r.effect.kind, r.effect.target);
-    }
-    if (plan.merge !== "unknown" && results.every((r) => r.ok)) store.transition(id, "rewound");
+    const { results } = this.rewindExecute(plan);
     await this.reply(msg.chatId, formatRewindResult(plan, results));
   }
 

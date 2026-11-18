@@ -2,12 +2,15 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Server } from "bun";
-import { DEFAULT_WEB, type Config, type WebConfig } from "./config";
+import { DEFAULT_WEB, resolveConfigPath, type Config, type WebConfig } from "./config";
 import type { Store } from "./store";
 import type { ChannelAdapter, DeliveryReceipt, IncomingMessage, Task } from "./types";
 import { daemonState, taskJson, type TaskJson } from "./status";
-import { computeWindowMetrics, METRICS_WINDOW_MS } from "./metrics";
-import { readTail, tailLines } from "./log";
+import { computeWindowMetrics, metricHistory, METRICS_WINDOW_MS } from "./metrics";
+import { readTail, redact, tailLines } from "./log";
+import { AuditLog, type AuditEntry } from "./audit";
+import { editableConfig, saveConfigPatch, validateConfigPatch } from "./config-edit";
+import { formatRewindPlan, formatRewindResult, type RewindExecution, type RewindPlan, type RewindPreviewResult } from "./rewind";
 import { WEB_UI } from "./web-ui";
 import { HttpError, readJson, safeEqual } from "./http";
 
@@ -15,7 +18,9 @@ import { HttpError, readJson, safeEqual } from "./http";
 export const WEB_COOKIE = "pisa_web";
 /** 详情面板展示的日志行数 */
 const LOG_TAIL_LINES = 200;
-const TASK_ROUTE = /^\/api\/tasks\/([\w-]+)(?:\/(cancel|merge))?$/;
+const TASK_ROUTE = /^\/api\/tasks\/([\w-]+)(?:\/(cancel|merge|rewind))?$/;
+/** 趋势图默认看 24 小时，最多一周 */
+const METRICS_HOURS_MAX = 168;
 
 /**
  * Router 的回执总线：本机 Web 的 chatId 由它收集，其它 chatId 原样转发给真实通道。
@@ -61,11 +66,17 @@ export interface WebDeps {
   now?: () => number;
   /** 进程启动时间（毫秒）；缺省取创建 Web 应用的时刻，作为 /health 的 uptime 起点 */
   startedAt?: number;
+  /** 配置文件路径；缺省按 resolveConfigPath() 解析，与进程启动时加载的是同一份 */
+  configPath?: string;
+  /** 审计日志；缺省写到 cfg.stateDir/audit.log */
+  audit?: AuditLog;
 }
 
-/** Web 只依赖 Router 的一个能力；Router 结构化满足它 */
+/** Web 依赖 Router 的三个能力；Router 结构化满足它 */
 export interface WebRouter {
   handle(msg: IncomingMessage): Promise<void>;
+  rewindPreview(id: string): RewindPreviewResult;
+  rewindExecute(plan: RewindPlan): RewindExecution;
 }
 
 function json(value: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -163,6 +174,13 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
   const web: WebConfig = cfg.web ?? { ...DEFAULT_WEB, enabled: true, userId: "web" };
   const now = deps.now ?? Date.now;
   const startedAt = deps.startedAt ?? now();
+  const configFile = deps.configPath ?? resolveConfigPath();
+  const audit = deps.audit ?? new AuditLog(cfg.stateDir);
+
+  /** 写操作留痕；detail 里不放完整任务正文，先脱敏再截断 */
+  function record(action: AuditEntry["action"], target: string, ok: boolean, detail?: string): void {
+    audit.append({ actor: web.userId, action, target, ok, detail: detail ?? null });
+  }
   // 写操作串行：回执总线按 chatId 收集，并发派活会互相偷走回复；合并也需要独占仓库
   let lock: Promise<unknown> = Promise.resolve();
   const serialize = <T,>(fn: () => Promise<T>): Promise<T> => {
@@ -253,6 +271,62 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
       return new Response(null, { status: 302, headers: { location: `/ui${credential.fromQuery ? `?token=${encodeURIComponent(credential.token)}` : ""}` } });
     }
 
+    if (url.pathname === "/api/metrics") {
+      if (req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
+      const rawHours = Number(url.searchParams.get("hours") ?? 24);
+      const hours = Number.isFinite(rawHours) ? Math.min(METRICS_HOURS_MAX, Math.max(1, Math.floor(rawHours))) : 24;
+      const at = now();
+      // 起点早于第一个桶，跨窗口仍在进行的任务才不会被漏掉
+      const tasks = store.tasksInWindow(at - hours * 60 * 60 * 1000, at);
+      return json({ ok: true, hours, ...metricHistory(tasks, at, hours) }, 200, setCookie);
+    }
+
+    if (url.pathname === "/api/config") {
+      if (req.method === "GET") return json({ ok: true, ...editableConfig(configFile) }, 200, setCookie);
+      if (req.method === "POST") {
+        const body = await readJson(req);
+        if (body.confirm !== true) throw new HttpError(400, "保存配置需要二次确认（confirm: true）");
+        const checked = validateConfigPatch(body.patch);
+        if (!checked.ok) {
+          record("config.save", configFile, false, checked.errors.join("；").slice(0, 400));
+          return json({ ok: false, error: checked.errors[0], errors: checked.errors }, 400, setCookie);
+        }
+        try {
+          saveConfigPatch(configFile, checked.patch);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          record("config.save", configFile, false, reason);
+          throw new HttpError(500, `写入配置失败：${reason}`);
+        }
+        const { patch } = checked;
+        record(
+          "config.save",
+          configFile,
+          true,
+          `repos=${patch.repos.length} concurrency=${patch.worker.concurrency} timeoutSec=${patch.worker.timeoutSec} schedules=${patch.schedules.length}`,
+        );
+        return json(
+          {
+            ok: true,
+            saved: true,
+            path: configFile,
+            restartRequired: true,
+            message: `已保存 ${configFile}，重启 pisa 后生效`,
+          },
+          200,
+          setCookie,
+        );
+      }
+      return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET, POST" });
+    }
+
+    if (url.pathname === "/api/audit") {
+      if (req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
+      const rawLimit = Number(url.searchParams.get("limit") ?? 50);
+      const limit = Number.isFinite(rawLimit) ? Math.min(200, Math.max(1, Math.floor(rawLimit))) : 50;
+      return json({ ok: true, file: audit.file, entries: audit.recent(limit) }, 200, setCookie);
+    }
+
     if (url.pathname === "/api/tasks") {
       if (req.method === "GET") {
         const repo = url.searchParams.get("repo") || undefined;
@@ -275,10 +349,12 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
       }
       if (req.method === "POST") {
         const body = await readJson(req);
+        if (body.confirm !== true) throw new HttpError(400, "派活需要二次确认（confirm: true）");
         const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
         if (!prompt) throw new HttpError(400, "任务内容不能为空");
         const repo = typeof body.repo === "string" && body.repo.trim() ? body.repo.trim() : undefined;
         const result = await dispatchTask(repo, prompt);
+        record("dispatch", result.taskId || "-", result.ok, redact(prompt).slice(0, 120));
         return json({ ...result, taskId: result.taskId || null }, result.ok ? 200 : 400, setCookie);
       }
       return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET, POST" });
@@ -286,12 +362,12 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
 
     const match = TASK_ROUTE.exec(url.pathname);
     if (match) {
-      const [, id, action] = match;
-      if (action && req.method !== "POST") return json({ ok: false, error: "方法不支持" }, 405, { allow: "POST" });
-      if (!action && req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
+      const [, rawId, action] = match;
+      const id = rawId as string;
 
       if (!action) {
-        const task = store.get(id as string);
+        if (req.method !== "GET") return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET" });
+        const task = store.get(id);
         if (!task) return json({ ok: false, error: "找不到任务" }, 404, setCookie);
         const at = now();
         return json(
@@ -306,16 +382,73 @@ export function createWebApp(deps: WebDeps): (req: Request) => Promise<Response>
         );
       }
 
-      if (action === "merge") {
-        const body = await readJson(req);
-        if (body.confirm !== true) throw new HttpError(400, "合并需要二次确认（confirm: true）");
+      if (action === "rewind") {
+        if (req.method !== "GET" && req.method !== "POST") {
+          return json({ ok: false, error: "方法不支持" }, 405, { allow: "GET, POST" });
+        }
+        if (req.method === "POST") {
+          const body = await readJson(req);
+          if (body.confirm !== true) throw new HttpError(400, "撤销需要二次确认（confirm: true）");
+        }
+        const preview = router.rewindPreview(id);
+        if (!preview.ok) {
+          // 预览是只读动作，只在真正执行时留痕
+          if (req.method === "POST") record("rewind", id, false, preview.error);
+          return json({ ok: false, error: preview.error }, 409, setCookie);
+        }
+        if (req.method === "GET") {
+          return json(
+            {
+              ok: true,
+              merge: preview.plan.merge,
+              actions: preview.plan.actions.map((a) => ({ kind: a.kind, label: a.label })),
+              irreversible: preview.plan.irreversible,
+              notes: preview.plan.notes,
+              text: formatRewindPlan(preview.plan, cfg.trigger),
+            },
+            200,
+            setCookie,
+          );
+        }
+        // 撤销要删分支、推远端，和其它写操作一样独占
+        const exec = await serialize(async () => router.rewindExecute(preview.plan));
+        const failed = exec.results.filter((r) => !r.ok).length;
+        record(
+          "rewind",
+          id,
+          exec.rewound,
+          exec.results.length === 0 ? "没有需要执行的撤销动作" : `${exec.results.length - failed}/${exec.results.length} 成功`,
+        );
+        const message =
+          exec.results.length === 0
+            ? exec.rewound
+              ? "已标记撤销，没有需要执行的撤销动作。"
+              : "未完成撤销：PR 状态无法确认。"
+            : formatRewindResult(preview.plan, exec.results);
+        return json(
+          {
+            ok: exec.rewound,
+            status: store.get(id)?.status ?? null,
+            results: exec.results.map((r) => ({ label: r.label, ok: r.ok, error: r.error ?? null })),
+            message,
+          },
+          exec.rewound ? 200 : 409,
+          setCookie,
+        );
       }
-      const result = await run(webMessage(cfg, web, action as "cancel" | "merge", id as string));
-      const task = store.get(id as string);
+
+      if (req.method !== "POST") return json({ ok: false, error: "方法不支持" }, 405, { allow: "POST" });
+      const body = await readJson(req);
+      if (body.confirm !== true) {
+        throw new HttpError(400, action === "merge" ? "合并需要二次确认（confirm: true）" : "取消需要二次确认（confirm: true）");
+      }
+      const result = await run(webMessage(cfg, web, action as "cancel" | "merge", id));
+      const task = store.get(id);
       const done =
         action === "cancel"
           ? Boolean(task && (task.status === "cancelled" || store.isCancelRequested(task.id)))
-          : store.effectsOf(id as string).some((e) => e.kind === "merge");
+          : store.effectsOf(id).some((e) => e.kind === "merge");
+      record(action as AuditEntry["action"], id, result.ok && done, result.message.slice(0, 200));
       return json({ ok: result.ok && done, status: task?.status ?? null, message: result.message }, result.ok && done ? 200 : 409, setCookie);
     }
 

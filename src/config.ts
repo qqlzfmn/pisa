@@ -284,6 +284,11 @@ export function findConfig(start = process.cwd(), name = "pisa.config.json"): st
   }
 }
 
+/** 配置文件路径：显式参数 > 环境变量 > 向上查找；CLI 与 Web 共用同一解析，保存才落到进程实际加载的那份文件 */
+export function resolveConfigPath(explicit?: string, start = process.cwd()): string {
+  return explicit ?? process.env.PISA_CONFIG ?? findConfig(start);
+}
+
 export function repoByAlias(cfg: Config, alias?: string): RepoConfig | undefined {
   if (!alias) return cfg.repos[0];
   return cfg.repos.find((r) => r.alias === alias);
