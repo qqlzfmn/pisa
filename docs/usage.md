@@ -38,9 +38,26 @@ pisa 是常驻的编码任务执行者：你在 IM、PR 评论、webhook 或定�
 
 ## 能力边界
 
-### 无沙箱
+### 能力清单（默认拒绝）
 
-Worker 在独立 git worktree 里跑 agent，扩展只拦截少数破坏性命令（`git push`、`git reset --hard`、`git clean -f`、`rm -rf /` 除 `/tmp`、`sudo`、改 `/etc` 权限）。其余命令以当前用户权限直接执行，没有容器或虚拟机隔离，也没有网络限制。只在受信仓库和自己有权限的机器上运行。
+每个任务有一份能力清单，按 全局 → 仓库 → 任务 覆盖：后者整体替换前者，不合并；任务级也可以在 webhook body 的 `capabilities` 里声明。
+
+```json
+{
+  "capabilities": {
+    "read": ["/data/models"],
+    "write": ["/tmp"],
+    "secrets": ["GH_TOKEN"],
+    "domains": ["github.com", "*.github.com"],
+    "gui": false,
+    "deny": ["npm publish"]
+  }
+}
+```
+
+不声明时只能读写工作副本，环境里没有额外密钥，不能联网，GUI 关闭。`write` 自动并入 `read`；相对路径按仓库根解析；`*.example.com` 只匹配子域名。启动时把生效清单写进 `stateDir/runtime/<任务号>.json`（含子进程环境变量键名），策略与每条被拒命令写进任务审计（`task_audit`）。
+
+guard 检查 shell 重定向、常见读写命令、联网命令（`file://` 按读路径校验）与 GUI 命令；`git push` 等原有破坏性规则保留。不是沙箱：脚本包装、动态拼接、`grep`/`rg` 的路径无法可靠识别，包管理器安装脚本也能绕过。只在受信仓库和自己有权限的机器上运行。
 
 ### 回滚不完整
 

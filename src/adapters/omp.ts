@@ -1,4 +1,5 @@
 import type { AdapterInput, ParsedLine, WorkerAdapter } from "./types";
+import type { RuntimeCapabilities } from "../capabilities";
 import type { Task } from "../types";
 
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
@@ -26,7 +27,13 @@ function assistantText(obj: JsonEvent): string {
     .trim();
 }
 
-export function buildPrompt(task: Task, opts: { resume?: boolean } = {}): string {
+const list = (items: string[], empty: string): string => (items.length > 0 ? items.join("、") : empty);
+
+export function buildPrompt(
+  task: Task,
+  opts: { resume?: boolean; capabilities?: RuntimeCapabilities } = {},
+): string {
+  const caps = opts.capabilities;
   return [
     `你是 pisa 的 Worker，任务号 ${task.id}。`,
     ``,
@@ -45,6 +52,18 @@ export function buildPrompt(task: Task, opts: { resume?: boolean } = {}): string
     `## 任务`,
     task.prompt,
     ``,
+    ...(caps
+      ? [
+          `## Runtime 能力（本任务）`,
+          `- 可写目录：${list(caps.write, "无")}`,
+          `- 可读目录：${list(caps.read, "无")}`,
+          `- 可访问域名：${list(caps.domains, "无（联网命令会被拒绝）")}`,
+          `- GUI：${caps.gui ? "开启" : "关闭（open / osascript 等会被拒绝）"}`,
+          `- 可用密钥：${list(caps.secrets, "无")}`,
+          ...(caps.deny.length > 0 ? [`- 额外禁止命令：${list(caps.deny, "无")}`] : []),
+          ``,
+        ]
+      : []),
     `## 约束（以下由 pisa guard 强制，越界调用会被拒绝）`,
     `- 文件读写、编辑只能落在工作目录内；git 的 -C / --work-tree / --git-dir 也只能指向工作目录`,
     `- 禁止 git push（任意形态）、reset --hard、clean -f、切换分支、worktree remove/prune、branch -D、rebase、commit --amend`,
@@ -69,7 +88,7 @@ export class OmpAdapter implements WorkerAdapter {
       ...(input.resumeSessionId ? ["-r", input.resumeSessionId] : []),
       "--mode=json",
       "-p",
-      buildPrompt(input.task, { resume: Boolean(input.resume) }),
+      buildPrompt(input.task, { resume: Boolean(input.resume), capabilities: input.capabilities }),
       "--cwd",
       input.workdir,
     ];
@@ -79,6 +98,7 @@ export class OmpAdapter implements WorkerAdapter {
     return {
       PISA_WORKDIR: input.workdir,
       PISA_PROGRESS_FILE: input.progressFile,
+      ...(input.capabilitiesFile ? { PISA_CAPABILITIES_FILE: input.capabilitiesFile } : {}),
     };
   }
 

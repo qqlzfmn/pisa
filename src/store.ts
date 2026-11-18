@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { parseCapabilitySpec, type CapabilitySpec } from "./capabilities";
 import { prNumberFromIssueUrl } from "./github";
 import { makeTrigger, type Trigger, type TriggerRecord } from "./trigger";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
@@ -27,6 +28,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   reply_pr         INTEGER,
   reply_issue      INTEGER,
   reply_repo       TEXT,
+  capabilities     TEXT,
   summary          TEXT,
   error            TEXT,
   created_at       INTEGER NOT NULL,
@@ -73,6 +75,16 @@ CREATE TABLE IF NOT EXISTS task_effects (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (task_id, kind, target)
 );
+
+-- 任务审计：能力清单与被 guard 拒绝的命令；按任务查询
+CREATE TABLE IF NOT EXISTS task_audit (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id    TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  detail     TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_audit_task ON task_audit(task_id, id);
 
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
@@ -161,6 +173,7 @@ interface Row {
   reply_pr: number | null;
   reply_issue: number | null;
   reply_repo: string | null;
+  capabilities: string | null;
   summary: string | null;
   error: string | null;
   created_at: number;
@@ -207,6 +220,15 @@ function toTrigger(r: TriggerRow): TriggerRecord {
   };
 }
 
+function toCapabilities(value: string | null): CapabilitySpec | null {
+  if (!value) return null;
+  try {
+    return parseCapabilitySpec(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
 function toTask(r: Row): Task {
   return {
     id: r.id,
@@ -225,6 +247,7 @@ function toTask(r: Row): Task {
     replyPr: r.reply_pr,
     replyIssue: r.reply_issue,
     replyRepo: r.reply_repo,
+    capabilities: toCapabilities(r.capabilities),
     summary: r.summary,
     error: r.error,
     createdAt: r.created_at,
@@ -266,6 +289,9 @@ export class Store {
     }
     if (!cols.some((c) => c.name === "reply_repo")) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN reply_repo TEXT");
+    }
+    if (!cols.some((c) => c.name === "capabilities")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN capabilities TEXT");
     }
     this.backfillTriggers();
   }
@@ -552,10 +578,28 @@ export class Store {
     this.db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
   }
 
+  /** 写一条任务审计；detail 截断到 2000 字符，避免异常输出撑爆库 */
+  audit(taskId: string, kind: string, detail: string, at = Date.now()): void {
+    this.db.run("INSERT INTO task_audit(task_id, kind, detail, created_at) VALUES (?, ?, ?, ?)", [
+      taskId,
+      kind,
+      detail.slice(0, 2000),
+      at,
+    ]);
+  }
+
+  /** 任务审计按时间正序；limit 取最近 N 条 */
+  auditsOf(taskId: string, limit = 100): Array<{ kind: string; detail: string; createdAt: number }> {
+    const rows = this.db
+      .query("SELECT kind, detail, created_at FROM task_audit WHERE task_id = ? ORDER BY id DESC LIMIT ?")
+      .all(taskId, limit) as Array<{ kind: string; detail: string; created_at: number }>;
+    return rows.reverse().map((row) => ({ kind: row.kind, detail: row.detail, createdAt: row.created_at }));
+  }
+
   insertTask(t: Task): void {
     this.db.run(
-      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, source, channel, chat_id, requester, repo, prompt, status, branch, pr_url, created_at, base_ref, context, reply_pr, reply_issue, reply_repo, capabilities)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         t.id,
         t.source,
@@ -573,6 +617,7 @@ export class Store {
         t.replyPr,
         t.replyIssue,
         t.replyRepo,
+        t.capabilities ? JSON.stringify(t.capabilities) : null,
       ],
     );
   }

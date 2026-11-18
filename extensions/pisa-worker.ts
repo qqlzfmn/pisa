@@ -2,14 +2,19 @@
 // 判定逻辑在 guard.ts（纯函数、可单测），这里只做事件接线。
 // 由 Router 通过 `omp -e extensions/pisa-worker.ts` 挂载。
 
-import { appendFileSync } from "node:fs";
-import { blockBash, outsideWorkdir } from "./guard";
+import { appendFileSync, readFileSync } from "node:fs";
+import { defaultRuntime, outsideRoots, type RuntimeCapabilities } from "../src/capabilities";
+import { blockBash } from "./guard";
 
 const FILE = process.env.PISA_PROGRESS_FILE;
 const WORKDIR = process.env.PISA_WORKDIR ?? "";
+const CAPABILITIES_FILE = process.env.PISA_CAPABILITIES_FILE;
 
 /** 文件工具的路径参数名，四者同等对待 */
 const PATH_KEYS = ["path", "file_path", "filePath", "target"];
+
+/** 工具名命中这些词时按写工具处理，其余按读工具处理 */
+const WRITE_TOOL = /write|edit|patch|create|delete|remove|move|rename|copy|mkdir|touch/i;
 
 /** pi 扩展 API 的最小形状（上游没有发布类型） */
 interface WorkerEvent {
@@ -30,6 +35,35 @@ interface Pi {
   on(name: string, handler: Handler): void;
 }
 
+function stringList(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  const out = value.filter((item): item is string => typeof item === "string");
+  return out.length > 0 ? out : fallback;
+}
+
+/** 没有 manifest 时退回默认拒绝：只读写 workdir、不联网、不开 GUI */
+function loadCapabilities(): RuntimeCapabilities {
+  const fallback = defaultRuntime(WORKDIR);
+  if (!CAPABILITIES_FILE) return fallback;
+  try {
+    const parsed = JSON.parse(readFileSync(CAPABILITIES_FILE, "utf8")) as Record<string, unknown>;
+    return {
+      workdir: fallback.workdir,
+      read: stringList(parsed.read, fallback.read),
+      write: stringList(parsed.write, fallback.write),
+      secrets: stringList(parsed.secrets, []),
+      domains: stringList(parsed.domains, []),
+      gui: parsed.gui === true,
+      deny: stringList(parsed.deny, []),
+      blocked: stringList(parsed.blocked, fallback.blocked),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+const CAPABILITIES = loadCapabilities();
+
 function emit(obj: Record<string, unknown>): void {
   if (!FILE) return;
   try {
@@ -44,7 +78,7 @@ function bashDetail(cmd: string): string {
 }
 
 function denied(tool: string, detail: string, reason: string): Block {
-  emit({ type: "blocked", tool, detail: detail.slice(0, 200) });
+  emit({ type: "blocked", tool, detail: detail.slice(0, 200), reason: reason.slice(0, 200) });
   return { block: true, reason: `pisa guard：${reason}` };
 }
 
@@ -65,16 +99,17 @@ export default async function (pi: Pi) {
 
     if (name === "bash") {
       const cmd = String(input.command ?? "");
-      const reason = blockBash(cmd, WORKDIR);
+      const reason = blockBash(cmd, WORKDIR, CAPABILITIES);
       if (reason) return denied(name, bashDetail(cmd), reason);
       emit({ type: "tool", tool: "bash", detail: bashDetail(cmd) });
       return;
     }
 
+    const roots = WRITE_TOOL.test(name) ? CAPABILITIES.write : CAPABILITIES.read;
     for (const key of PATH_KEYS) {
       const value = input[key];
       if (typeof value !== "string") continue;
-      const reason = outsideWorkdir(value, WORKDIR);
+      const reason = outsideRoots(value, roots, CAPABILITIES.workdir);
       if (reason) return denied(name, value, reason);
     }
 

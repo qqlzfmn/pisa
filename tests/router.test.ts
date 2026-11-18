@@ -1,10 +1,11 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store";
 import { Router, formatDuration } from "../src/router";
 import { GitDeliverer } from "../src/deliver";
+import { resolveCapabilities, type RuntimeCapabilities } from "../src/capabilities";
 import { parseCommand, taskGuard, type Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
@@ -359,6 +360,49 @@ describe("Router", () => {
     expect(existsSync(join(stateDir, "worktrees", task.id))).toBe(false);
     // 回执
     expect(channel.sent.some((s) => s.text.includes("完成"))).toBe(true);
+  });
+
+  test("任务级能力整体覆盖仓库级，并写入能力审计", async () => {
+    let seen: RuntimeCapabilities | undefined;
+    const capture: WorkerRunner = {
+      async run(_task, _workdir, _onLog, _isCancelled, _resume, caps): Promise<WorkerResult> {
+        seen = caps;
+        return { ok: true, summary: "ok", exitCode: 0 };
+      },
+    };
+    cfg.repos[0]!.capabilities = { domains: ["repo.example"] };
+    const router = build(capture);
+    await router.handle(msg("/pisa 做点事", { capabilities: { domains: ["task.example"], gui: true } }));
+    const id = store.recentTasks()[0]!.id;
+    await router.drainOnce();
+
+    expect(seen?.domains).toEqual(["task.example"]);
+    expect(seen?.gui).toBe(true);
+    expect(seen?.write).toEqual([join(stateDir, "worktrees", id)]);
+    const audit = store.auditsOf(id).find((a) => a.kind === "capabilities");
+    expect(audit?.detail).toContain("task.example");
+  });
+
+  test("越界命令写入任务审计", async () => {
+    const blockedWorker: WorkerRunner = {
+      async run(task): Promise<WorkerResult> {
+        const dir = join(stateDir, "progress");
+        mkdirSync(dir, { recursive: true });
+        appendFileSync(
+          join(dir, `${task.id}.jsonl`),
+          `${JSON.stringify({ type: "blocked", tool: "bash", detail: "curl https://evil.example", reason: "禁止访问未声明的域名：evil.example" })}\n`,
+        );
+        return { ok: true, summary: "ok", exitCode: 0 };
+      },
+    };
+    const router = build(blockedWorker);
+    await router.handle(msg("/pisa 做点事"));
+    const id = store.recentTasks()[0]!.id;
+    await router.drainOnce();
+
+    const audit = store.auditsOf(id).find((a) => a.kind === "blocked");
+    expect(audit?.detail).toContain("evil.example");
+    expect(audit?.detail).toContain("禁止访问未声明的域名");
   });
 
   test("续跑任务失败不删除共享分支", async () => {

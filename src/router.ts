@@ -1,6 +1,7 @@
 import { join, resolve, sep } from "node:path";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import type { CommandKind, Config, RepoConfig } from "./config";
+import { resolveCapabilities } from "./capabilities";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
 import type { EffectRow, Store } from "./store";
@@ -515,6 +516,7 @@ export class Router {
       replyPr: msg.replyPr ?? null,
       replyIssue: msg.replyIssue ?? null,
       replyRepo: msg.replyRepo ?? null,
+      capabilities: msg.capabilities ?? null,
       summary: null,
       error: null,
       createdAt: this.now(),
@@ -1032,14 +1034,18 @@ export class Router {
     return buf.lastIndexOf("\n") + 1;
   }
 
-  /** 轮询 pi 扩展写出的进度文件，节流后转发到对话；start 为已转发过的位置 */
-  private watchProgress(task: Task, start: number): () => void {
+  /**
+   * 轮询 pi 扩展写出的进度文件：blocked 始终写审计，其余转发受 notifications.progress 控制。
+   * start 为已转发过的位置；返回 flush 供 Worker 结束后补读最后一段。
+   */
+  private watchProgress(task: Task, start: number): { flush: () => void; stop: () => void } {
     const file = join(resolve(this.deps.cfg.stateDir), "progress", `${task.id}.jsonl`);
     let size = start;
     let lastSentAt = 0;
     let lastMsg = "";
 
     const push = (text: string) => {
+      if (!this.progressOn) return;
       const now = Date.now();
       if (text === lastMsg || now - lastSentAt < 6000) return;
       lastMsg = text;
@@ -1047,7 +1053,7 @@ export class Router {
       void this.reply(task.chatId, text, task.id);
     };
 
-    const timer = setInterval(() => {
+    const flush = () => {
       let chunk = "";
       try {
         const buf = readFileSync(file, "utf8");
@@ -1066,16 +1072,27 @@ export class Router {
           continue;
         }
         if (o.type === "session" && o.sessionId) this.deps.store.setSessionId(task.id, String(o.sessionId));
-        if (o.type === "blocked") push(`⛔ 拦下一条命令：${String(o.detail ?? "").slice(0, 120)}`);
+        if (o.type === "blocked") {
+          const detail = String(o.detail ?? "").slice(0, 200);
+          const reason = String(o.reason ?? "").slice(0, 200);
+          this.deps.store.audit(
+            task.id,
+            "blocked",
+            JSON.stringify({ tool: String(o.tool ?? ""), detail, reason }),
+          );
+          push(`⛔ 拦下一条命令：${detail.slice(0, 120)}`);
+          continue;
+        }
         if (o.type !== "tool") continue;
         const tool = String(o.tool ?? "");
         const detail = String(o.detail ?? "").slice(0, 120);
         if (tool === "bash") push(`🛠 ${detail}`);
         else if (/edit|write|patch|create/i.test(tool)) push(`✏️ ${tool}${detail ? " " + detail : ""}`);
       }
-    }, 2000);
+    };
 
-    return () => clearInterval(timer);
+    const timer = setInterval(flush, 2000);
+    return { flush, stop: () => clearInterval(timer) };
   }
 
   /** 回帖到来源 PR / Issue：入队执行，失败留在队列重试，不改任务状态 */
@@ -1144,6 +1161,14 @@ export class Router {
     // 必须是绝对路径：omp 的 --cwd 按相对路径解析会二次拼接
     const workdir = resolve(cfg.stateDir, "worktrees", task.id);
     const log = new TaskLogger(cfg.stateDir, task.id);
+    // 任务级整体覆盖仓库级，仓库级整体覆盖全局；空对象表示显式使用默认拒绝
+    const capabilities = resolveCapabilities(
+      workdir,
+      repo.path,
+      task.capabilities ?? repo.capabilities ?? cfg.capabilities ?? null,
+    );
+    log.write("capabilities", JSON.stringify(capabilities));
+    store.audit(task.id, "capabilities", JSON.stringify(capabilities));
     // 恢复中断任务：工作副本已存在，直接在其上继续，不重建也不重置分支
     const resuming = existsSync(workdir);
     log.write("start", `${repo.alias} ${branch}`);
@@ -1170,9 +1195,8 @@ export class Router {
 
     await this.reply(task.chatId, `开始执行 · ${task.id}\n分支 ${branch}`, task.id);
 
-    const stopWatch = this.progressOn
-      ? this.watchProgress(task, resuming ? this.progressSeen(task.id) : 0)
-      : () => {};
+    // 进度监听始终开启：blocked 事件要写审计，notifications.progress 只控制是否转发
+    const watch = this.watchProgress(task, resuming ? this.progressSeen(task.id) : 0);
     let result: WorkerResult;
     try {
       result = await worker.run(
@@ -1181,11 +1205,13 @@ export class Router {
         (line) => log.write("worker", line),
         () => store.isCancelRequested(task.id),
         resuming,
+        capabilities,
       );
     } catch (err) {
       result = { ok: false, summary: "", error: (err as Error).message, exitCode: -1 };
     } finally {
-      stopWatch();
+      watch.flush();
+      watch.stop();
     }
 
     // 关停中：不写终态、不删工作副本与分支，任务留在 running 等下次启动分流为 paused

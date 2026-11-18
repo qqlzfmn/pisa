@@ -1,6 +1,7 @@
 import { join, resolve } from "node:path";
-import { mkdirSync, statSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { DEFAULT_ENV_ALLOW, type Config } from "./config";
+import { defaultRuntime, type RuntimeCapabilities } from "./capabilities";
 import type { Task, WorkerResult } from "./types";
 import { redact } from "./log";
 import { getAdapter, type WorkerAdapter } from "./adapters";
@@ -29,6 +30,8 @@ export interface WorkerRunner {
     isCancelled: () => boolean,
     /** 恢复中断任务：接着原会话执行 */
     resume?: boolean,
+    /** 本任务的能力清单；缺省为默认拒绝（只读写 workdir） */
+    capabilities?: RuntimeCapabilities,
   ): Promise<WorkerResult>;
 }
 
@@ -48,29 +51,41 @@ export class Worker implements WorkerRunner {
     onLog: (line: string) => void,
     isCancelled: () => boolean,
     resume = false,
+    capabilities?: RuntimeCapabilities,
   ): Promise<WorkerResult> {
     const extensionPath = join(import.meta.dir, "..", "extensions", "pisa-worker.ts");
     const progressDir = resolve(this.stateDir, "progress");
     mkdirSync(progressDir, { recursive: true });
+    const runtimeDir = resolve(this.stateDir, "runtime");
+    mkdirSync(runtimeDir, { recursive: true });
 
+    const runtime = capabilities ?? defaultRuntime(workdir);
+    const capabilitiesFile = join(runtimeDir, `${task.id}.json`);
     const input = {
       task,
       workdir,
       extensionPath,
       progressFile: join(progressDir, `${task.id}.jsonl`),
+      capabilitiesFile,
+      capabilities: runtime,
       cfg: this.cfg,
       resume,
       resumeSessionId: resume ? task.sessionId : null,
     };
+    // 只继承白名单与任务声明的密钥；适配器注入的 PISA_* 始终放行
+    const env = {
+      ...workerEnv([...new Set([...(this.cfg.envAllow ?? DEFAULT_ENV_ALLOW), ...runtime.secrets])], process.env),
+      ...this.adapter.buildEnv(input),
+    };
+    writeFileSync(
+      capabilitiesFile,
+      `${JSON.stringify({ ...runtime, env: Object.keys(env).sort() }, null, 2)}\n`,
+    );
     const proc = Bun.spawn(this.adapter.buildArgs(input), {
       cwd: workdir,
       stdout: "pipe",
       stderr: "pipe",
-      // 只继承白名单里的变量；适配器注入的 PISA_* 始终放行
-      env: {
-        ...workerEnv(this.cfg.envAllow ?? DEFAULT_ENV_ALLOW, process.env),
-        ...this.adapter.buildEnv(input),
-      },
+      env,
     });
 
     let timedOut = false;

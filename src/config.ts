@@ -1,11 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import type { CapabilitySpec } from "./capabilities";
+import { parseCapabilitySpec } from "./capabilities";
 
 export interface RepoConfig {
   alias: string;
   path: string;
   remote?: string;
   baseBranch?: string;
+  /** 该仓库任务的默认能力；任务级 capabilities 整体覆盖它 */
+  capabilities?: CapabilitySpec;
 }
 
 /** 一条定时任务：cron 到点后用 prompt 开单 */
@@ -121,6 +125,8 @@ export interface Config {
   dmWithoutTrigger: boolean;
   whitelist: { users: string[]; repos: string[] };
   repos: RepoConfig[];
+  /** 全局默认能力；仓库级与任务级依次整体覆盖 */
+  capabilities?: CapabilitySpec;
   worker: {
     adapter: string;
     command: string;
@@ -233,9 +239,11 @@ export function loadConfig(path = process.env.PISA_CONFIG ?? "pisa.config.json")
   if (!isAbsolute(cfg.stateDir)) cfg.stateDir = resolve(baseDir, cfg.stateDir);
   cfg = {
     ...cfg,
+    capabilities: parseCapabilitySpec(cfg.capabilities) ?? undefined,
     repos: cfg.repos.map((r) => ({
       ...r,
       path: typeof r.path === "string" && !isAbsolute(r.path) ? resolve(baseDir, r.path) : r.path,
+      capabilities: parseCapabilitySpec(r.capabilities) ?? undefined,
     })),
     triggers: cfg.triggers
       ? {

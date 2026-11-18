@@ -207,7 +207,7 @@ curl -X POST http://127.0.0.1:8799/event \
 | 怎么触发 | IM、webhook、GitHub 评论、cron、CLI、Web 控制台 | Issue / PR 评论 `@CodeBuddy`，或平台 API | 指派 issue、PR 里 `@copilot`、Agents 面板 |
 | 模型与运行时 | 你装了什么用什么，`worker.adapter` 可换 | CodeBuddy 模型，可配镜像与角色 | Copilot 订阅内的模型 |
 | 并行与隔离 | 并发上限可配，每任务一个 worktree + 分支 | 平台侧并发 | 一个任务一条分支、一个 PR；单会话最长 59 分钟 |
-| 权限面 | 你的账号与本地环境，无沙箱 | 委托代理：限时、限本仓库、权限上限 Developer | 仓库权限 + Actions secrets，受分支保护约束 |
+| 权限面 | 你的账号与本地环境；能力清单声明目录、域名、密钥与 GUI，非沙箱 | 委托代理：限时、限本仓库、权限上限 Developer | 仓库权限 + Actions secrets，受分支保护约束 |
 | 恢复与回溯 | 中断任务从原分支续跑；账本支持 rewind | 流水线日志 / 平台记录 | 会话记录与 PR 历史 |
 | 适合 | 自托管、私有 token、跨平台仓库、想换模型、长期常驻 | 代码已在 CNB、要开箱即用 | 代码已在 GitHub、要零运维 |
 
@@ -225,7 +225,7 @@ curl -X POST http://127.0.0.1:8799/event \
 不会。每任务一个 git worktree 与独立分支。同一分支被别的 worktree 占用时任务直接失败，不会另建同名分支顶替；续跑才会刻意共享父任务的分支。
 
 **Q：密钥会不会被 agent 读走？**
-Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、LANG、LC_ALL、TERM、TMPDIR、SHELL、USER），其余变量不进子进程。但 pisa 不是沙箱：进程能读写整台机器，别在不可信仓库上开自动推送。
+Worker 只拿到 `worker.envAllow` 与任务 `capabilities.secrets` 的并集（默认 PATH、HOME、LANG、LC_ALL、TERM、TMPDIR、SHELL、USER），其余变量不进子进程。能力清单默认拒绝：没声明的目录不可读写、没声明的域名不能联网、GUI 默认关闭；越界命令被 guard 拒绝并写进任务审计。但 pisa 不是沙箱：规则是命令文本层面的校验，脚本包装、动态拼接、包管理器安装脚本仍能绕过，别在不可信仓库上开自动推送。
 
 **Q：能跑在 Linux 服务器上吗？**
 代码里没有 macOS 专有依赖；常驻脚本只提供了 macOS launchd 版本（`scripts/install-launchd.sh`），Linux 用 systemd/pm2 之类托管 `bun run src/index.ts` 即可。
@@ -238,7 +238,7 @@ Worker 只拿到 `worker.envAllow` 列出的环境变量（默认 PATH、HOME、
 
 ## 已知限制
 
-- **无沙箱**：Worker 以你的身份运行，能访问整机与网络；只在你信任的仓库上开自动执行
+- **无沙箱**：Worker 以你的身份运行，能力清单能收紧目录、域名、密钥与 GUI，但拦不住命令文本之外的绕行；只在你信任的仓库上开自动执行
 - **回滚不完整**：账本只覆盖分支、push、PR；任务期间调用的 API、发的消息、改的数据库不会撤销
 - **单机单进程**：没有分布式调度，并发受本机 CPU 与 agent 进程数限制
 - **没有真正的会话持久化**：续跑靠「上一轮分支 + 上下文注入」，不是恢复 token 流

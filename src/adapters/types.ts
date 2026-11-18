@@ -1,4 +1,5 @@
 import type { Config } from "../config";
+import type { RuntimeCapabilities } from "../capabilities";
 import type { Task } from "../types";
 
 export interface AdapterInput {
@@ -11,6 +12,10 @@ export interface AdapterInput {
   resume?: boolean;
   /** 恢复中断任务时的原会话 id；新任务为 null */
   resumeSessionId?: string | null;
+  /** 生效的能力清单；缺省时提示词不输出能力段 */
+  capabilities?: RuntimeCapabilities;
+  /** 能力 manifest 的文件路径，扩展从这里读取 */
+  capabilitiesFile?: string;
 }
 
 export interface ParsedLine {

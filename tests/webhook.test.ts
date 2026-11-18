@@ -126,6 +126,21 @@ describe("webhook 事件入口", () => {
     expect(store.recentTasks()).toHaveLength(1);
   });
 
+  test("capabilities 只保留合法字段并随任务落库", async () => {
+    const res = await handler(
+      post({
+        prompt: "带能力的任务",
+        capabilities: { domains: ["example.com"], gui: true, read: [1, " /data "], bogus: "ignored" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(store.recentTasks()[0]?.capabilities).toEqual({
+      read: ["/data"],
+      domains: ["example.com"],
+      gui: true,
+    });
+  });
+
   test("省略 eventId 时自动生成 webhook:<ts>:<rand>", async () => {
     const res = await handler(post({ prompt: "自动事件号" }));
     expect(res.status).toBe(200);

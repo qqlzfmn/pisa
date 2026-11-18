@@ -1,3 +1,4 @@
+import { parseCapabilitySpec } from "./capabilities";
 import { HttpError, MAX_BODY_BYTES, readJson, safeEqual } from "./http";
 import type { IncomingMessage } from "./types";
 
@@ -61,6 +62,7 @@ export function webhookHandler(deps: WebhookDeps): (req: Request) => Promise<Res
       isDirect: true,
       threadKey: text(body, "threadKey"),
       version: text(body, "version"),
+      capabilities: parseCapabilitySpec(body.capabilities) ?? undefined,
     });
     return Response.json({ ok: true, eventId });
   };

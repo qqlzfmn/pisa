@@ -13,7 +13,15 @@
     {
       "alias": "pisa",
       "path": "/absolute/path/to/repo",
-      "baseBranch": "main"
+      "baseBranch": "main",
+      "capabilities": {
+        "read": ["/absolute/path/to/repo/.data"],
+        "write": ["/tmp"],
+        "secrets": ["GH_TOKEN"],
+        "domains": ["example.com", "*.github.com"],
+        "gui": false,
+        "deny": ["npm publish"]
+      }
     }
   ],
   "worker": {

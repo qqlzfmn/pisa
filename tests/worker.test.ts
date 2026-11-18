@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveCapabilities } from "../src/capabilities";
 import { DEFAULT_CONFIG, DEFAULT_ENV_ALLOW, loadConfig } from "../src/config";
 import { Worker, workerEnv } from "../src/worker";
 import type { Task } from "../src/types";
@@ -72,6 +73,52 @@ describe("workerEnv", () => {
     expect(cfg.worker.envAllow).toEqual([...DEFAULT_ENV_ALLOW]);
     expect(DEFAULT_CONFIG.worker.envAllow).toEqual([...DEFAULT_ENV_ALLOW]);
   });
+
+  test("任务声明的密钥才会进入子进程，并记录在 manifest", async () => {
+    const dir = tempDir();
+    const printEnv = join(dir, "printenv.sh");
+    writeFileSync(printEnv, "#!/bin/sh\nexec env\n");
+    chmodSync(printEnv, 0o755);
+
+    const saved = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = "SECRET";
+    try {
+      const lines: string[] = [];
+      const worker = new Worker(
+        { adapter: "omp", command: printEnv, timeoutSec: 30, extraArgs: [], concurrency: 1 },
+        join(dir, "state"),
+      );
+      const caps = resolveCapabilities(dir, dir, { secrets: ["GH_TOKEN"] });
+      const result = await worker.run(task, dir, (line) => lines.push(line), () => false, false, caps);
+      const out = lines.join("\n");
+
+      expect(result.ok).toBe(true);
+      expect(out).toMatch(/^GH_TOKEN=SECRET$/m);
+      const manifest = JSON.parse(readFileSync(join(dir, "state", "runtime", `${task.id}.json`), "utf8"));
+      expect(manifest.secrets).toEqual(["GH_TOKEN"]);
+      expect(manifest.env).toContain("GH_TOKEN");
+    } finally {
+      if (saved === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = saved;
+    }
+  });
+});
+
+describe("loadConfig capabilities", () => {
+  test("全局与仓库级能力清单只保留合法字段", () => {
+    const dir = tempDir();
+    const path = join(dir, "pisa.config.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        capabilities: { domains: ["example.com"], gui: "yes", read: [1, " /data "] },
+        repos: [{ alias: "demo", path: "/repo", capabilities: { write: ["/tmp"] } }],
+      }),
+    );
+    const cfg = loadConfig(path);
+    expect(cfg.capabilities).toEqual({ read: ["/data"], domains: ["example.com"] });
+    expect(cfg.repos[0]?.capabilities).toEqual({ write: ["/tmp"] });
+  });
 });
 
 describe("Worker.run", () => {
@@ -105,11 +152,46 @@ describe("Worker.run", () => {
       expect(out).toMatch(/^HOME=/m);
       expect(out).toMatch(/^PISA_WORKDIR=/m);
       expect(out).toMatch(/^PISA_PROGRESS_FILE=/m);
+      expect(out).toMatch(/^PISA_CAPABILITIES_FILE=/m);
+      const manifest = JSON.parse(readFileSync(join(dir, "state", "runtime", `${task.id}.json`), "utf8"));
+      expect(manifest.write).toEqual([dir]);
+      expect(manifest.gui).toBe(false);
+      expect(manifest.env).toContain("PISA_WORKDIR");
+      expect(manifest.env).not.toContain("PISA_TELEGRAM_TOKEN");
     } finally {
       if (saved.token === undefined) delete process.env.PISA_TELEGRAM_TOKEN;
       else process.env.PISA_TELEGRAM_TOKEN = saved.token;
       if (saved.gh === undefined) delete process.env.GH_TOKEN;
       else process.env.GH_TOKEN = saved.gh;
+    }
+  });
+
+  test("任务声明的密钥才会进入子进程，并记录在 manifest", async () => {
+    const dir = tempDir();
+    const printEnv = join(dir, "printenv.sh");
+    writeFileSync(printEnv, "#!/bin/sh\nexec env\n");
+    chmodSync(printEnv, 0o755);
+
+    const saved = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = "SECRET";
+    try {
+      const lines: string[] = [];
+      const worker = new Worker(
+        { adapter: "omp", command: printEnv, timeoutSec: 30, extraArgs: [], concurrency: 1 },
+        join(dir, "state"),
+      );
+      const caps = resolveCapabilities(dir, dir, { secrets: ["GH_TOKEN"] });
+      const result = await worker.run(task, dir, (line) => lines.push(line), () => false, false, caps);
+      const out = lines.join("\n");
+
+      expect(result.ok).toBe(true);
+      expect(out).toMatch(/^GH_TOKEN=SECRET$/m);
+      const manifest = JSON.parse(readFileSync(join(dir, "state", "runtime", `${task.id}.json`), "utf8"));
+      expect(manifest.secrets).toEqual(["GH_TOKEN"]);
+      expect(manifest.env).toContain("GH_TOKEN");
+    } finally {
+      if (saved === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = saved;
     }
   });
 });

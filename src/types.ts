@@ -1,3 +1,5 @@
+import type { CapabilitySpec } from "./capabilities";
+
 export type TaskStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled" | "rewound";
 
 /** 任务对外产生的副作用种类：rewind 的依据 */
@@ -50,6 +52,8 @@ export interface IncomingMessage {
   version?: string;
   /** 触发者：入口侧真实发起人；缺省用 userId（PR 评论这类以配置身份投递的入口要显式给） */
   actor?: string;
+  /** 本任务的能力声明；缺省沿用仓库与全局配置 */
+  capabilities?: CapabilitySpec;
 }
 
 export interface Task {
@@ -74,6 +78,8 @@ export interface Task {
   replyIssue: number | null;
   /** 回帖目标仓库；null 表示回退到 github 配置的单仓库 */
   replyRepo: string | null;
+  /** 任务级能力声明；null/缺省表示沿用仓库与全局配置 */
+  capabilities?: CapabilitySpec | null;
   summary: string | null;
   error: string | null;
   createdAt: number;
