@@ -63,6 +63,11 @@ export function remoteUrl(workdir: string): string {
   return sh(["git", "-C", workdir, "remote", "get-url", "origin"]).out;
 }
 
+/** HEAD 提交 sha：推送 effect 用它把键绑到具体内容，续跑产生新提交时不会被旧 done 行跳过 */
+export function headCommit(workdir: string): string {
+  return sh(["git", "-C", workdir, "rev-parse", "HEAD"]).out;
+}
+
 export function pushBranch(workdir: string, branch: string): ExecResult {
   return sh(["git", "-C", workdir, "push", "-u", "origin", branch]);
 }

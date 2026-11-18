@@ -18,7 +18,7 @@ import { Store } from "../src/store";
 import { Router } from "../src/router";
 import { GitDeliverer, prBody } from "../src/deliver";
 import { EffectQueue } from "../src/effects";
-import { commitAll, compareUrl, createWorktree, sh, type ExecResult } from "../src/git";
+import { commitAll, compareUrl, createWorktree, headCommit, sh, type ExecResult } from "../src/git";
 import type { Config } from "../src/config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "../src/types";
 import type { WorkerRunner } from "../src/worker";
@@ -1064,6 +1064,25 @@ describe("GitDeliverer 更新既有 PR", () => {
     expect(res.prUrl).toBe("https://github.com/o/r/pull/12");
     expect(res.pushed).toBe(true);
     expect(sh(["git", "--git-dir", bare, "rev-parse", "--verify", "pisa/parent"]).code).toBe(0);
+  });
+
+  test("续跑后再交付：新提交仍推送，同内容重放只推一次", async () => {
+    const workdir = setup();
+    const deliverer = new GitDeliverer(cfg, { hasGh: () => false });
+    const store = new Store(":memory:");
+    const handlers = deliverer.effectHandlers();
+    const effects = new EffectQueue(store).register("push", handlers.push).register("pr", handlers.pr);
+    const task = { ...baseTask, id: "t_resume", branch: "pisa/parent" };
+
+    await deliverer.deliver(task, workdir, cfg.repos[0]!, effects);
+    // 推送后、任务转 succeeded 前崩溃：effect 已 done，续跑前又出一处改动
+    expect(store.effectRow("push", `t_resume:pisa/parent:${headCommit(workdir)}`)?.status).toBe("done");
+
+    writeFileSync(join(workdir, "next.txt"), "第二轮\n");
+    expect((await deliverer.deliver(task, workdir, cfg.repos[0]!, effects)).pushed).toBe(true);
+
+    const remote = sh(["git", "--git-dir", bare, "ls-tree", "-r", "--name-only", "pisa/parent"]).out.split("\n");
+    expect(remote).toContain("next.txt");
   });
 
   test("没有 prUrl 时按原有逻辑创建 PR", async () => {
