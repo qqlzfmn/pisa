@@ -56,3 +56,68 @@ export function computeWindowMetrics(tasks: readonly Task[]): WindowMetrics {
 export function windowMetrics(store: Store, now = Date.now()): WindowMetrics {
   return computeWindowMetrics(store.finishedBetween(now - METRICS_WINDOW_MS, now));
 }
+
+/** 单个时间桶：`start` 为桶起点，`finished` 起的字段与 WindowMetrics 同口径 */
+export interface MetricBucket extends WindowMetrics {
+  start: number;
+  /** 桶起点时刻排队中的任务数 */
+  queueDepth: number;
+  /** 桶起点时刻执行中的任务数 */
+  running: number;
+}
+
+export interface MetricHistory {
+  from: number;
+  to: number;
+  summary: WindowMetrics;
+  buckets: MetricBucket[];
+}
+
+/** 桶起点已排队：创建于之前且尚未开始；未开始且已有结束时间说明排队期间被取消 */
+function queuedAt(task: Task, at: number): boolean {
+  if (task.createdAt > at) return false;
+  if (task.startedAt !== null) return task.startedAt > at;
+  if (task.endedAt !== null) return task.endedAt > at;
+  return task.status === "queued";
+}
+
+function runningAt(task: Task, at: number): boolean {
+  if (task.startedAt === null || task.startedAt > at) return false;
+  if (task.endedAt !== null) return task.endedAt > at;
+  return task.status === "running";
+}
+
+/**
+ * 按小时切历史：完成数/成功率/耗时分位按 endedAt 归桶，队列深度与运行数在桶起点采样。
+ * 桶边界对齐 epoch 整数倍，图上每个柱子的时间点是确定的，不随刷新漂移。
+ */
+export function metricHistory(
+  tasks: readonly Task[],
+  now: number,
+  hours: number,
+  bucketMs = 60 * 60 * 1000,
+): MetricHistory {
+  const span = Math.max(1, Math.floor(hours));
+  const lastStart = Math.floor(now / bucketMs) * bucketMs;
+  const firstStart = lastStart - (span - 1) * bucketMs;
+  const groups: Task[][] = Array.from({ length: span }, () => []);
+  for (const t of tasks) {
+    if (t.endedAt === null) continue;
+    if (t.status !== "succeeded" && t.status !== "failed") continue;
+    const index = Math.floor((t.endedAt - firstStart) / bucketMs);
+    if (index >= 0 && index < span) groups[index]!.push(t);
+  }
+  const buckets = groups.map((group, index) => {
+    const start = firstStart + index * bucketMs;
+    return {
+      ...computeWindowMetrics(group),
+      start,
+      queueDepth: tasks.filter((t) => queuedAt(t, start)).length,
+      running: tasks.filter((t) => runningAt(t, start)).length,
+    };
+  });
+  const inWindow = tasks.filter(
+    (t) => t.endedAt !== null && t.endedAt >= firstStart && t.endedAt <= now,
+  );
+  return { from: firstStart, to: now, summary: computeWindowMetrics(inWindow), buckets };
+}

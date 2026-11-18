@@ -69,8 +69,10 @@ core 内部模块关系：
 | `rewind.ts` | 撤销计划与执行（纯逻辑 + 探测接口注入） | `planRewind`、`applyRewind` |
 | `reconcile.ts` | 资源对账：任务记录与分支/工作副本/PR 的差异（纯计划 + 执行） | `planReconcile`、`applyReconcile`、`formatReconcile` |
 | `stage.ts` / `status.ts` | 任务阶段规则表与对外投影：阶段、JSON 字段、看板文本 | `taskStage()`、`taskJson()`、`formatStatusBoard()` |
-| `metrics.ts` | 24h 指标聚合：成功率、耗时分位；看板、CLI 与 `/health` 共用 | `computeWindowMetrics()`、`windowMetrics()`、`percentile()` |
-| `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机 | `createWebApp()`、`startWebServer()`、`ReplyBus` |
+| `metrics.ts` | 指标聚合：24h 汇总与按小时历史（成功率、耗时分位、队列/运行采样）；看板、CLI、`/health` 与 `/api/metrics` 共用 | `computeWindowMetrics()`、`windowMetrics()`、`metricHistory()`、`percentile()` |
+| `web.ts` / `web-ui.ts` | 本机控制台：HTTP 外壳 + 单页；写操作转成 `IncomingMessage` 交给 `router.handle`，不复制鉴权与状态机；配置编辑复用 `config-edit.ts`，撤销复用 `Router.rewindPreview/rewindExecute` | `createWebApp()`、`startWebServer()`、`ReplyBus` |
+| `config-edit.ts` | 配置的可编辑投影、保存前校验与原子写回；保存后需重启生效 | `editableConfig()`、`validateConfigPatch()`、`saveConfigPatch()` |
+| `audit.ts` | 写操作审计：`<stateDir>/audit.log` 追加 JSONL，超 1MiB 轮转一代 | `AuditLog` |
 | `log.ts` / `config.ts` / `types.ts` | 日志脱敏、配置加载与默认值、共享类型与状态机表 | — |
 
 ## 2. 任务状态机与恢复语义
@@ -356,3 +358,4 @@ interface ChannelAdapter {
 | 撤销 | `src/rewind.ts`、`docs/specs/013-rewind/` |
 | 资源对账 | `src/reconcile.ts`、`docs/specs/019-reconcile/` |
 | 配置项 | `src/config.ts`、`pisa.config.example.json` |
+| 控制台配置编辑与写操作审计 | `src/config-edit.ts`、`src/audit.ts`、`docs/specs/021-web-console-phase2/` |

@@ -769,6 +769,17 @@ export class Store {
     return rows.map(toTask);
   }
 
+  /** 与 [from, to] 有交集的任务：窗口内开始过、结束过，或跨窗口仍在进行；趋势图取数用 */
+  tasksInWindow(from: number, to: number): Task[] {
+    const rows = this.db
+      .query(
+        `SELECT * FROM tasks WHERE created_at <= ? AND (ended_at IS NULL OR ended_at >= ?)
+           ORDER BY created_at`,
+      )
+      .all(to, from) as Row[];
+    return rows.map(toTask);
+  }
+
   /** 各状态任务数；看板汇总行用 */
   countByStatus(): Record<TaskStatus, number> {
     const rows = this.db.query("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").all() as Array<{
