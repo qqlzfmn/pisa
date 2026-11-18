@@ -34,6 +34,8 @@
 {
   "id": "t_20261118_ab12cd",
   "status": "queued",
+  "stage": "working/queued",
+  "stageLabel": "等空闲槽位",
   "repo": "demo",
   "branch": null,
   "prUrl": null,
@@ -50,6 +52,8 @@
 
 `--wait --json` 只输出最终任务对象（不再有入队时的第二个 JSON）。`wait --json` 输出同样字段；超时时输出 `{"id","status","timeout":true}`。
 
+`stage` 是从 `status`、分支与 PR 只读派生的阶段，回答「在等谁」，与 `status` 并存：`person/answer`（等你处理）、`person/review`（等你评审）、`working/queued`（等空闲槽位）、`working`（执行中）、`idle`（无待办）。
+
 `status --json`：
 
 ```json
@@ -63,7 +67,7 @@
 }
 ```
 
-`list --json`、`show --json`、`repos --json` 都是数组或对象，字段与上面一致。
+`running` / `queued` / `finished` 里的每项都是上面的任务投影，含 `stage` 与 `stageLabel`。`list --json`、`show --json`、`repos --json` 都是数组或对象，字段与上面一致。
 
 ## 退出码
 

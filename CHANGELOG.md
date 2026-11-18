@@ -6,6 +6,7 @@
 
 ### 新增
 
+- 任务阶段投影：`src/stage.ts` 用一张互斥且覆盖全部状态的规则表，从 `status`、分支与 PR 只读派生 `person/answer` / `person/review` / `working/queued` / `working` / `idle`，回答「现在在等谁」；看板、`pisa show`、`status --json`、`/api/tasks` 与 Web 表格/详情共用同一投影（`stage` + `stageLabel`），`status` 与状态机不变（`docs/specs/017-task-stages/`）
 - 健康与任务指标：`GET /health` 返回 `ok`、`uptimeSec`、队列深度、running 数与最近 24h 成功率/耗时分位/每仓库任务数；`ok` 取守护进程心跳，心跳停止时返回 503。看板与 `pisa status --json` 附带同一口径的 24h 汇总（`src/metrics.ts`）
 - `triggers` 表：任务创建改为按触发身份（`source` + 线程 + 消息 + 版本 + 载荷指纹）落库，触发器与任务同一事务；旧库在 `Store` 构造时按任务自身信息补齐，重放旧事件不会重复建单
 - 编辑与线程归属：同一消息的新版本按 `version` 留痕，任务仍在排队就更新需求正文；同线程不带命令的后续消息并进未结束任务的上下文
