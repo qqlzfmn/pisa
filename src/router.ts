@@ -488,10 +488,14 @@ export class Router {
     };
     const claim = store.createTaskFromTrigger(trigger, task);
     if (!claim.created) {
+      // 幂等投递也要登记事件，外部调用方（auto-improve）靠 event_id → task_id 对应任务
+      store.claimEvent(msg.eventId, claim.taskId);
       if (claim.promptUpdated) await this.reply(msg.chatId, `任务 ${claim.taskId} 还没开跑，已按最新版本更新需求。`);
       else if (claim.edited) await this.reply(msg.chatId, `任务 ${claim.taskId} 已在执行，这次修改只做了留痕。`);
       return;
     }
+    // 事件账本：同一 eventId 只能对应一个任务，webhook 调用方按它反查
+    store.claimEvent(msg.eventId, task.id);
     await this.reply(msg.chatId, `已接单 · ${task.id}\n仓库：${repo.alias}\n排队中。`);
   }
 

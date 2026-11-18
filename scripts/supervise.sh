@@ -13,6 +13,10 @@ if [ -z "${PISA_WEBHOOK_TOKEN:-}" ] && [ -f "$HOME/.pisa/webhook_token" ]; then
   export PISA_WEBHOOK_TOKEN="$(cat "$HOME/.pisa/webhook_token")"
 fi
 
+if [ -z "${PISA_WEB_TOKEN:-}" ] && [ -f "$HOME/.pisa/web_token" ]; then
+  export PISA_WEB_TOKEN="$(cat "$HOME/.pisa/web_token")"
+fi
+
 if [ -z "${PISA_TELEGRAM_TOKEN:-}" ]; then
   echo "[supervise] 缺少 PISA_TELEGRAM_TOKEN" >&2
   exit 1
