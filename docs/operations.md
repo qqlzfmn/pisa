@@ -154,23 +154,32 @@ curl -X POST http://127.0.0.1:8799/event \
 
 ## Agent CLI 与 skill
 
-不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。CLI 只读写 `pisa.config.json` 与同一个 `pisa.db`，执行仍由守护进程负责。
+不想接聊天或 webhook 时，coding agent 可以直接调用一次性 CLI。建单在本地落库（守护进程不在也不丢任务），其余读与写全部经守护进程的管理 API，不直连 SQLite。
 
 ```bash
 bun link                 # 把 pisa 命令链到 PATH；也可直接用 bun run src/cli.ts
-pisa task "修 CI：test 失败日志见 ci.log" --repo demo --json
+pisa run "修 CI：test 失败日志见 ci.log" --repo demo --json   # 入队并返回任务号
 pisa wait <任务号> --timeout 900 --json
 pisa status --json
-pisa show <任务号>
-pisa logs <任务号> --tail 100
+pisa show <任务号> --json
+pisa logs <任务号> --tail 100 --json
+pisa list --status failed --json
+pisa retry <任务号> --json
+pisa merge <任务号> --yes
+pisa rewind <任务号> [--yes] --json
 pisa cancel <任务号>
 pisa continue <任务号> "按 PR 评论再改"
+pisa executor pause|resume
+pisa config [--set patch.json --yes]
 ```
 
+- 管理 API 只监听 `127.0.0.1`，凭证只从请求头走：CLI 读 `web.tokenEnv` 指向的环境变量，设 `Authorization: Bearer` 或 `x-pisa-token`；`?token=` 只给 `/ui` 用，打 `/api/*` 一律 401
+- CLI 需要 `web.enabled: true` 与 `${web.tokenEnv}`；两者缺一都不能读写状态
 - `--config` 指定配置文件；缺省读 `PISA_CONFIG`，再缺省从当前目录向上找 `pisa.config.json`
 - 相对 `stateDir` 与仓库路径以配置文件目录为基准，从子目录调用也指向同一份状态
-- 退出码：`0` 成功、`1` 任务失败、`2` 用法/配置、`3` 找不到、`4` 不可运行、`5` 等待超时
-- 提交时若 10 秒内没有守护进程心跳，stderr 会警告；任务仍入队，不会丢
+- 退出码可脚本化：`0` 正常、`1` 操作成功但需重启（仅 `config --set` 写文件后）、`2` 部件错误（用法错误、API 不可达、任务失败或超时、操作被拒）、`3` 待配置（找不到配置、`web.enabled` 未开、token 缺失或被拒）
+- `run` 在守护进程心跳过期时向 stderr 打警告，任务仍入队；`--json` 只把结构化结果写到 stdout，警告不污染
+- `merge`、`rewind --yes`、`config --set` 都要 `--yes` 二次确认；缺确认时只预览或直接报错
 
 给 agent 的可复用说明在 [`skills/pisa/`](../skills/pisa/)：`SKILL.md` 是入口，`references/` 放命令表、brief 模板、失败模式、能力边界与 3 个可复制场景。把整个目录放进 agent 的 skills 目录即可，不依赖 pisa 专有工具。
 
@@ -183,8 +192,8 @@ PISA_WEB_TOKEN=<自定义 token> bun run web
 # Web 控制台：http://127.0.0.1:8787/ui?token=<token>
 ```
 
-- 只监听 `127.0.0.1`；`/ui` 与 `/api/*` 都要 token（查询参数、`Authorization: Bearer`、`x-pisa-token`、cookie 任一），缺失或错误一律 401
-- 用带 token 的 `/ui` 打开后下发 `HttpOnly` cookie，页面随即把地址栏里的 token 抹掉
+- 只监听 `127.0.0.1`；`/api/*` 只认请求头（`Authorization: Bearer`、`x-pisa-token`）与 `HttpOnly` cookie，带 `?token=` 一律 401；`/ui` 可以用 `?token=` 换 cookie，页面随即把地址栏里的 token 抹掉。缺失或错误一律 401
+- 机器接口：`GET /api/state`（看板文本 + 计数 + 24h 指标 + 执行器状态）、`GET /api/repos`、`GET /api/tasks?status=&limit=&pr=&githubRepo=`（附平铺 `tasks`，供脚本用）、`GET /api/tasks/:id?tail=N`、`POST /api/tasks/:id/{cancel,merge,rewind,retry}`、`POST /api/executor/pause`（`{ confirm: true, paused?: false }`）；CLI 全部复用这一套
 - 看板三段：运行中 / 排队 / 最近完成（最多 20 条），可按仓库筛选，5 秒自动刷新
 - 任务详情：prompt、状态、耗时、分支、PR、副作用与最后 200 行日志
 - 支持派活、取消、合并、撤销与复制任务号；每个写操作都在浏览器里二次确认

@@ -714,3 +714,161 @@ describe("web 控制台", () => {
     });
   });
 });
+
+describe("机器接口", () => {
+  let repo: string;
+  let stateDir: string;
+  let store: Store;
+  let cfg: Config;
+  let router: Router;
+  let app: (req: Request) => Promise<Response>;
+
+  beforeEach(() => {
+    repo = makeRepo();
+    stateDir = mkdtempSync(join(tmpdir(), "pisa-web-mgmt-"));
+    store = new Store(":memory:");
+    cfg = makeCfg(repo, stateDir);
+    const bus = new ReplyBus("web", new FakeChannel());
+    router = new Router({ cfg, store, worker: okWorker, deliverer: new GitDeliverer(cfg), channel: bus });
+    app = createWebApp({ cfg, store, router, bus, token: TOKEN });
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  const auth = { authorization: `Bearer ${TOKEN}` };
+
+  function call(path: string, init: RequestInit = {}): Promise<Response> {
+    return app(new Request(`http://127.0.0.1:8787${path}`, init));
+  }
+
+  function post(path: string, body?: unknown): Promise<Response> {
+    return call(path, {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  }
+
+  function seedTask(id: string, over: Partial<Task> = {}): Task {
+    const task: Task = {
+      id,
+      source: `seed:${id}`,
+      channel: "fake",
+      chatId: "web",
+      requester: "u1",
+      repo: "demo",
+      prompt: "既有任务",
+      status: "queued",
+      branch: null,
+      prUrl: null,
+      sessionId: null,
+      baseRef: null,
+      context: null,
+      replyPr: null,
+      replyIssue: null,
+      replyRepo: null,
+      summary: null,
+      error: null,
+      createdAt: 0,
+      startedAt: null,
+      endedAt: null,
+      cancelRequested: false,
+      ...over,
+    };
+    store.insertTask(task);
+    return task;
+  }
+
+  test("query token 不能访问 API", async () => {
+    const res = await call(`/api/state?token=${TOKEN}`);
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { error: string }).error).toContain("不接受 query token");
+  });
+
+  test("/api/state 汇总看板、队列与执行器", async () => {
+    seedTask("t_state", { prompt: "排队中" });
+    store.beat();
+    const res = await call("/api/state", { headers: auth });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      daemon: { alive: boolean };
+      counts: Record<string, number>;
+      total: number;
+      last24h: HealthResponse["last24h"];
+      worker: { concurrency: number; running: number; paused: boolean };
+      repos: string[];
+      text: string;
+    };
+    expect(body.daemon.alive).toBe(true);
+    expect(body.total).toBe(1);
+    expect(body.counts.queued).toBe(1);
+    expect(body.last24h.finished).toBe(0);
+    expect(body.worker).toEqual({ concurrency: 1, running: 0, paused: false });
+    expect(body.repos).toEqual(["demo"]);
+    expect(body.text).toContain("排队（1）");
+    expect((await call("/api/state", { method: "POST", headers: auth })).status).toBe(405);
+  });
+
+  test("/api/repos 返回仓库与授权状态", async () => {
+    const res = await call("/api/repos", { headers: auth });
+    const body = (await res.json()) as { repos: Array<Record<string, unknown>> };
+    expect(body.repos).toEqual([{ alias: "demo", path: repo, remote: null, baseBranch: "main", allowed: true }]);
+  });
+
+  test("任务列表支持 status/limit 过滤，并给平铺列表", async () => {
+    seedTask("t_list_a", { prompt: "先排队" });
+    seedTask("t_list_b", { prompt: "已完成", status: "succeeded", endedAt: 10 });
+    const res = await call("/api/tasks?status=succeeded&limit=1", { headers: auth });
+    const body = (await res.json()) as { tasks: Array<{ id: string; status: string }>; queued: unknown[] };
+    expect(body.tasks.map((t) => t.id)).toEqual(["t_list_b"]);
+    expect(body.queued).toHaveLength(1);
+    const bad = await call("/api/tasks?status=nope", { headers: auth });
+    expect(bad.status).toBe(400);
+  });
+
+  test("详情 ?tail= 限制日志行数", async () => {
+    seedTask("t_tail");
+    mkdirSync(join(stateDir, "logs"), { recursive: true });
+    writeFileSync(join(stateDir, "logs", "t_tail.log"), "a\nb\nc\n");
+    const res = await call("/api/tasks/t_tail?tail=1", { headers: auth });
+    const body = (await res.json()) as DetailResponse;
+    expect(body.logTail).toEqual(["c"]);
+  });
+
+  test("retry 为终态任务新建运行，进行中的任务被拒", async () => {
+    seedTask("t_retry", { prompt: "原需求", status: "failed" });
+    const res = await post("/api/tasks/t_retry/retry", { confirm: true });
+    const body = (await res.json()) as { ok: boolean; taskId: string; message: string };
+    expect(res.status).toBe(200);
+    expect(body.ok, body.message).toBe(true);
+    expect(body.taskId).not.toBe("t_retry");
+    expect(store.get(body.taskId)!.prompt).toBe("原需求");
+
+    seedTask("t_retry_running", { status: "running", startedAt: 1 });
+    const refused = await post("/api/tasks/t_retry_running/retry", { confirm: true });
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: string }).error).toContain("仍在进行");
+    expect((await post("/api/tasks/t_retry/retry", {})).status).toBe(400);
+  });
+
+  test("executor 暂停后不再领取任务", async () => {
+    expect((await post("/api/executor/pause", {})).status).toBe(400);
+    const paused = (await (await post("/api/executor/pause", { confirm: true })).json()) as { paused: boolean };
+    expect(paused.paused).toBe(true);
+    expect(router.executorPaused).toBe(true);
+    seedTask("t_paused_exec");
+    await router.drainOnce();
+    expect(store.get("t_paused_exec")!.status).toBe("queued");
+
+    const resumed = (await (await post("/api/executor/pause", { confirm: true, paused: false })).json()) as {
+      paused: boolean;
+    };
+    expect(resumed.paused).toBe(false);
+    await router.drainOnce();
+    expect(store.get("t_paused_exec")!.status).toBe("succeeded");
+  });
+});

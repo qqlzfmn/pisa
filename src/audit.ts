@@ -3,7 +3,15 @@ import { join } from "node:path";
 import { readTail, tailLines } from "./log";
 
 /** Web 与 IM 的写操作都记这里，出问题能追到谁在什么时候做了什么 */
-export type AuditAction = "dispatch" | "cancel" | "merge" | "rewind" | "config.save";
+export type AuditAction =
+  | "dispatch"
+  | "cancel"
+  | "merge"
+  | "rewind"
+  | "retry"
+  | "executor.pause"
+  | "executor.resume"
+  | "config.save";
 
 export interface AuditEntry {
   ts: number;
