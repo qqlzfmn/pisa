@@ -3,10 +3,16 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { prNumberFromIssueUrl } from "./github";
 import type { Effect, EffectKind, Task, TaskStatus } from "./types";
-import { canTransition } from "./types";
+import { ACTIVE_STATUSES, TERMINAL_STATUSES, canTransition } from "./types";
+
+/** 把状态集合摊成 SQL 的 IN 列表；取值来自编译期常量，不含外部输入 */
+function sqlIn(statuses: readonly TaskStatus[]): string {
+  return `(${statuses.map((s) => `'${s}'`).join(",")})`;
+}
 
 /** 终态状态集合：看板「最近完成」与保留策略共用 */
-const FINISHED_IN = "('succeeded','failed','cancelled','rewound')";
+const FINISHED_IN = sqlIn(TERMINAL_STATUSES);
+const ACTIVE_IN = sqlIn(ACTIVE_STATUSES);
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
@@ -327,6 +333,17 @@ export class Store {
             (!repo || t.prUrl.includes(`github.com/${repo}/pull/${pr}`)),
         ) ?? null
     );
+  }
+
+  /**
+   * 该 PR 下仍在进行的任务（排队/执行/暂停），取最新一条。
+   * 只认 reply_pr：PR 评论来源的任务都会写入该列；带 repo 时按 reply_repo 区分同号 PR。
+   */
+  activeTaskByPr(pr: number, repo?: string): Task | null {
+    const rows = this.db
+      .query(`SELECT * FROM tasks WHERE reply_pr = ? AND status IN ${ACTIVE_IN} ORDER BY created_at DESC, rowid DESC`)
+      .all(pr) as Row[];
+    return rows.map(toTask).find((t) => !repo || t.replyRepo === repo) ?? null;
   }
 
   nextQueued(): Task | null {

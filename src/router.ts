@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import type { CommandKind, Config, RepoConfig } from "./config";
 import { githubRepos, parseCommand, repoByAlias, splitRepoAlias, taskGuard } from "./config";
 import type { ChannelAdapter, IncomingMessage, Task, WorkerResult } from "./types";
+import { ACTIVE_STATUSES } from "./types";
 import type { Store } from "./store";
 import type { WorkerRunner } from "./worker";
 import type { Deliverer } from "./deliver";
@@ -338,6 +339,16 @@ export class Router {
       // IM 续跑只允许原请求者；PR 评论以配置身份投递，评论作者与 IM 用户无从对应
       if (!msg.admin && cmd.kind === "continue" && parent.requester !== msg.userId) {
         await this.reply(msg.chatId, "只有原请求者可以续跑。");
+        return;
+      }
+      // 父任务还在跑：同一 PR 只有一条工作线，等它结束再发评论。占位后回执，重复投递静默
+      if (ACTIVE_STATUSES.includes(parent.status)) {
+        if (!store.claimEvent(msg.eventId, parent.id)) return;
+        const target = msg.replyPr ? `PR #${msg.replyPr} 的任务 ${parent.id}` : `任务 ${parent.id}`;
+        await this.reply(
+          msg.chatId,
+          `${target} 正在进行（${parent.status}），结束后再${msg.replyPr ? "发评论" : "续跑"}。`,
+        );
         return;
       }
       if (!parent.branch) {

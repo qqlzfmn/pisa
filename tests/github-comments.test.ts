@@ -472,6 +472,57 @@ describe("GitHub 评论 → 任务", () => {
     expect(child.replyPr).toBe(12);
   });
 
+  test("PR 已有进行中的任务时不开第二条工作线，重复投递只回一条", async () => {
+    store.insertTask({ ...baseTask, id: "t_parent", prompt: "第一轮", replyPr: 12, replyRepo: "o/r" });
+    expect(store.claimQueued("t_parent", Date.now(), "pisa/t_parent")).toBe(true);
+    expect(store.activeTaskByPr(12, "o/r")!.id).toBe("t_parent");
+
+    const comment = { id: 5, body: "/pisa 再改一处", issue_url: "https://api.github.com/repos/o/r/issues/12" };
+    const { runner } = ghRouter([comment], { prs: [12] });
+    const { w } = watcher(runner);
+    await w.poll();
+
+    // 只挡住第二条工作线：任务表里仍只有正在跑的那条
+    expect(store.recentTasks().length).toBe(1);
+    expect(store.countByStatus().queued).toBe(0);
+    expect(channel.sent.length).toBe(1);
+    expect(channel.sent[0]!.text).toContain("PR #12");
+    expect(channel.sent[0]!.text).toContain("t_parent");
+    expect(channel.sent[0]!.text).toContain("running");
+
+    // 同一评论再轮一轮：eventId 已占位，静默
+    await w.poll();
+    expect(store.recentTasks().length).toBe(1);
+    expect(channel.sent.length).toBe(1);
+  });
+
+  test("父任务成功后同 PR 的评论照常续跑", async () => {
+    store.insertTask({ ...baseTask, id: "t_parent", prompt: "第一轮", replyPr: 12, replyRepo: "o/r" });
+    expect(store.claimQueued("t_parent", Date.now(), "pisa/t_parent")).toBe(true);
+    expect(
+      store.transition("t_parent", "succeeded", {
+        summary: "建了 a.txt",
+        prUrl: "https://github.com/o/r/pull/12",
+        endedAt: Date.now(),
+      }),
+    ).toBe(true);
+    expect(store.activeTaskByPr(12, "o/r")).toBeNull();
+
+    const { runner } = ghRouter(
+      [{ id: 6, body: "/pisa 再改一处", issue_url: "https://api.github.com/repos/o/r/issues/12" }],
+      { prs: [12] },
+    );
+    const { w } = watcher(runner);
+    await w.poll();
+
+    const child = store.recentTasks()[0]!;
+    expect(child.id).not.toBe("t_parent");
+    expect(child.status).toBe("queued");
+    expect(child.replyPr).toBe(12);
+    expect(child.baseRef).toBe("pisa/t_parent");
+    expect(child.branch).toBe("pisa/t_parent");
+  });
+
   test("评论续跑在原分支上提交，不新建分支也不新建 PR", async () => {
     expect(sh(["git", "-C", repo, "branch", "pisa/t_parent", "main"]).code).toBe(0);
     store.insertTask({ ...baseTask, id: "t_parent", prompt: "第一轮" });
@@ -888,6 +939,22 @@ describe("GitHub 多仓库轮询", () => {
     expect(store.taskByPr(7, "o/c")).toBeNull();
     // 不带仓库保持旧行为：任意仓库该编号的最新成功任务
     expect(store.taskByPr(7)!.id).toBe("t_b");
+  });
+
+  test("activeTaskByPr 只认进行中的 PR 任务，取最新一条并按仓库区分", () => {
+    store.insertTask({ ...baseTask, id: "t_run", createdAt: 1, prompt: "跑着", replyPr: 7, replyRepo: "o/a" });
+    store.claimQueued("t_run", Date.now(), "pisa/t_run");
+    expect(store.activeTaskByPr(7, "o/a")!.id).toBe("t_run");
+    expect(store.activeTaskByPr(7, "o/b")).toBeNull();
+    expect(store.activeTaskByPr(8, "o/a")).toBeNull();
+
+    store.insertTask({ ...baseTask, id: "t_queue", createdAt: 2, prompt: "排队", replyPr: 7, replyRepo: "o/a" });
+    expect(store.activeTaskByPr(7, "o/a")!.id).toBe("t_queue");
+
+    store.transition("t_queue", "cancelled", { endedAt: Date.now() });
+    expect(store.activeTaskByPr(7, "o/a")!.id).toBe("t_run");
+    store.transition("t_run", "cancelled", { endedAt: Date.now() });
+    expect(store.activeTaskByPr(7, "o/a")).toBeNull();
   });
 
   test("回帖使用任务记录的仓库", async () => {

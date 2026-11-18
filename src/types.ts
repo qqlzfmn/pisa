@@ -98,6 +98,12 @@ export interface DeliveryResult {
   pushed: boolean;
 }
 
+/** 终态：任务已交回，不再占用分支与 PR */
+export const TERMINAL_STATUSES: readonly TaskStatus[] = ["succeeded", "failed", "cancelled", "rewound"];
+
+/** 进行中：仍在占用分支与 PR 的工作线，同一 PR 不应再开第二条 */
+export const ACTIVE_STATUSES: readonly TaskStatus[] = ["queued", "running", "paused"];
+
 /** 状态机允许的跃迁，唯一事实源 */
 export const ALLOWED: Record<TaskStatus, TaskStatus[]> = {
   queued: ["running", "cancelled"],

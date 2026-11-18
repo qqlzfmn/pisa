@@ -19,6 +19,7 @@
 | 权限 | PR 评论以配置的 `userId` 投递，因此不走「只有原请求者可以续跑」；IM 的 `continue` 仍保留该校验 | 评论作者是 GitHub 身份，与 IM 白名单无对应关系（spec 非目标） |
 | 回帖 | `Task.replyPr` 落库（tasks 表新增 `reply_pr INTEGER`，含轻量迁移）；`runTask` 在写 `succeeded` 后调用 `postComment`，正文由 `formatReply(summary)` 生成（截 3000 字） | 回帖是任务收尾动作，放在状态写入之后；失败只 `TaskLogger.write`，不改状态（FR-008/FR-009） |
 | 回帖幂等 | `replyMarker(taskId, purpose)` 生成隐藏注释，`postReplyOnce` 先查讨论串（`repos/<repo>/issues/<n>/comments`，`--jq '.[]'` 逐行取正文）再发；已有标记返回 `skipped`，检查失败返回错误且不发 | 幂等键用任务号：任务收尾只会发生一次，重跑复用同一号；检查失败时漏发可重跑补救，重复发不可撤销（FR-014/FR-015） |
+| 同一 PR 一条工作线 | `Store.activeTaskByPr(pr, repo)` 按 `reply_pr` + 非终态取最新一条；Watcher 优先把它作为 `continueFrom`；Router 见父任务非终态时 `claimEvent` 后回执一句、不建任务 | 父任务还在排队/执行/暂停时，续跑要么另开分支与 PR（重复工作），要么复用分支撞上工作副本占用（可见失败）；两条路都不可接受，唯一正确做法是等它结束。占位 eventId 让重复投递静默（FR-016） |
 | 装配 | `index.ts` 创建 watcher，`enqueue = (m) => router.handle(m)`；shutdown 里 `watcher.stop()` | 与 `Proactive` 的装配方式一致（FR-011） |
 
 ## 2. 影响面
